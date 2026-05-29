@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Iterable
+
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+from mm_jira_bot.domain import MattermostPost, datetime_from_mattermost_ms, utc_now
+
+
+def normalize_database_url(database_url: str) -> str:
+    if database_url.startswith("postgres://"):
+        return "postgresql+psycopg://" + database_url.removeprefix("postgres://")
+    if database_url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + database_url.removeprefix("postgresql://")
+    return database_url
+
+
+def create_database_engine(database_url: str) -> Engine:
+    normalized = normalize_database_url(database_url)
+    connect_args = {"check_same_thread": False} if normalized.startswith("sqlite") else {}
+    return create_engine(normalized, future=True, connect_args=connect_args)
+
+
+def create_session_factory(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class AlertTicket(Base):
+    __tablename__ = "alert_tickets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mattermost_post_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    mattermost_channel_id: Mapped[str] = mapped_column(String(64), index=True)
+    mattermost_channel_name: Mapped[str | None] = mapped_column(String(255))
+    mattermost_message_url: Mapped[str] = mapped_column(Text)
+    mattermost_message_text: Mapped[str] = mapped_column(Text)
+    mattermost_author_id: Mapped[str] = mapped_column(String(64))
+    mattermost_message_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    jira_issue_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+    jira_issue_url: Mapped[str | None] = mapped_column(Text)
+    valid_incident: Mapped[bool] = mapped_column(Boolean, default=False)
+    incident_post_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    incident_message_url: Mapped[str | None] = mapped_column(Text)
+    confirmed_by_user_id: Mapped[str | None] = mapped_column(String(64))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    creation_status: Mapped[str] = mapped_column(String(32), default="pending_jira")
+    confirmation_status: Mapped[str] = mapped_column(String(32), default="none")
+    pending_confirmation_by_user_id: Mapped[str | None] = mapped_column(String(64))
+    pending_confirmation_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    jira_confirmation_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+def init_db(engine: Engine) -> None:
+    Base.metadata.create_all(engine)
+
+
+class AlertTicketRepository:
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def get_by_post_id(self, post_id: str) -> AlertTicket | None:
+        with self._session_factory() as session:
+            return session.scalar(
+                select(AlertTicket).where(AlertTicket.mattermost_post_id == post_id)
+            )
+
+    def create_or_get_alert(
+        self,
+        post: MattermostPost,
+        *,
+        message_url: str,
+        channel_name: str | None,
+    ) -> tuple[AlertTicket, bool]:
+        with self._session_factory() as session:
+            existing = session.scalar(
+                select(AlertTicket).where(AlertTicket.mattermost_post_id == post.id)
+            )
+            if existing:
+                return existing, False
+
+            ticket = AlertTicket(
+                mattermost_post_id=post.id,
+                mattermost_channel_id=post.channel_id,
+                mattermost_channel_name=channel_name,
+                mattermost_message_url=message_url,
+                mattermost_message_text=post.message,
+                mattermost_author_id=post.user_id,
+                mattermost_message_created_at=datetime_from_mattermost_ms(
+                    post.create_at
+                ),
+                creation_status="pending_jira",
+                confirmation_status="none",
+                valid_incident=False,
+            )
+            session.add(ticket)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.scalar(
+                    select(AlertTicket).where(AlertTicket.mattermost_post_id == post.id)
+                )
+                if existing is None:
+                    raise
+                return existing, False
+            return ticket, True
+
+    def attach_jira_issue(self, post_id: str, issue_key: str, issue_url: str) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            ticket.jira_issue_key = issue_key
+            ticket.jira_issue_url = issue_url
+            ticket.creation_status = "jira_created"
+            ticket.last_error = None
+            session.commit()
+
+    def mark_jira_create_failed(self, post_id: str, error: str) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            ticket.creation_status = "failed_jira"
+            ticket.last_error = error
+            session.commit()
+
+    def mark_pending_confirmation(
+        self, post_id: str, user_id: str, confirmed_at: datetime
+    ) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            if ticket.valid_incident:
+                return
+            ticket.confirmation_status = "pending_confirmation"
+            ticket.pending_confirmation_by_user_id = user_id
+            ticket.pending_confirmation_at = confirmed_at
+            if ticket.confirmed_by_user_id is None:
+                ticket.confirmed_by_user_id = user_id
+                ticket.confirmed_at = confirmed_at
+            session.commit()
+
+    def mark_confirmation_started(
+        self, post_id: str, user_id: str, confirmed_at: datetime
+    ) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            if not ticket.valid_incident:
+                ticket.confirmation_status = "confirming"
+            if ticket.confirmed_by_user_id is None:
+                ticket.confirmed_by_user_id = user_id
+            if ticket.confirmed_at is None:
+                ticket.confirmed_at = confirmed_at
+            session.commit()
+
+    def set_incident_message(
+        self, post_id: str, incident_post_id: str, incident_message_url: str
+    ) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            ticket.incident_post_id = incident_post_id
+            ticket.incident_message_url = incident_message_url
+            session.commit()
+
+    def mark_jira_confirmation_comment_added(self, post_id: str) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            ticket.jira_confirmation_comment_added = True
+            session.commit()
+
+    def mark_confirmed(
+        self,
+        post_id: str,
+        *,
+        user_id: str,
+        confirmed_at: datetime,
+    ) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            ticket.valid_incident = True
+            ticket.confirmation_status = "confirmed"
+            ticket.confirmed_by_user_id = ticket.confirmed_by_user_id or user_id
+            ticket.confirmed_at = ticket.confirmed_at or confirmed_at
+            ticket.pending_confirmation_by_user_id = None
+            ticket.pending_confirmation_at = None
+            ticket.last_error = None
+            session.commit()
+
+    def mark_confirmation_failed(self, post_id: str, error: str) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            if not ticket.valid_incident:
+                ticket.confirmation_status = "failed_confirmation"
+            ticket.last_error = error
+            session.commit()
+
+    def sync_valid_incident_from_jira(self, post_id: str) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            ticket.valid_incident = True
+            if ticket.confirmation_status not in {"confirmed", "confirming"}:
+                ticket.confirmation_status = "confirmed"
+            session.commit()
+
+    def list_pending_jira(self, limit: int = 50) -> list[AlertTicket]:
+        with self._session_factory() as session:
+            return list(
+                session.scalars(
+                    select(AlertTicket)
+                    .where(AlertTicket.jira_issue_key.is_(None))
+                    .order_by(AlertTicket.created_at)
+                    .limit(limit)
+                )
+            )
+
+    def list_pending_confirmations(self, limit: int = 50) -> list[AlertTicket]:
+        with self._session_factory() as session:
+            return list(
+                session.scalars(
+                    select(AlertTicket)
+                    .where(
+                        AlertTicket.valid_incident.is_(False),
+                        AlertTicket.confirmation_status.in_(
+                            ["pending_confirmation", "failed_confirmation", "confirming"]
+                        ),
+                    )
+                    .order_by(AlertTicket.updated_at)
+                    .limit(limit)
+                )
+            )
+
+    def _require_ticket(self, session: Session, post_id: str) -> AlertTicket:
+        ticket = session.scalar(
+            select(AlertTicket).where(AlertTicket.mattermost_post_id == post_id)
+        )
+        if ticket is None:
+            raise KeyError(f"Alert ticket for post_id={post_id} not found")
+        return ticket
+
+
+def ticket_to_post(ticket: AlertTicket) -> MattermostPost:
+    create_at = 0
+    if ticket.mattermost_message_created_at:
+        dt = ticket.mattermost_message_created_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        create_at = int(dt.timestamp() * 1000)
+    return MattermostPost(
+        id=ticket.mattermost_post_id,
+        channel_id=ticket.mattermost_channel_id,
+        user_id=ticket.mattermost_author_id,
+        message=ticket.mattermost_message_text,
+        create_at=create_at,
+        channel_name=ticket.mattermost_channel_name,
+    )
+
+
+def tickets_to_ids(tickets: Iterable[AlertTicket]) -> list[str]:
+    return [ticket.mattermost_post_id for ticket in tickets]
