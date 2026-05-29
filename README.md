@@ -90,6 +90,7 @@ cp .env.example .env
 - `JIRA_VALID_INCIDENT_FIELD_ID`
 - `JIRA_CONFIRMED_STATUS_ID`
 - `DATABASE_URL`
+- `INCIDENT_TIMEZONE=Europe/Moscow`, timezone для даты в названии Jira issue
 
 Для SQLite локально:
 

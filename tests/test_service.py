@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timezone
+from datetime import datetime, timezone
 
 import pytest
+import mm_jira_bot.jira as jira_module
 from fastapi.testclient import TestClient
 
 from mm_jira_bot.config import Settings
@@ -244,7 +245,7 @@ async def test_repeated_confirmation_does_not_duplicate_incident_post(service):
 
 
 def test_builds_jira_payload(settings):
-    post = make_alert()
+    post = replace(make_alert(), message="CPU usage is above 95%\nsecond line")
     payload = build_jira_issue_payload(
         settings,
         post,
@@ -256,8 +257,25 @@ def test_builds_jira_payload(settings):
     assert fields["project"] == {"key": "OPS"}
     assert fields["issuetype"] == {"name": "Incident"}
     assert fields["customfield_12345"] is False
-    assert "Mattermost alert:" in fields["summary"]
+    assert fields["summary"] == "[INC] 15.11.23 - CPU usage is above 95%"
     assert fields["description"]["type"] == "doc"
+
+
+def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, monkeypatch):
+    monkeypatch.setattr(
+        jira_module,
+        "utc_now",
+        lambda: datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
+    )
+    post = replace(make_alert(), create_at=0)
+    payload = build_jira_issue_payload(
+        settings,
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert payload["fields"]["summary"] == "[INC] 30.05.26 - CPU usage is above 95%"
 
 
 def test_builds_incident_channel_message(service):

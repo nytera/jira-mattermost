@@ -72,6 +72,7 @@ class Settings:
     jira_valid_incident_field_id: str
     jira_confirmed_status_id: str | None
     database_url: str
+    incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     log_level: str = "INFO"
     api_retry_attempts: int = 4
@@ -102,6 +103,8 @@ class Settings:
             jira_valid_incident_field_id=_required("JIRA_VALID_INCIDENT_FIELD_ID"),
             jira_confirmed_status_id=_optional("JIRA_CONFIRMED_STATUS_ID"),
             database_url=_required("DATABASE_URL"),
+            incident_timezone=_optional("INCIDENT_TIMEZONE", "Europe/Moscow")
+            or "Europe/Moscow",
             mattermost_slash_token=_optional("MATTERMOST_SLASH_TOKEN"),
             log_level=_optional("LOG_LEVEL", "INFO") or "INFO",
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),

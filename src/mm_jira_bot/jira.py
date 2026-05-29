@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from mm_jira_bot.config import Settings
-from mm_jira_bot.domain import JiraIssue, MattermostPost
+from mm_jira_bot.domain import JiraIssue, MattermostPost, utc_now
 from mm_jira_bot.formatting import truncate_for_summary
 from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
 
@@ -76,10 +77,17 @@ def build_jira_issue_payload(
     else:
         issue_type = {"name": settings.jira_issue_type}
 
+    created_at = post.created_at_datetime if post.create_at > 0 else utc_now()
+    alert_date = created_at.astimezone(ZoneInfo(settings.incident_timezone)).strftime(
+        "%d.%m.%y"
+    )
+    message_lines = post.message.splitlines()
+    first_message_line = message_lines[0] if message_lines else ""
+
     fields: dict[str, Any] = {
         "project": {"key": settings.jira_project_key},
         "issuetype": issue_type,
-        "summary": f"Mattermost alert: {truncate_for_summary(post.message)}",
+        "summary": f"[INC] {alert_date} - {truncate_for_summary(first_message_line)}",
         "description": build_jira_description(
             post, message_url=message_url, channel_name=channel_name
         ),
