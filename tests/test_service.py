@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from dataclasses import replace
@@ -189,6 +190,39 @@ def test_settings_do_not_backfill_old_messages_by_default(tmp_path, monkeypatch)
     assert loaded_settings.enable_backfill_on_startup is False
 
 
+def test_settings_reports_all_valid_incident_field_env_names(tmp_path, monkeypatch):
+    required_env = {
+        "MATTERMOST_URL": "https://mattermost.example.com",
+        "MATTERMOST_TOKEN": "mm-token",
+        "MATTERMOST_ALERT_CHANNEL_ID": "alerts-channel",
+        "MATTERMOST_INCIDENT_CHANNEL_ID": "incidents-channel",
+        "MATTERMOST_BOT_USER_ID": "bot-user",
+        "JIRA_BASE_URL": "https://jira.example.com",
+        "JIRA_EMAIL": "bot@example.com",
+        "JIRA_API_TOKEN": "jira-token",
+        "JIRA_PROJECT_KEY": "OPS",
+        "JIRA_ISSUE_TYPE": "Incident",
+        "JIRA_SOURCE_FIELD": "Источник",
+        "JIRA_IS_CRIT_ALERT_FIELD": "Был ли крит алерт?",
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'bot.db'}",
+    }
+    for key, value in required_env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("JIRA_VALID_INCIDENT_FIELD", raising=False)
+    monkeypatch.delenv("JIRA_VALID_INCIDENT_FIELD_NAME", raising=False)
+    monkeypatch.delenv("JIRA_VALID_INCIDENT_FIELD_ID", raising=False)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        Settings.from_env(tmp_path / "missing.env")
+
+    assert str(exc_info.value) == (
+        "Missing required environment variable: "
+        "JIRA_VALID_INCIDENT_FIELD or "
+        "JIRA_VALID_INCIDENT_FIELD_NAME or "
+        "JIRA_VALID_INCIDENT_FIELD_ID"
+    )
+
+
 @pytest.mark.asyncio
 async def test_creates_jira_issue_for_new_mattermost_message(service):
     post = make_alert()
@@ -309,7 +343,9 @@ def test_builds_jira_payload(settings):
     assert fields["customfield_23456"] == {"value": "Crit alert"}
     assert fields["customfield_34567"] == {"value": "Да"}
     assert fields["summary"] == "[INC] 15.11.23 - CPU usage is above 95%"
-    assert fields["description"]["type"] == "doc"
+    assert isinstance(fields["description"], str)
+    assert "Mattermost alert" in fields["description"]
+    assert "Original Mattermost message: https://mattermost.example.com/_redirect/pl/post" in fields["description"]
 
 
 def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, monkeypatch):
@@ -333,12 +369,125 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
 
 
 @pytest.mark.asyncio
+async def test_creates_issue_with_jira_option_ids_from_create_metadata(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read()) if request.method == "POST" else None
+        requests.append({"method": request.method, "path": request.url.path, "body": body})
+        if request.url.path == "/rest/api/2/issue/createmeta":
+            return httpx.Response(
+                200,
+                json={
+                    "projects": [
+                        {
+                            "issuetypes": [
+                                {
+                                    "fields": {
+                                        "customfield_12345": {
+                                            "allowedValues": [
+                                                {"id": "101", "value": "Не заполнено"}
+                                            ]
+                                        },
+                                        "customfield_23456": {
+                                            "allowedValues": [
+                                                {"id": "102", "value": "Crit alert"}
+                                            ]
+                                        },
+                                        "customfield_34567": {
+                                            "allowedValues": [
+                                                {"id": "103", "value": "Да"}
+                                            ]
+                                        },
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/rest/api/2/issue":
+            return httpx.Response(201, json={"key": "OPS-1"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        issue = await client.create_issue(
+            make_alert(),
+            message_url="https://mattermost.example.com/_redirect/pl/post",
+            channel_name="alerts",
+        )
+    finally:
+        await client.aclose()
+
+    issue_body = requests[-1]["body"]["fields"]
+    assert issue.key == "OPS-1"
+    assert requests[0]["path"] == "/rest/api/2/issue/createmeta"
+    assert issue_body["customfield_12345"] == {"id": "101"}
+    assert issue_body["customfield_23456"] == {"id": "102"}
+    assert issue_body["customfield_34567"] == {"id": "103"}
+    assert isinstance(issue_body["description"], str)
+
+
+@pytest.mark.asyncio
+async def test_jira_client_uses_bearer_auth_by_default(settings):
+    headers = jira_module.build_jira_auth_headers(settings)
+
+    assert headers["Authorization"] == "Bearer jira-token"
+    assert headers["Content-Type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_jira_client_can_use_email_token_basic_auth(settings):
+    headers = jira_module.build_jira_auth_headers(replace(settings, jira_auth_type="basic"))
+
+    expected_token = base64.b64encode(b"bot@example.com:jira-token").decode("ascii")
+    assert headers["Authorization"] == f"Basic {expected_token}"
+    assert headers["Content-Type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_jira_client_uses_configured_rest_api_version(settings):
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/rest/api/2/issue/OPS-1":
+            return httpx.Response(
+                200, json={"fields": {"customfield_12345": {"value": "Валидный"}}}
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            headers=jira_module.build_jira_auth_headers(settings),
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        value = await client.get_valid_incident("OPS-1")
+    finally:
+        await client.aclose()
+
+    assert value is True
+    assert requests == ["/rest/api/2/issue/OPS-1"]
+
+
+@pytest.mark.asyncio
 async def test_resolves_valid_incident_field_name_from_jira(settings):
     requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request.url.path)
-        if request.url.path == "/rest/api/3/field":
+        if request.url.path == "/rest/api/2/field":
             return httpx.Response(
                 200,
                 json=[
@@ -346,7 +495,7 @@ async def test_resolves_valid_incident_field_name_from_jira(settings):
                     {"id": "customfield_12345", "name": "Valid Incident"},
                 ],
             )
-        if request.url.path == "/rest/api/3/issue/OPS-1":
+        if request.url.path == "/rest/api/2/issue/OPS-1":
             return httpx.Response(
                 200, json={"fields": {"customfield_12345": {"value": "Валидный"}}}
             )
@@ -365,7 +514,7 @@ async def test_resolves_valid_incident_field_name_from_jira(settings):
         await client.aclose()
 
     assert value is True
-    assert requests == ["/rest/api/3/field", "/rest/api/3/issue/OPS-1"]
+    assert requests == ["/rest/api/2/field", "/rest/api/2/issue/OPS-1"]
 
 
 @pytest.mark.asyncio
@@ -377,10 +526,31 @@ async def test_updates_valid_incident_as_jira_option(settings):
             {
                 "method": request.method,
                 "path": request.url.path,
-                "body": json.loads(request.read()),
+                "body": json.loads(request.read()) if request.method == "PUT" else None,
             }
         )
-        if request.url.path == "/rest/api/3/issue/OPS-1":
+        if request.url.path == "/rest/api/2/issue/createmeta":
+            return httpx.Response(
+                200,
+                json={
+                    "projects": [
+                        {
+                            "issuetypes": [
+                                {
+                                    "fields": {
+                                        "customfield_12345": {
+                                            "allowedValues": [
+                                                {"id": "201", "value": "Валидный"}
+                                            ]
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/rest/api/2/issue/OPS-1":
             return httpx.Response(204)
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
@@ -398,9 +568,14 @@ async def test_updates_valid_incident_as_jira_option(settings):
 
     assert requests == [
         {
+            "method": "GET",
+            "path": "/rest/api/2/issue/createmeta",
+            "body": None,
+        },
+        {
             "method": "PUT",
-            "path": "/rest/api/3/issue/OPS-1",
-            "body": {"fields": {"customfield_12345": {"value": "Валидный"}}},
+            "path": "/rest/api/2/issue/OPS-1",
+            "body": {"fields": {"customfield_12345": {"id": "201"}}},
         }
     ]
 

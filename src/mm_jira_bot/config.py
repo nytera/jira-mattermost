@@ -38,6 +38,16 @@ def _optional(name: str, default: str | None = None) -> str | None:
     return value
 
 
+def _first_required(*names: str) -> str:
+    for name in names:
+        value = _optional(name)
+        if value is not None:
+            return value
+    raise RuntimeError(
+        "Missing required environment variable: " + " or ".join(names)
+    )
+
+
 def _int_env(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None or value == "":
@@ -70,6 +80,8 @@ class Settings:
     jira_is_crit_alert_field: str
     jira_confirmed_status_id: str | None
     database_url: str
+    jira_auth_type: str = "bearer"
+    jira_rest_api_version: str = "2"
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     log_level: str = "INFO"
@@ -98,15 +110,17 @@ class Settings:
             jira_api_token=_required("JIRA_API_TOKEN"),
             jira_project_key=_required("JIRA_PROJECT_KEY"),
             jira_issue_type=_required("JIRA_ISSUE_TYPE"),
-            jira_valid_incident_field=(
-                _optional("JIRA_VALID_INCIDENT_FIELD")
-                or _optional("JIRA_VALID_INCIDENT_FIELD_NAME")
-                or _required("JIRA_VALID_INCIDENT_FIELD_ID")
+            jira_valid_incident_field=_first_required(
+                "JIRA_VALID_INCIDENT_FIELD",
+                "JIRA_VALID_INCIDENT_FIELD_NAME",
+                "JIRA_VALID_INCIDENT_FIELD_ID",
             ),
             jira_source_field=_required("JIRA_SOURCE_FIELD"),
             jira_is_crit_alert_field=_required("JIRA_IS_CRIT_ALERT_FIELD"),
             jira_confirmed_status_id=_optional("JIRA_CONFIRMED_STATUS_ID"),
             database_url=_required("DATABASE_URL"),
+            jira_auth_type=_optional("JIRA_AUTH_TYPE", "bearer") or "bearer",
+            jira_rest_api_version=_optional("JIRA_REST_API_VERSION", "2") or "2",
             incident_timezone=_optional("INCIDENT_TIMEZONE", "Europe/Moscow")
             or "Europe/Moscow",
             mattermost_slash_token=_optional("MATTERMOST_SLASH_TOKEN"),

@@ -59,6 +59,8 @@ flowchart LR
 - `JIRA_BASE_URL`, например `https://company.atlassian.net`;
 - `JIRA_EMAIL`;
 - `JIRA_API_TOKEN`;
+- `JIRA_AUTH_TYPE`, `bearer` для on-prem/Data Center PAT или `basic` для Cloud email + API token;
+- `JIRA_REST_API_VERSION`, `2` для on-prem/Data Center или `3` для Cloud;
 - `JIRA_PROJECT_KEY`;
 - `JIRA_ISSUE_TYPE`, имя или numeric id issue type;
 - `JIRA_VALID_INCIDENT_FIELD`, например `Valid Incident` или `Валидный инцидент`;
@@ -66,7 +68,7 @@ flowchart LR
 - `JIRA_IS_CRIT_ALERT_FIELD`, например `Был ли крит алерт?`;
 - `JIRA_CONFIRMED_STATUS_ID`, id transition в статус `Confirmed Incident`, опционально.
 
-Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его. Для Jira Cloud используется REST API v3 и Atlassian Document Format для `description` и комментариев.
+Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его. По умолчанию используется REST API v2 и `Authorization: Bearer ...`, что подходит для on-prem/Data Center Jira с personal access token. Для Jira Cloud задайте `JIRA_REST_API_VERSION=3` и `JIRA_AUTH_TYPE=basic`.
 
 ## Configuration
 
@@ -87,6 +89,8 @@ cp .env.example .env
 - `JIRA_BASE_URL`
 - `JIRA_EMAIL`
 - `JIRA_API_TOKEN`
+- `JIRA_AUTH_TYPE=bearer`
+- `JIRA_REST_API_VERSION=2`
 - `JIRA_PROJECT_KEY`
 - `JIRA_ISSUE_TYPE`
 - `JIRA_VALID_INCIDENT_FIELD`
@@ -205,4 +209,5 @@ pytest
 
 - Mattermost API documentation: https://developers.mattermost.com/api-documentation/
 - Mattermost slash commands: https://docs.mattermost.com/integrations-guide/slash-commands.html
+- Jira Data Center REST API: https://developer.atlassian.com/server/jira/platform/rest-apis/
 - Jira Cloud REST API v3: https://developer.atlassian.com/cloud/jira/platform/rest/v3/
