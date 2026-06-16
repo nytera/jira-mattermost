@@ -405,6 +405,116 @@ def test_slash_command_handles_missing_jira_mapping(service, settings):
     assert len(service.jira.created_payloads) == 1
 
 
+def test_debug_admin_routes_are_disabled_by_default(service, settings):
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.get("/debug/admin")
+
+    assert response.status_code == 404
+
+
+def test_debug_admin_lists_alerts_when_enabled(service, settings):
+    post = make_alert(message="CPU usage is above 95%\nsecond line")
+    service.repository.create_or_get_alert(
+        post,
+        message_url=service.mattermost.permalink(post.id),
+        channel_name="alerts",
+    )
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        summary_response = client.get("/debug/admin/api/summary")
+        list_response = client.get("/debug/admin/api/alerts")
+        detail_response = client.get(f"/debug/admin/api/alerts/{post.id}")
+
+    assert summary_response.status_code == 200
+    assert summary_response.json()["total"] == 1
+    assert list_response.status_code == 200
+    assert list_response.json()["alerts"][0]["mattermost_post_id"] == post.id
+    assert "second line" in list_response.json()["alerts"][0]["mattermost_message_preview"]
+    assert detail_response.status_code == 200
+    assert detail_response.json()["mattermost_message_text"] == post.message
+
+
+def test_debug_admin_retries_jira_creation_for_ticket_without_issue(service, settings):
+    post = make_alert()
+    service.repository.create_or_get_alert(
+        post,
+        message_url=service.mattermost.permalink(post.id),
+        channel_name="alerts",
+    )
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    client = TestClient(app)
+    try:
+        response = client.post(f"/debug/admin/api/alerts/{post.id}/jira/recreate")
+    finally:
+        client.close()
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert response.status_code == 200
+    assert response.json()["status"] == "created"
+    assert response.json()["jira_issue_key"] == "OPS-1"
+    assert ticket is not None
+    assert ticket.jira_issue_key == "OPS-1"
+    assert len(service.jira.created_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_debug_admin_recreate_without_force_conflicts_existing_issue(
+    service, settings
+):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post(f"/debug/admin/api/alerts/{post.id}/jira/recreate")
+
+    assert response.status_code == 409
+    assert response.json()["status"] == "conflict"
+    assert len(service.jira.created_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_debug_admin_force_recreates_confirmed_issue_without_duplicate_incident(
+    service, settings
+):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="incident",
+            create_at=1,
+        )
+    )
+
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/debug/admin/api/alerts/{post.id}/jira/recreate?force=true"
+        )
+
+    ticket = service.repository.get_by_post_id(post.id)
+    incident_posts = [
+        created
+        for created in service.mattermost.created_posts
+        if created["channel_id"] == "incidents-channel"
+    ]
+    assert response.status_code == 200
+    assert response.json()["status"] == "recreated"
+    assert response.json()["previous_jira_issue_key"] == "OPS-1"
+    assert response.json()["jira_issue_key"] == "OPS-2"
+    assert ticket is not None
+    assert ticket.jira_issue_key == "OPS-2"
+    assert ticket.valid_incident is True
+    assert ticket.jira_confirmation_comment_added is True
+    assert service.jira.valid_updates == [("OPS-1", True), ("OPS-2", True)]
+    assert [comment[0] for comment in service.jira.comments] == ["OPS-1", "OPS-2"]
+    assert len(incident_posts) == 1
+
+
 @pytest.mark.asyncio
 async def test_repeated_confirmation_does_not_duplicate_incident_post(service):
     post = make_alert()

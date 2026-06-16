@@ -133,6 +133,33 @@ python -m mm_jira_bot
 curl http://localhost:8080/healthz
 ```
 
+## Debug Admin
+
+По умолчанию debug-админка выключена. Чтобы включить ее локально или в
+закрытом контуре, задайте:
+
+```env
+DEBUG_ADMIN_ENABLED=true
+```
+
+После этого будут доступны:
+
+- `http://localhost:8080/debug/admin` при локальном запуске;
+- `GET /debug/admin` — простая HTML-страница со списком алертов и действиями;
+- `GET /debug/admin/api/summary` — счетчики по статусам;
+- `GET /debug/admin/api/alerts?limit=50&status=failed_jira` — список тикетов;
+- `GET /debug/admin/api/alerts/{post_id}` — полная карточка тикета;
+- `POST /debug/admin/api/alerts/{post_id}/jira/recreate` — создать Jira issue для тикета без `jira_issue_key`;
+- `POST /debug/admin/api/alerts/{post_id}/jira/recreate?force=true` — создать новую Jira issue и заменить локальную связь.
+
+Важно: у debug-админки нет отдельной авторизации, кроме флага
+`DEBUG_ADMIN_ENABLED`, и она использует тот же HTTP-порт, что и бот
+(`8080` в текущем `uvicorn.run`). Не выставляйте ее наружу без firewall/reverse proxy.
+Force recreate не удаляет и не закрывает старую Jira issue; он только создает
+новую задачу и обновляет локальную связь. Если алерт уже был подтвержден, бот
+повторно применит Jira confirmation к новой задаче, но не создаст второй
+incident-post в Mattermost.
+
 ## Docker
 
 ```bash

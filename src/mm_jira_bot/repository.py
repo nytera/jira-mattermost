@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, select
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -83,6 +93,79 @@ class AlertTicketRepository:
                 select(AlertTicket).where(AlertTicket.mattermost_post_id == post_id)
             )
 
+    def list_alerts(
+        self, *, limit: int = 50, status: str | None = None
+    ) -> list[AlertTicket]:
+        limit = min(max(limit, 1), 200)
+        statement = select(AlertTicket).order_by(AlertTicket.created_at.desc()).limit(limit)
+        if status:
+            statement = (
+                select(AlertTicket)
+                .where(
+                    or_(
+                        AlertTicket.creation_status == status,
+                        AlertTicket.confirmation_status == status,
+                    )
+                )
+                .order_by(AlertTicket.created_at.desc())
+                .limit(limit)
+            )
+        with self._session_factory() as session:
+            return list(session.scalars(statement))
+
+    def debug_summary(self) -> dict:
+        with self._session_factory() as session:
+            total = session.scalar(select(func.count(AlertTicket.id))) or 0
+            creation_statuses = dict(
+                session.execute(
+                    select(AlertTicket.creation_status, func.count(AlertTicket.id))
+                    .group_by(AlertTicket.creation_status)
+                    .order_by(AlertTicket.creation_status)
+                ).all()
+            )
+            confirmation_statuses = dict(
+                session.execute(
+                    select(AlertTicket.confirmation_status, func.count(AlertTicket.id))
+                    .group_by(AlertTicket.confirmation_status)
+                    .order_by(AlertTicket.confirmation_status)
+                ).all()
+            )
+            pending_jira = (
+                session.scalar(
+                    select(func.count(AlertTicket.id)).where(
+                        AlertTicket.jira_issue_key.is_(None)
+                    )
+                )
+                or 0
+            )
+            failed = (
+                session.scalar(
+                    select(func.count(AlertTicket.id)).where(
+                        or_(
+                            AlertTicket.creation_status == "failed_jira",
+                            AlertTicket.confirmation_status == "failed_confirmation",
+                        )
+                    )
+                )
+                or 0
+            )
+            confirmed = (
+                session.scalar(
+                    select(func.count(AlertTicket.id)).where(
+                        AlertTicket.valid_incident.is_(True)
+                    )
+                )
+                or 0
+            )
+            return {
+                "total": total,
+                "creation_statuses": creation_statuses,
+                "confirmation_statuses": confirmation_statuses,
+                "pending_jira": pending_jira,
+                "failed": failed,
+                "confirmed": confirmed,
+            }
+
     def create_or_get_alert(
         self,
         post: MattermostPost,
@@ -133,10 +216,34 @@ class AlertTicketRepository:
             ticket.last_error = None
             session.commit()
 
+    def replace_jira_issue(
+        self,
+        post_id: str,
+        issue_key: str,
+        issue_url: str,
+        *,
+        reset_confirmation_comment: bool = False,
+    ) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            ticket.jira_issue_key = issue_key
+            ticket.jira_issue_url = issue_url
+            ticket.creation_status = "jira_created"
+            ticket.last_error = None
+            if reset_confirmation_comment:
+                ticket.jira_confirmation_comment_added = False
+            session.commit()
+
     def mark_jira_create_failed(self, post_id: str, error: str) -> None:
         with self._session_factory() as session:
             ticket = self._require_ticket(session, post_id)
             ticket.creation_status = "failed_jira"
+            ticket.last_error = error
+            session.commit()
+
+    def set_last_error(self, post_id: str, error: str) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
             ticket.last_error = error
             session.commit()
 

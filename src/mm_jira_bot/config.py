@@ -92,6 +92,7 @@ class Settings:
     backfill_recent_posts_limit: int = 0
     enable_websocket: bool = True
     enable_backfill_on_startup: bool = False
+    debug_admin_enabled: bool = False
 
     def __post_init__(self) -> None:
         configure_runtime_timezone(self.incident_timezone)
@@ -137,4 +138,5 @@ class Settings:
             enable_websocket=_optional("ENABLE_WEBSOCKET", "true") != "false",
             enable_backfill_on_startup=_optional("ENABLE_BACKFILL_ON_STARTUP", "false")
             == "true",
+            debug_admin_enabled=_optional("DEBUG_ADMIN_ENABLED", "false") == "true",
         )

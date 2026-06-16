@@ -9,6 +9,7 @@ from mm_jira_bot.config import Settings
 from mm_jira_bot.domain import (
     ConfirmationResult,
     ConfirmationStatus,
+    JiraIssue,
     MattermostPost,
     ReactionEvent,
     backend_now,
@@ -35,6 +36,18 @@ BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
 class CommandResponse:
     text: str
     response_type: str = "ephemeral"
+
+
+@dataclass(frozen=True)
+class DebugJiraRecreateResult:
+    ok: bool
+    status: str
+    message: str
+    mattermost_post_id: str
+    jira_issue_key: str | None = None
+    jira_issue_url: str | None = None
+    previous_jira_issue_key: str | None = None
+    previous_jira_issue_url: str | None = None
 
 
 def parse_post_id_from_text(text: str) -> str | None:
@@ -392,18 +405,122 @@ class IncidentBotService:
         for post in posts:
             await self.handle_alert_post(post)
 
+    async def debug_recreate_jira_issue(
+        self, post_id: str, *, force: bool = False
+    ) -> DebugJiraRecreateResult:
+        ticket = self.repository.get_by_post_id(post_id)
+        if ticket is None:
+            return DebugJiraRecreateResult(
+                ok=False,
+                status="not_found",
+                message=f"Alert ticket for post_id={post_id} was not found.",
+                mattermost_post_id=post_id,
+            )
+        if ticket.jira_issue_key and not force:
+            return DebugJiraRecreateResult(
+                ok=False,
+                status="conflict",
+                message=(
+                    "Jira issue already exists for this alert. "
+                    "Use force=true to create a replacement issue."
+                ),
+                mattermost_post_id=post_id,
+                jira_issue_key=ticket.jira_issue_key,
+                jira_issue_url=ticket.jira_issue_url,
+            )
+
+        previous_key = ticket.jira_issue_key
+        previous_url = ticket.jira_issue_url
+        try:
+            issue = await self._create_jira_issue(ticket)
+        except ApiError as exc:
+            if previous_key:
+                self.repository.set_last_error(post_id, str(exc))
+            else:
+                self.repository.mark_jira_create_failed(post_id, str(exc))
+            log_event(
+                logger,
+                logging.ERROR,
+                "debug_admin.jira_issue.recreate_failed",
+                mattermost_post_id=post_id,
+                force=force,
+                error=str(exc),
+            )
+            return DebugJiraRecreateResult(
+                ok=False,
+                status="error",
+                message=str(exc),
+                mattermost_post_id=post_id,
+                previous_jira_issue_key=previous_key,
+                previous_jira_issue_url=previous_url,
+            )
+
+        self.repository.replace_jira_issue(
+            post_id,
+            issue.key,
+            issue.url,
+            reset_confirmation_comment=bool(ticket.valid_incident),
+        )
+        updated_ticket = self.repository.get_by_post_id(post_id)
+        assert updated_ticket is not None
+        if updated_ticket.valid_incident and updated_ticket.incident_post_id:
+            confirmed_by = updated_ticket.confirmed_by_user_id or "debug-admin"
+            confirmed_by_display = await self._resolve_user_display(confirmed_by)
+            try:
+                await self._update_jira_for_confirmation(
+                    updated_ticket, confirmed_by=confirmed_by_display
+                )
+                self.repository.mark_confirmed(
+                    post_id,
+                    user_id=confirmed_by,
+                    confirmed_at=updated_ticket.confirmed_at or backend_now(),
+                )
+            except ApiError as exc:
+                self.repository.mark_confirmation_failed(post_id, str(exc))
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "debug_admin.jira_issue.confirmation_reapply_failed",
+                    mattermost_post_id=post_id,
+                    jira_issue_key=issue.key,
+                    error=str(exc),
+                )
+                return DebugJiraRecreateResult(
+                    ok=False,
+                    status="confirmation_error",
+                    message=str(exc),
+                    mattermost_post_id=post_id,
+                    jira_issue_key=issue.key,
+                    jira_issue_url=issue.url,
+                    previous_jira_issue_key=previous_key,
+                    previous_jira_issue_url=previous_url,
+                )
+
+        log_event(
+            logger,
+            logging.INFO,
+            "debug_admin.jira_issue.recreated",
+            mattermost_post_id=post_id,
+            jira_issue_key=issue.key,
+            previous_jira_issue_key=previous_key,
+            force=force,
+        )
+        return DebugJiraRecreateResult(
+            ok=True,
+            status="recreated" if force and previous_key else "created",
+            message="Jira issue created.",
+            mattermost_post_id=post_id,
+            jira_issue_key=issue.key,
+            jira_issue_url=issue.url,
+            previous_jira_issue_key=previous_key,
+            previous_jira_issue_url=previous_url,
+        )
+
     async def _ensure_jira_issue(self, ticket: AlertTicket) -> None:
         if ticket.jira_issue_key:
             return
-        post = ticket_to_post(ticket)
-        author_name = await self._resolve_user_display(post.user_id)
         try:
-            issue = await self.jira.create_issue(
-                post,
-                message_url=ticket.mattermost_message_url,
-                channel_name=ticket.mattermost_channel_name,
-                author_name=author_name,
-            )
+            issue = await self._create_jira_issue(ticket)
             self.repository.attach_jira_issue(
                 ticket.mattermost_post_id, issue.key, issue.url
             )
@@ -432,6 +549,16 @@ class IncidentBotService:
                 mattermost_post_id=ticket.mattermost_post_id,
                 error=str(exc),
             )
+
+    async def _create_jira_issue(self, ticket: AlertTicket) -> JiraIssue:
+        post = ticket_to_post(ticket)
+        author_name = await self._resolve_user_display(post.user_id)
+        return await self.jira.create_issue(
+            post,
+            message_url=ticket.mattermost_message_url,
+            channel_name=ticket.mattermost_channel_name,
+            author_name=author_name,
+        )
 
     async def _resolve_user_display(self, user_id: str) -> str:
         try:
