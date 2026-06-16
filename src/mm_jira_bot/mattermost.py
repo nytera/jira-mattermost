@@ -19,6 +19,17 @@ def build_mattermost_permalink(base_url: str, post_id: str) -> str:
     return f"{base_url.rstrip('/')}/_redirect/pl/{post_id}"
 
 
+def format_user_display(data: dict) -> str:
+    username = (data.get("username") or "").strip()
+    full_name = f"{data.get('first_name') or ''} {data.get('last_name') or ''}".strip()
+    nickname = (data.get("nickname") or "").strip()
+    if full_name and username:
+        return f"{full_name} (@{username})"
+    if username:
+        return f"@{username}"
+    return full_name or nickname
+
+
 def websocket_url(base_url: str) -> str:
     parsed = urlparse(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
@@ -120,14 +131,32 @@ class MattermostClient:
             mattermost_channel_id=channel_id,
         )
 
+    async def get_user_display_name(self, user_id: str) -> str:
+        async def operation() -> str:
+            response = await self._client.get(f"/api/v4/users/{user_id}")
+            self._raise_for_status(response, "Failed to get Mattermost user")
+            return format_user_display(response.json()) or user_id
+
+        return await retry_async(
+            operation,
+            attempts=self._settings.api_retry_attempts,
+            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
+            logger=logger,
+            event="mattermost.get_user",
+            mattermost_user_id=user_id,
+        )
+
     async def create_post(
         self,
         *,
         channel_id: str,
         message: str,
         props: dict | None = None,
+        root_id: str | None = None,
     ) -> MattermostPost:
         payload: dict = {"channel_id": channel_id, "message": message}
+        if root_id:
+            payload["root_id"] = root_id
         if props:
             payload["props"] = props
 

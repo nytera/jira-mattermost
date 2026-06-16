@@ -6,10 +6,10 @@
 
 1. Бот подключается к Mattermost WebSocket API и слушает события `posted` и `reaction_added`.
 2. Новое сообщение в `MATTERMOST_ALERT_CHANNEL_ID` сохраняется в таблицу `alert_tickets`.
-3. Для сообщения создается Jira issue с текстом алерта, автором, временем, permalink, `post_id`, каналом, `Источник = Crit alert` и `Был ли крит алерт? = Да`. Поле `Valid Incident`/`Валидность` при создании не отправляется: Jira должна поставить свое дефолтное значение.
+3. Для сообщения создается Jira issue с текстом алерта, автором, временем, permalink, `post_id`, каналом, `Источник = Crit alert` и `Был ли крит алерт? = Да`. Поле `Valid Incident`/`Валидность` при создании не отправляется: Jira должна поставить свое дефолтное значение. После создания бот отвечает в тред исходного алерта ссылкой на созданную Jira issue.
 4. Связь `mattermost_post_id -> jira_issue_key` хранится локально и защищена уникальным индексом.
 5. Пользователь подтверждает инцидент реакцией `:incident:` на оригинальное сообщение или slash-командой `/incident <link>`.
-6. Бот публикует сообщение в `MATTERMOST_INCIDENT_CHANNEL_ID`, обновляет Jira `Valid Incident = Валидный`, добавляет комментарий со ссылкой на incident-сообщение и, если задано, делает transition issue.
+6. Бот публикует сообщение в `MATTERMOST_INCIDENT_CHANNEL_ID`, обновляет Jira `Valid Incident = Валидный`, добавляет комментарий со ссылкой на incident-сообщение и, если задано, делает transition issue. После подтверждения бот также отвечает в тред исходного алерта о том, что инцидент заведён (ссылка на Jira, валидность, ссылка на сообщение в канале инцидентов). Имя подтвердившего показывается как `Имя Фамилия (@username)`, а не как сырой `user_id`.
 
 ```mermaid
 flowchart LR
@@ -28,10 +28,10 @@ flowchart LR
 
 Создайте bot account или отдельного пользователя-интеграцию, выпустите personal access token и добавьте бота в оба канала:
 
-- канал алертов: право читать сообщения и реакции;
+- канал алертов: право читать сообщения и реакции, а также писать ответы в тред (бот отвечает в тред алерта о созданной задаче и смене статуса);
 - канал инцидентов: право писать сообщения;
 - WebSocket доступ к `/api/v4/websocket`;
-- REST доступ к `/api/v4/posts`, `/api/v4/channels/{channel_id}`, `/api/v4/channels/{channel_id}/posts`.
+- REST доступ к `/api/v4/posts`, `/api/v4/channels/{channel_id}`, `/api/v4/channels/{channel_id}/posts`, `/api/v4/users/{user_id}` (чтобы показать имя/username подтвердившего вместо сырого `user_id`).
 
 `MATTERMOST_BOT_USER_ID` нужен, чтобы бот не обрабатывал собственные сообщения.
 
@@ -198,6 +198,10 @@ WHERE jira_issue_key IS NULL
 - `mattermost.alert.received`;
 - `jira.issue.created`;
 - `jira.issue.create_failed`;
+- `mattermost.alert_thread.issue_notice_published`;
+- `mattermost.alert_thread.status_notice_published`;
+- `mattermost.alert_thread.reply_failed`;
+- `mattermost.user.lookup_failed`;
 - `jira.client.configured`;
 - `jira.field.resolved`;
 - `jira.issue_type.resolved`;

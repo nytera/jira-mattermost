@@ -14,7 +14,11 @@ from mm_jira_bot.domain import (
     backend_now,
     datetime_from_mattermost_ms,
 )
-from mm_jira_bot.formatting import format_incident_message
+from mm_jira_bot.formatting import (
+    format_incident_message,
+    format_thread_issue_created,
+    format_thread_status_changed,
+)
 from mm_jira_bot.logging import log_event
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
@@ -276,15 +280,19 @@ class IncidentBotService:
         )
         ticket = self.repository.get_by_post_id(post_id)
         assert ticket is not None
+        confirmed_by_display = await self._resolve_user_display(confirmed_by_user_id)
 
         try:
             await self._publish_incident_message_if_needed(
-                ticket, confirmed_by_user_id=confirmed_by_user_id, confirmed_at=confirmed_at
+                ticket,
+                confirmed_by_user_id=confirmed_by_user_id,
+                confirmed_by_display=confirmed_by_display,
+                confirmed_at=confirmed_at,
             )
             ticket = self.repository.get_by_post_id(post_id)
             assert ticket is not None
             await self._update_jira_for_confirmation(
-                ticket, confirmed_by_user_id=confirmed_by_user_id
+                ticket, confirmed_by=confirmed_by_display
             )
             self.repository.mark_confirmed(
                 post_id, user_id=confirmed_by_user_id, confirmed_at=confirmed_at
@@ -320,6 +328,21 @@ class IncidentBotService:
             incident_post_id=ticket.incident_post_id,
             confirmed_by_user_id=confirmed_by_user_id,
             source=source,
+        )
+        await self._post_alert_thread_reply(
+            post_id,
+            channel_id=ticket.mattermost_channel_id,
+            message=format_thread_status_changed(
+                jira_issue_key=ticket.jira_issue_key,
+                jira_issue_url=ticket.jira_issue_url,
+                incident_message_url=ticket.incident_message_url,
+                status_transitioned=bool(self.settings.jira_confirmed_status_id),
+            ),
+            event="mattermost.alert_thread.status_notice_published",
+            props={
+                "jira_issue_key": ticket.jira_issue_key,
+                "confirmed_by_user_id": confirmed_by_user_id,
+            },
         )
         return ConfirmationResult(
             status=ConfirmationStatus.CONFIRMED,
@@ -379,6 +402,15 @@ class IncidentBotService:
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=issue.key,
             )
+            await self._post_alert_thread_reply(
+                ticket.mattermost_post_id,
+                channel_id=ticket.mattermost_channel_id,
+                message=format_thread_issue_created(
+                    jira_issue_key=issue.key, jira_issue_url=issue.url
+                ),
+                event="mattermost.alert_thread.issue_notice_published",
+                props={"jira_issue_key": issue.key},
+            )
         except ApiError as exc:
             self.repository.mark_jira_create_failed(ticket.mattermost_post_id, str(exc))
             log_event(
@@ -389,18 +421,68 @@ class IncidentBotService:
                 error=str(exc),
             )
 
+    async def _resolve_user_display(self, user_id: str) -> str:
+        try:
+            return await self.mattermost.get_user_display_name(user_id)
+        except ApiError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "mattermost.user.lookup_failed",
+                mattermost_user_id=user_id,
+                error=str(exc),
+            )
+            return user_id
+
+    async def _post_alert_thread_reply(
+        self,
+        post_id: str,
+        *,
+        channel_id: str,
+        message: str,
+        event: str,
+        props: dict | None = None,
+    ) -> None:
+        """Reply in the alert thread; best-effort, never fails the caller."""
+        thread_props = {"mattermost_alert_post_id": post_id, **(props or {})}
+        try:
+            reply = await self.mattermost.create_post(
+                channel_id=channel_id,
+                message=message,
+                root_id=post_id,
+                props=thread_props,
+            )
+        except ApiError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "mattermost.alert_thread.reply_failed",
+                mattermost_post_id=post_id,
+                event_kind=event,
+                error=str(exc),
+            )
+            return
+        log_event(
+            logger,
+            logging.INFO,
+            event,
+            mattermost_post_id=post_id,
+            reply_post_id=reply.id,
+        )
+
     async def _publish_incident_message_if_needed(
         self,
         ticket: AlertTicket,
         *,
         confirmed_by_user_id: str,
+        confirmed_by_display: str,
         confirmed_at: datetime,
     ) -> None:
         if ticket.incident_post_id:
             return
         message = format_incident_message(
             ticket,
-            confirmed_by_user_id=confirmed_by_user_id,
+            confirmed_by=confirmed_by_display,
             confirmed_at=confirmed_at,
         )
         incident_post = await self.mattermost.create_post(
@@ -428,7 +510,7 @@ class IncidentBotService:
         self,
         ticket: AlertTicket,
         *,
-        confirmed_by_user_id: str,
+        confirmed_by: str,
     ) -> None:
         assert ticket.jira_issue_key is not None
         assert ticket.incident_message_url is not None
@@ -457,7 +539,7 @@ class IncidentBotService:
             await self.jira.add_confirmation_comment(
                 ticket.jira_issue_key,
                 incident_message_url=ticket.incident_message_url,
-                confirmed_by_user_id=confirmed_by_user_id,
+                confirmed_by_user_id=confirmed_by,
             )
             self.repository.mark_jira_confirmation_comment_added(
                 ticket.mattermost_post_id

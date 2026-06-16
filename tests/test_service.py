@@ -41,7 +41,17 @@ class FakeMattermostClient:
     async def get_post(self, post_id: str) -> MattermostPost:
         return self.posts[post_id]
 
-    async def create_post(self, *, channel_id: str, message: str, props: dict | None = None):
+    async def get_user_display_name(self, user_id: str) -> str:
+        return f"@{user_id}"
+
+    async def create_post(
+        self,
+        *,
+        channel_id: str,
+        message: str,
+        props: dict | None = None,
+        root_id: str | None = None,
+    ):
         post = MattermostPost(
             id=f"incidentpost{len(self.created_posts):014d}",
             channel_id=channel_id,
@@ -50,7 +60,13 @@ class FakeMattermostClient:
             create_at=1_700_000_100_000,
         )
         self.created_posts.append(
-            {"channel_id": channel_id, "message": message, "props": props, "post": post}
+            {
+                "channel_id": channel_id,
+                "message": message,
+                "props": props,
+                "root_id": root_id,
+                "post": post,
+            }
         )
         return post
 
@@ -264,6 +280,60 @@ async def test_confirms_incident_through_reaction(service):
     assert len(service.jira.comments) == 1
 
 
+@pytest.mark.asyncio
+async def test_replies_in_alert_thread_when_issue_created(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(post)
+
+    thread_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post.id
+    ]
+    assert len(thread_replies) == 1
+    reply = thread_replies[0]
+    assert reply["channel_id"] == "alerts-channel"
+    assert "OPS-1" in reply["message"]
+    assert "https://jira.example.com/browse/OPS-1" in reply["message"]
+
+
+@pytest.mark.asyncio
+async def test_replies_in_alert_thread_on_status_change(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=2)
+    )
+
+    thread_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post.id
+    ]
+    # One reply for issue creation, one for status change; no duplicates on retry.
+    assert len(thread_replies) == 2
+    status_reply = thread_replies[1]
+    assert status_reply["channel_id"] == "alerts-channel"
+    assert "OPS-1" in status_reply["message"]
+    assert "Валидный" in status_reply["message"]
+    assert "Сообщение в канале инцидентов" in status_reply["message"]
+
+    incident_posts = [
+        created
+        for created in service.mattermost.created_posts
+        if created["channel_id"] == "incidents-channel"
+    ]
+    assert len(incident_posts) == 1
+    assert "Подтвердил: `@validator`" in incident_posts[0]["message"]
+
+
 def test_extracts_post_id_from_mattermost_permalink():
     assert (
         parse_post_id_from_text(f"https://mattermost.example.com/team/pl/{POST_ID}")
@@ -319,7 +389,12 @@ async def test_repeated_confirmation_does_not_duplicate_incident_post(service):
         ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=2)
     )
 
-    assert len(service.mattermost.created_posts) == 1
+    incident_posts = [
+        created
+        for created in service.mattermost.created_posts
+        if created["channel_id"] == "incidents-channel"
+    ]
+    assert len(incident_posts) == 1
     assert len(service.jira.comments) == 1
 
 
@@ -581,12 +656,12 @@ def test_builds_incident_channel_message(service):
 
     message = format_incident_message(
         ticket,
-        confirmed_by_user_id="validator",
+        confirmed_by="@validator",
         confirmed_at=datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
     )
 
     assert "CPU usage is above 95%" in message
-    assert "Original alert" in message
+    assert "Исходный алерт" in message
     assert "OPS-1" in message
-    assert "validator" in message
-    assert "Confirmed at: `2026-05-30T01:30:00+03:00`" in message
+    assert "@validator" in message
+    assert "Время подтверждения: `2026-05-30T01:30:00+03:00`" in message
