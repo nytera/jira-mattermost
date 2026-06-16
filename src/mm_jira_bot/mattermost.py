@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import AsyncIterator
 from urllib.parse import urlparse, urlunparse
 
@@ -10,9 +9,10 @@ import websockets
 
 from mm_jira_bot.config import Settings
 from mm_jira_bot.domain import MattermostPost, ReactionEvent
-from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
+from mm_jira_bot.http import AsyncApiClient
+from mm_jira_bot.logging import get_logger
 
-logger = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 def build_mattermost_permalink(base_url: str, post_id: str) -> str:
@@ -75,16 +75,14 @@ def parse_reaction_event(payload: dict) -> ReactionEvent | None:
     )
 
 
-class MattermostClient:
+class MattermostClient(AsyncApiClient):
     def __init__(
         self,
         settings: Settings,
         *,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._settings = settings
-        self._own_client = http_client is None
-        self._client = http_client or httpx.AsyncClient(
+        client = http_client or httpx.AsyncClient(
             base_url=settings.mattermost_url,
             timeout=20,
             headers={
@@ -92,57 +90,42 @@ class MattermostClient:
                 "Accept": "application/json",
             },
         )
-
-    async def aclose(self) -> None:
-        if self._own_client:
-            await self._client.aclose()
+        super().__init__(settings, client, own_client=http_client is None, log=log)
 
     def permalink(self, post_id: str) -> str:
         return build_mattermost_permalink(self._settings.mattermost_url, post_id)
 
     async def get_post(self, post_id: str) -> MattermostPost:
-        async def operation() -> MattermostPost:
-            response = await self._client.get(f"/api/v4/posts/{post_id}")
-            self._raise_for_status(response, "Failed to get Mattermost post")
-            return MattermostPost.from_api(response.json())
-
-        return await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        return await self._request(
+            "GET",
+            f"/api/v4/posts/{post_id}",
+            error_message="Failed to get Mattermost post",
             event="mattermost.get_post",
+            parse=lambda response: MattermostPost.from_api(response.json()),
             mattermost_post_id=post_id,
         )
 
     async def get_channel_name(self, channel_id: str) -> str | None:
-        async def operation() -> str | None:
-            response = await self._client.get(f"/api/v4/channels/{channel_id}")
-            self._raise_for_status(response, "Failed to get Mattermost channel")
+        def parse(response: httpx.Response) -> str | None:
             data = response.json()
             return data.get("display_name") or data.get("name")
 
-        return await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        return await self._request(
+            "GET",
+            f"/api/v4/channels/{channel_id}",
+            error_message="Failed to get Mattermost channel",
             event="mattermost.get_channel",
+            parse=parse,
             mattermost_channel_id=channel_id,
         )
 
     async def get_user_display_name(self, user_id: str) -> str:
-        async def operation() -> str:
-            response = await self._client.get(f"/api/v4/users/{user_id}")
-            self._raise_for_status(response, "Failed to get Mattermost user")
-            return format_user_display(response.json()) or user_id
-
-        return await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        return await self._request(
+            "GET",
+            f"/api/v4/users/{user_id}",
+            error_message="Failed to get Mattermost user",
             event="mattermost.get_user",
+            parse=lambda response: format_user_display(response.json()) or user_id,
             mattermost_user_id=user_id,
         )
 
@@ -159,18 +142,13 @@ class MattermostClient:
             payload["root_id"] = root_id
         if props:
             payload["props"] = props
-
-        async def operation() -> MattermostPost:
-            response = await self._client.post("/api/v4/posts", json=payload)
-            self._raise_for_status(response, "Failed to create Mattermost post")
-            return MattermostPost.from_api(response.json())
-
-        return await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        return await self._request(
+            "POST",
+            "/api/v4/posts",
+            json=payload,
+            error_message="Failed to create Mattermost post",
             event="mattermost.create_post",
+            parse=lambda response: MattermostPost.from_api(response.json()),
             mattermost_channel_id=channel_id,
         )
 
@@ -179,23 +157,19 @@ class MattermostClient:
     ) -> list[MattermostPost]:
         per_page = min(max(limit, 1), 200)
 
-        async def operation() -> list[MattermostPost]:
-            response = await self._client.get(
-                f"/api/v4/channels/{channel_id}/posts",
-                params={"page": 0, "per_page": per_page},
-            )
-            self._raise_for_status(response, "Failed to fetch Mattermost channel posts")
+        def parse(response: httpx.Response) -> list[MattermostPost]:
             data = response.json()
             posts = data.get("posts", {})
             order = data.get("order", [])
             return [MattermostPost.from_api(posts[post_id]) for post_id in reversed(order)]
 
-        return await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        return await self._request(
+            "GET",
+            f"/api/v4/channels/{channel_id}/posts",
+            params={"page": 0, "per_page": per_page},
+            error_message="Failed to fetch Mattermost channel posts",
             event="mattermost.fetch_recent_posts",
+            parse=parse,
             mattermost_channel_id=channel_id,
         )
 
@@ -213,12 +187,3 @@ class MattermostClient:
             )
             async for raw_message in ws:
                 yield json.loads(raw_message)
-
-    def _raise_for_status(self, response: httpx.Response, message: str) -> None:
-        if response.is_success:
-            return
-        raise ApiError(
-            f"{message}: HTTP {response.status_code} {response.text}",
-            status_code=response.status_code,
-            retryable=is_retryable_status(response.status_code),
-        )

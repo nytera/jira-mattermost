@@ -26,23 +26,21 @@ def load_dotenv_file(path: str | Path = ".env") -> None:
         os.environ[key] = value
 
 
+def _env(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    return default if value is None or value == "" else value
+
+
 def _required(name: str) -> str:
-    value = os.getenv(name)
-    if value is None or value == "":
+    value = _env(name)
+    if value is None:
         raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
-
-
-def _optional(name: str, default: str | None = None) -> str | None:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return default
     return value
 
 
 def _first_required(*names: str) -> str:
     for name in names:
-        value = _optional(name)
+        value = _env(name)
         if value is not None:
             return value
     raise RuntimeError(
@@ -51,17 +49,13 @@ def _first_required(*names: str) -> str:
 
 
 def _int_env(name: str, default: int) -> int:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return default
-    return int(value)
+    value = _env(name)
+    return default if value is None else int(value)
 
 
 def _float_env(name: str, default: float) -> float:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return default
-    return float(value)
+    value = _env(name)
+    return default if value is None else float(value)
 
 
 @dataclass(frozen=True)
@@ -73,7 +67,6 @@ class Settings:
     mattermost_incident_reaction_name: str
     mattermost_bot_user_id: str
     jira_base_url: str
-    jira_email: str
     jira_api_token: str
     jira_project_key: str
     jira_issue_type: str
@@ -105,13 +98,11 @@ class Settings:
             mattermost_token=_required("MATTERMOST_TOKEN"),
             mattermost_alert_channel_id=_required("MATTERMOST_ALERT_CHANNEL_ID"),
             mattermost_incident_channel_id=_required("MATTERMOST_INCIDENT_CHANNEL_ID"),
-            mattermost_incident_reaction_name=_optional(
+            mattermost_incident_reaction_name=_env(
                 "MATTERMOST_INCIDENT_REACTION_NAME", "incident"
-            )
-            or "incident",
+            ),
             mattermost_bot_user_id=_required("MATTERMOST_BOT_USER_ID"),
             jira_base_url=_required("JIRA_BASE_URL").rstrip("/"),
-            jira_email=_required("JIRA_EMAIL"),
             jira_api_token=_required("JIRA_API_TOKEN"),
             jira_project_key=_required("JIRA_PROJECT_KEY"),
             jira_issue_type=_required("JIRA_ISSUE_TYPE"),
@@ -122,21 +113,20 @@ class Settings:
             ),
             jira_source_field=_required("JIRA_SOURCE_FIELD"),
             jira_is_crit_alert_field=_required("JIRA_IS_CRIT_ALERT_FIELD"),
-            jira_start_field=_optional("JIRA_START_FIELD"),
-            jira_confirmed_status_id=_optional("JIRA_CONFIRMED_STATUS_ID"),
+            jira_start_field=_env("JIRA_START_FIELD"),
+            jira_confirmed_status_id=_env("JIRA_CONFIRMED_STATUS_ID"),
             database_url=_required("DATABASE_URL"),
-            incident_timezone=_optional("INCIDENT_TIMEZONE", "Europe/Moscow")
-            or "Europe/Moscow",
-            mattermost_slash_token=_optional("MATTERMOST_SLASH_TOKEN"),
-            log_level=_optional("LOG_LEVEL", "INFO") or "INFO",
+            incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
+            mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
+            log_level=_env("LOG_LEVEL", "INFO"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),
             api_retry_base_delay_seconds=_float_env(
                 "API_RETRY_BASE_DELAY_SECONDS", 0.5
             ),
             pending_work_interval_seconds=_int_env("PENDING_WORK_INTERVAL_SECONDS", 30),
             backfill_recent_posts_limit=_int_env("BACKFILL_RECENT_POSTS_LIMIT", 0),
-            enable_websocket=_optional("ENABLE_WEBSOCKET", "true") != "false",
-            enable_backfill_on_startup=_optional("ENABLE_BACKFILL_ON_STARTUP", "false")
+            enable_websocket=_env("ENABLE_WEBSOCKET", "true") != "false",
+            enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false")
             == "true",
-            debug_admin_enabled=_optional("DEBUG_ADMIN_ENABLED", "false") == "true",
+            debug_admin_enabled=_env("DEBUG_ADMIN_ENABLED", "false") == "true",
         )

@@ -30,20 +30,8 @@ def datetime_from_mattermost_ms(value: int | None) -> datetime | None:
     return datetime.fromtimestamp(value / 1000, tz=_runtime_timezone)
 
 
-def mattermost_ms_from_datetime(value: datetime | None) -> int:
-    if value is None:
-        return 0
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return int(value.timestamp() * 1000)
-
-
 def backend_now() -> datetime:
     return datetime.now(_runtime_timezone)
-
-
-def utc_now() -> datetime:
-    return backend_now()
 
 
 @dataclass(frozen=True)

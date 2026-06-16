@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,12 +20,12 @@ from mm_jira_bot.formatting import (
     format_thread_status_changed,
     is_resolved_alert,
 )
-from mm_jira_bot.logging import log_event
+from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
 from mm_jira_bot.retry import ApiError
 
-logger = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 POST_ID_PATTERN = re.compile(r"(?:^|/)(?:_redirect/)?pl/([a-z0-9]{20,32})(?:$|[/?#])")
 BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
@@ -86,29 +85,20 @@ class IncidentBotService:
 
     async def handle_alert_post(self, post: MattermostPost) -> AlertTicket | None:
         if post.channel_id != self.settings.mattermost_alert_channel_id:
-            log_event(
-                logger,
-                logging.INFO,
-                "mattermost.post.skipped_non_alert_channel",
+            log.info("mattermost.post.skipped_non_alert_channel",
                 mattermost_post_id=post.id,
                 mattermost_channel_id=post.channel_id,
             )
             return None
 
         if post.user_id == self.settings.mattermost_bot_user_id:
-            log_event(
-                logger,
-                logging.INFO,
-                "mattermost.post.skipped_bot_message",
+            log.info("mattermost.post.skipped_bot_message",
                 mattermost_post_id=post.id,
             )
             return None
 
         if is_resolved_alert(post.message):
-            log_event(
-                logger,
-                logging.INFO,
-                "mattermost.post.skipped_resolved_alert",
+            log.info("mattermost.post.skipped_resolved_alert",
                 mattermost_post_id=post.id,
             )
             return None
@@ -120,19 +110,13 @@ class IncidentBotService:
         ticket, created = self.repository.create_or_get_alert(
             post, message_url=message_url, channel_name=channel_name
         )
-        log_event(
-            logger,
-            logging.INFO,
-            "mattermost.alert.received",
+        log.info("mattermost.alert.received",
             mattermost_post_id=post.id,
             created=created,
         )
 
         if not created and ticket.jira_issue_key:
-            log_event(
-                logger,
-                logging.INFO,
-                "jira.issue.skipped_existing_mapping",
+            log.info("jira.issue.skipped_existing_mapping",
                 mattermost_post_id=post.id,
                 jira_issue_key=ticket.jira_issue_key,
             )
@@ -158,10 +142,7 @@ class IncidentBotService:
     async def handle_reaction(
         self, reaction: ReactionEvent
     ) -> ConfirmationResult:
-        log_event(
-            logger,
-            logging.INFO,
-            "mattermost.reaction.received",
+        log.info("mattermost.reaction.received",
             mattermost_post_id=reaction.post_id,
             emoji_name=reaction.emoji_name,
             user_id=reaction.user_id,
@@ -174,10 +155,7 @@ class IncidentBotService:
 
         post = await self.mattermost.get_post(reaction.post_id)
         if post.channel_id != self.settings.mattermost_alert_channel_id:
-            log_event(
-                logger,
-                logging.INFO,
-                "mattermost.reaction.skipped_non_alert_channel",
+            log.info("mattermost.reaction.skipped_non_alert_channel",
                 mattermost_post_id=reaction.post_id,
                 mattermost_channel_id=post.channel_id,
             )
@@ -198,10 +176,7 @@ class IncidentBotService:
         )
 
     async def handle_slash_command(self, *, user_id: str, text: str) -> CommandResponse:
-        log_event(
-            logger,
-            logging.INFO,
-            "mattermost.slash_command.received",
+        log.info("mattermost.slash_command.received",
             user_id=user_id,
             text=text,
         )
@@ -217,10 +192,7 @@ class IncidentBotService:
         try:
             post = await self.mattermost.get_post(post_id)
         except ApiError as exc:
-            log_event(
-                logger,
-                logging.ERROR,
-                "mattermost.slash_command.post_lookup_failed",
+            log.error("mattermost.slash_command.post_lookup_failed",
                 mattermost_post_id=post_id,
                 error=str(exc),
             )
@@ -249,10 +221,7 @@ class IncidentBotService:
         confirmed_at = confirmed_at or backend_now()
         ticket = self.repository.get_by_post_id(post_id)
         if ticket is None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "incident.confirmation.no_ticket",
+            log.warning("incident.confirmation.no_ticket",
                 mattermost_post_id=post_id,
                 source=source,
             )
@@ -265,10 +234,7 @@ class IncidentBotService:
             self.repository.mark_pending_confirmation(
                 post_id, confirmed_by_user_id, confirmed_at
             )
-            log_event(
-                logger,
-                logging.INFO,
-                "incident.confirmation.pending_jira",
+            log.info("incident.confirmation.pending_jira",
                 mattermost_post_id=post_id,
                 source=source,
             )
@@ -281,10 +247,7 @@ class IncidentBotService:
             )
 
         if ticket.valid_incident and ticket.incident_post_id:
-            log_event(
-                logger,
-                logging.INFO,
-                "incident.confirmation.skipped_already_confirmed",
+            log.info("incident.confirmation.skipped_already_confirmed",
                 mattermost_post_id=post_id,
                 jira_issue_key=ticket.jira_issue_key,
             )
@@ -322,10 +285,7 @@ class IncidentBotService:
             )
         except ApiError as exc:
             self.repository.mark_confirmation_failed(post_id, str(exc))
-            log_event(
-                logger,
-                logging.ERROR,
-                "incident.confirmation.failed",
+            log.error("incident.confirmation.failed",
                 mattermost_post_id=post_id,
                 jira_issue_key=ticket.jira_issue_key,
                 error=str(exc),
@@ -342,10 +302,7 @@ class IncidentBotService:
 
         ticket = self.repository.get_by_post_id(post_id)
         assert ticket is not None
-        log_event(
-            logger,
-            logging.INFO,
-            "incident.confirmed",
+        log.info("incident.confirmed",
             mattermost_post_id=post_id,
             jira_issue_key=ticket.jira_issue_key,
             incident_post_id=ticket.incident_post_id,
@@ -438,10 +395,7 @@ class IncidentBotService:
                 self.repository.set_last_error(post_id, str(exc))
             else:
                 self.repository.mark_jira_create_failed(post_id, str(exc))
-            log_event(
-                logger,
-                logging.ERROR,
-                "debug_admin.jira_issue.recreate_failed",
+            log.error("debug_admin.jira_issue.recreate_failed",
                 mattermost_post_id=post_id,
                 force=force,
                 error=str(exc),
@@ -477,10 +431,7 @@ class IncidentBotService:
                 )
             except ApiError as exc:
                 self.repository.mark_confirmation_failed(post_id, str(exc))
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "debug_admin.jira_issue.confirmation_reapply_failed",
+                log.error("debug_admin.jira_issue.confirmation_reapply_failed",
                     mattermost_post_id=post_id,
                     jira_issue_key=issue.key,
                     error=str(exc),
@@ -496,10 +447,7 @@ class IncidentBotService:
                     previous_jira_issue_url=previous_url,
                 )
 
-        log_event(
-            logger,
-            logging.INFO,
-            "debug_admin.jira_issue.recreated",
+        log.info("debug_admin.jira_issue.recreated",
             mattermost_post_id=post_id,
             jira_issue_key=issue.key,
             previous_jira_issue_key=previous_key,
@@ -524,10 +472,7 @@ class IncidentBotService:
             self.repository.attach_jira_issue(
                 ticket.mattermost_post_id, issue.key, issue.url
             )
-            log_event(
-                logger,
-                logging.INFO,
-                "jira.issue.created",
+            log.info("jira.issue.created",
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=issue.key,
             )
@@ -542,10 +487,7 @@ class IncidentBotService:
             )
         except ApiError as exc:
             self.repository.mark_jira_create_failed(ticket.mattermost_post_id, str(exc))
-            log_event(
-                logger,
-                logging.ERROR,
-                "jira.issue.create_failed",
+            log.error("jira.issue.create_failed",
                 mattermost_post_id=ticket.mattermost_post_id,
                 error=str(exc),
             )
@@ -564,10 +506,7 @@ class IncidentBotService:
         try:
             return await self.mattermost.get_user_display_name(user_id)
         except ApiError as exc:
-            log_event(
-                logger,
-                logging.WARNING,
-                "mattermost.user.lookup_failed",
+            log.warning("mattermost.user.lookup_failed",
                 mattermost_user_id=user_id,
                 error=str(exc),
             )
@@ -592,19 +531,13 @@ class IncidentBotService:
                 props=thread_props,
             )
         except ApiError as exc:
-            log_event(
-                logger,
-                logging.WARNING,
-                "mattermost.alert_thread.reply_failed",
+            log.warning("mattermost.alert_thread.reply_failed",
                 mattermost_post_id=post_id,
                 event_kind=event,
                 error=str(exc),
             )
             return
-        log_event(
-            logger,
-            logging.INFO,
-            event,
+        log.info(event,
             mattermost_post_id=post_id,
             reply_post_id=reply.id,
         )
@@ -637,10 +570,7 @@ class IncidentBotService:
         self.repository.set_incident_message(
             ticket.mattermost_post_id, incident_post.id, incident_url
         )
-        log_event(
-            logger,
-            logging.INFO,
-            "mattermost.incident_message.published",
+        log.info("mattermost.incident_message.published",
             mattermost_post_id=ticket.mattermost_post_id,
             incident_post_id=incident_post.id,
         )
@@ -657,19 +587,13 @@ class IncidentBotService:
         jira_valid = await self.jira.get_valid_incident(ticket.jira_issue_key)
         if jira_valid is True:
             self.repository.sync_valid_incident_from_jira(ticket.mattermost_post_id)
-            log_event(
-                logger,
-                logging.INFO,
-                "jira.valid_incident.synced_true",
+            log.info("jira.valid_incident.synced_true",
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=ticket.jira_issue_key,
             )
         else:
             await self.jira.set_valid_incident(ticket.jira_issue_key, True)
-            log_event(
-                logger,
-                logging.INFO,
-                "jira.valid_incident.updated",
+            log.info("jira.valid_incident.updated",
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=ticket.jira_issue_key,
             )
@@ -683,10 +607,7 @@ class IncidentBotService:
             self.repository.mark_jira_confirmation_comment_added(
                 ticket.mattermost_post_id
             )
-            log_event(
-                logger,
-                logging.INFO,
-                "jira.comment.added",
+            log.info("jira.comment.added",
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=ticket.jira_issue_key,
             )
@@ -696,19 +617,13 @@ class IncidentBotService:
                 await self.jira.transition_issue(
                     ticket.jira_issue_key, self.settings.jira_confirmed_status_id
                 )
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "jira.issue.transitioned",
+                log.info("jira.issue.transitioned",
                     mattermost_post_id=ticket.mattermost_post_id,
                     jira_issue_key=ticket.jira_issue_key,
                     transition_id=self.settings.jira_confirmed_status_id,
                 )
             except ApiError as exc:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "jira.issue.transition_failed",
+                log.warning("jira.issue.transition_failed",
                     mattermost_post_id=ticket.mattermost_post_id,
                     jira_issue_key=ticket.jira_issue_key,
                     transition_id=self.settings.jira_confirmed_status_id,

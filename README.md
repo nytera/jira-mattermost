@@ -57,7 +57,6 @@ flowchart LR
 Для on-prem/Data Center Jira создайте personal access token и укажите:
 
 - `JIRA_BASE_URL`, например `https://jira.example.com`;
-- `JIRA_EMAIL`, хранится в настройках, но не используется в HTTP auth для Jira PAT;
 - `JIRA_API_TOKEN`, personal access token;
 - `JIRA_PROJECT_KEY`;
 - `JIRA_ISSUE_TYPE`, имя или numeric id issue type;
@@ -95,7 +94,6 @@ cp .env.example .env
 - `MATTERMOST_INCIDENT_REACTION_NAME=incident`
 - `MATTERMOST_BOT_USER_ID`
 - `JIRA_BASE_URL`
-- `JIRA_EMAIL`
 - `JIRA_API_TOKEN`
 - `JIRA_PROJECT_KEY`
 - `JIRA_ISSUE_TYPE`

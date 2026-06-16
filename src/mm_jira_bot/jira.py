@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -16,10 +15,11 @@ from mm_jira_bot.domain import (
     runtime_timezone,
 )
 from mm_jira_bot.formatting import truncate_for_summary
-from mm_jira_bot.logging import log_event
-from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
+from mm_jira_bot.http import AsyncApiClient
+from mm_jira_bot.logging import get_logger
+from mm_jira_bot.retry import ApiError, is_retryable_status
 
-logger = logging.getLogger(__name__)
+log = get_logger(__name__)
 CUSTOM_FIELD_ID_PATTERN = re.compile(r"^customfield_\d+$")
 VALID_INCIDENT_EMPTY_VALUE = "Не заполнено"
 VALID_INCIDENT_CONFIRMED_VALUE = "Валидный"
@@ -147,21 +147,17 @@ def build_confirmation_comment(
     )
 
 
-class JiraClient:
+class JiraClient(AsyncApiClient):
     def __init__(
         self,
         settings: Settings,
         *,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._settings = settings
         self._field_ids: dict[str, str] = {}
         self._create_fields: dict[str, Any] | None = None
         self._issue_type_id: str | None = None
-        self._own_client = http_client is None
-        log_event(
-            logger,
-            logging.INFO,
+        log.info(
             "jira.client.configured",
             jira_base_url=settings.jira_base_url,
             jira_auth_type="bearer",
@@ -173,15 +169,12 @@ class JiraClient:
             configured_is_crit_alert_field=settings.jira_is_crit_alert_field,
             configured_start_field=settings.jira_start_field,
         )
-        self._client = http_client or httpx.AsyncClient(
+        client = http_client or httpx.AsyncClient(
             base_url=settings.jira_base_url,
             timeout=20,
             headers=build_jira_auth_headers(settings),
         )
-
-    async def aclose(self) -> None:
-        if self._own_client:
-            await self._client.aclose()
+        super().__init__(settings, client, own_client=http_client is None, log=log)
 
     def _api_path(self, path: str) -> str:
         return f"/rest/api/2/{path.lstrip('/')}"
@@ -227,9 +220,7 @@ class JiraClient:
         )
         fields = payload["fields"]
         description = fields.get("description")
-        log_event(
-            logger,
-            logging.INFO,
+        log.info(
             "jira.issue.payload_prepared",
             mattermost_post_id=post.id,
             jira_project_key=self._settings.jira_project_key,
@@ -246,37 +237,29 @@ class JiraClient:
             is_crit_alert_option=_payload_option_summary(is_crit_alert_option),
         )
 
-        async def operation() -> JiraIssue:
-            response = await self._client.post(self._api_path("issue"), json=payload)
-            self._raise_for_status(response, "Failed to create Jira issue")
-            data = response.json()
-            key = data["key"]
-            log_event(
-                logger,
-                logging.INFO,
+        def parse(response: httpx.Response) -> JiraIssue:
+            key = response.json()["key"]
+            log.info(
                 "jira.issue.create_succeeded",
                 mattermost_post_id=post.id,
                 jira_issue_key=key,
             )
             return JiraIssue(key=key, url=f"{self._settings.jira_base_url}/browse/{key}")
 
-        return await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        return await self._request(
+            "POST",
+            self._api_path("issue"),
+            json=payload,
+            error_message="Failed to create Jira issue",
             event="jira.create_issue",
+            parse=parse,
             mattermost_post_id=post.id,
         )
 
     async def get_valid_incident(self, issue_key: str) -> bool | None:
         field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
 
-        async def operation() -> bool | None:
-            response = await self._client.get(
-                self._api_path(f"issue/{issue_key}"), params={"fields": field_id}
-            )
-            self._raise_for_status(response, "Failed to read Jira issue")
+        def parse(response: httpx.Response) -> bool | None:
             fields = response.json().get("fields", {})
             value = fields.get(field_id)
             if value is None:
@@ -290,12 +273,13 @@ class JiraClient:
                 return None
             return bool(value)
 
-        return await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        return await self._request(
+            "GET",
+            self._api_path(f"issue/{issue_key}"),
+            params={"fields": field_id},
+            error_message="Failed to read Jira issue",
             event="jira.get_issue",
+            parse=parse,
             jira_issue_key=issue_key,
         )
 
@@ -306,27 +290,18 @@ class JiraClient:
         )
         option_payload = await self._get_option_payload(field_id, option_value)
         payload = {"fields": {field_id: option_payload}}
-        log_event(
-            logger,
-            logging.INFO,
+        log.info(
             "jira.valid_incident.payload_prepared",
             jira_issue_key=issue_key,
             field_id=field_id,
             requested_value=option_value,
             option_payload=_payload_option_summary(option_payload),
         )
-
-        async def operation() -> None:
-            response = await self._client.put(
-                self._api_path(f"issue/{issue_key}"), json=payload
-            )
-            self._raise_for_status(response, "Failed to update Jira issue")
-
-        await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        await self._request(
+            "PUT",
+            self._api_path(f"issue/{issue_key}"),
+            json=payload,
+            error_message="Failed to update Jira issue",
             event="jira.update_valid_incident",
             jira_issue_key=issue_key,
         )
@@ -344,36 +319,21 @@ class JiraClient:
                 confirmed_by_user_id=confirmed_by_user_id,
             )
         }
-
-        async def operation() -> None:
-            response = await self._client.post(
-                self._api_path(f"issue/{issue_key}/comment"), json=payload
-            )
-            self._raise_for_status(response, "Failed to add Jira comment")
-
-        await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        await self._request(
+            "POST",
+            self._api_path(f"issue/{issue_key}/comment"),
+            json=payload,
+            error_message="Failed to add Jira comment",
             event="jira.add_comment",
             jira_issue_key=issue_key,
         )
 
     async def transition_issue(self, issue_key: str, transition_id: str) -> None:
-        payload = {"transition": {"id": transition_id}}
-
-        async def operation() -> None:
-            response = await self._client.post(
-                self._api_path(f"issue/{issue_key}/transitions"), json=payload
-            )
-            self._raise_for_status(response, "Failed to transition Jira issue")
-
-        await retry_async(
-            operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
+        await self._request(
+            "POST",
+            self._api_path(f"issue/{issue_key}/transitions"),
+            json={"transition": {"id": transition_id}},
+            error_message="Failed to transition Jira issue",
             event="jira.transition",
             jira_issue_key=issue_key,
             transition_id=transition_id,
@@ -382,9 +342,7 @@ class JiraClient:
     async def _get_field_id(self, configured_field: str) -> str:
         field_id = self._field_ids.get(configured_field)
         if field_id is not None:
-            log_event(
-                logger,
-                logging.DEBUG,
+            log.debug(
                 "jira.field.cache_hit",
                 jira_field_configured=configured_field,
                 jira_field_id=field_id,
@@ -393,9 +351,7 @@ class JiraClient:
 
         if CUSTOM_FIELD_ID_PATTERN.fullmatch(configured_field):
             self._field_ids[configured_field] = configured_field
-            log_event(
-                logger,
-                logging.INFO,
+            log.info(
                 "jira.field.using_configured_id",
                 jira_field_configured=configured_field,
                 jira_field_id=configured_field,
@@ -411,9 +367,7 @@ class JiraClient:
                     field_id = field.get("id")
                     if isinstance(field_id, str) and field_id:
                         schema = field.get("schema")
-                        log_event(
-                            logger,
-                            logging.INFO,
+                        log.info(
                             "jira.field.resolved",
                             jira_field_configured=configured_field,
                             jira_field_id=field_id,
@@ -426,11 +380,8 @@ class JiraClient:
                 retryable=False,
             )
 
-        resolved_field_id = await retry_async(
+        resolved_field_id = await self._retry(
             operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
             event="jira.get_field_id",
             jira_field_name=configured_field,
         )
@@ -439,9 +390,7 @@ class JiraClient:
 
     async def _get_create_fields(self) -> dict[str, Any]:
         if self._create_fields is not None:
-            log_event(
-                logger,
-                logging.DEBUG,
+            log.debug(
                 "jira.create_metadata.cache_hit",
                 jira_project_key=self._settings.jira_project_key,
                 jira_issue_type=self._settings.jira_issue_type,
@@ -487,9 +436,7 @@ class JiraClient:
                     and isinstance(issue_type_id, str)
                     and issue_type_id
                 ):
-                    log_event(
-                        logger,
-                        logging.INFO,
+                    log.info(
                         "jira.issue_type.resolved",
                         jira_project_key=self._settings.jira_project_key,
                         jira_issue_type=self._settings.jira_issue_type,
@@ -504,11 +451,8 @@ class JiraClient:
                 retryable=False,
             )
 
-        self._issue_type_id = await retry_async(
+        self._issue_type_id = await self._retry(
             operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
             event="jira.get_issue_types",
             jira_project_key=self._settings.jira_project_key,
             jira_issue_type=self._settings.jira_issue_type,
@@ -531,9 +475,7 @@ class JiraClient:
             data = response.json()
             fields = data.get("fields")
             if isinstance(fields, dict):
-                log_event(
-                    logger,
-                    logging.INFO,
+                log.info(
                     "jira.create_metadata.loaded",
                     jira_project_key=self._settings.jira_project_key,
                     jira_issue_type=self._settings.jira_issue_type,
@@ -550,11 +492,8 @@ class JiraClient:
                 retryable=False,
             )
 
-        return await retry_async(
+        return await self._retry(
             operation,
-            attempts=self._settings.api_retry_attempts,
-            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
-            logger=logger,
             event="jira.get_issue_type_create_metadata",
             jira_project_key=self._settings.jira_project_key,
             jira_issue_type=self._settings.jira_issue_type,
@@ -565,9 +504,7 @@ class JiraClient:
         fields = await self._get_create_fields()
         field = fields.get(field_id)
         if not isinstance(field, dict):
-            log_event(
-                logger,
-                logging.WARNING,
+            log.warning(
                 "jira.option.field_missing_in_create_metadata",
                 jira_field_id=field_id,
                 requested_value=value,
@@ -576,9 +513,7 @@ class JiraClient:
 
         allowed_values = field.get("allowedValues")
         if not isinstance(allowed_values, list) or not allowed_values:
-            log_event(
-                logger,
-                logging.WARNING,
+            log.warning(
                 "jira.option.no_allowed_values",
                 jira_field_id=field_id,
                 requested_value=value,
@@ -600,9 +535,7 @@ class JiraClient:
                 payload = jira_option(
                     option_value, option_id if isinstance(option_id, str) else None
                 )
-                log_event(
-                    logger,
-                    logging.INFO,
+                log.info(
                     "jira.option.resolved",
                     jira_field_id=field_id,
                     jira_field_name=field.get("name"),
@@ -613,9 +546,7 @@ class JiraClient:
                 )
                 return payload
 
-        log_event(
-            logger,
-            logging.ERROR,
+        log.error(
             "jira.option.not_found",
             jira_field_id=field_id,
             jira_field_name=field.get("name"),
@@ -631,9 +562,7 @@ class JiraClient:
     def _raise_for_status(self, response: httpx.Response, message: str) -> None:
         if response.is_success:
             return
-        log_event(
-            logger,
-            logging.ERROR,
+        log.error(
             "jira.http.error",
             status_code=response.status_code,
             reason_phrase=response.reason_phrase,

@@ -39,3 +39,26 @@ def log_event(
     **fields: Any,
 ) -> None:
     logger.log(level, event, extra={"extra_fields": {"event": event, **fields}})
+
+
+class EventLogger:
+    """Binds a stdlib logger so call sites read ``log.info(event, **fields)``."""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    def info(self, event: str, **fields: Any) -> None:
+        log_event(self._logger, logging.INFO, event, **fields)
+
+    def warning(self, event: str, **fields: Any) -> None:
+        log_event(self._logger, logging.WARNING, event, **fields)
+
+    def error(self, event: str, **fields: Any) -> None:
+        log_event(self._logger, logging.ERROR, event, **fields)
+
+    def debug(self, event: str, **fields: Any) -> None:
+        log_event(self._logger, logging.DEBUG, event, **fields)
+
+
+def get_logger(name: str) -> EventLogger:
+    return EventLogger(logging.getLogger(name))

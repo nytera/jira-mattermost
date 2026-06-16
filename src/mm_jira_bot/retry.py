@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from mm_jira_bot.logging import log_event
+from mm_jira_bot.logging import EventLogger
 
 T = TypeVar("T")
 
@@ -32,7 +31,7 @@ async def retry_async(
     *,
     attempts: int,
     base_delay_seconds: float,
-    logger: logging.Logger,
+    logger: EventLogger,
     event: str,
     **log_fields: object,
 ) -> T:
@@ -45,9 +44,7 @@ async def retry_async(
             if not exc.retryable or attempt >= attempts:
                 raise
             delay = base_delay_seconds * (2 ** (attempt - 1))
-            log_event(
-                logger,
-                logging.WARNING,
+            logger.warning(
                 f"{event}.retry",
                 attempt=attempt,
                 delay_seconds=delay,

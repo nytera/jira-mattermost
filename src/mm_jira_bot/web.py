@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from contextlib import asynccontextmanager, suppress
 from urllib.parse import parse_qs
 
@@ -10,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from mm_jira_bot.config import Settings
 from mm_jira_bot.jira import JiraClient
-from mm_jira_bot.logging import configure_logging, log_event
+from mm_jira_bot.logging import configure_logging, get_logger
 from mm_jira_bot.mattermost import MattermostClient
 from mm_jira_bot.repository import (
     AlertTicket,
@@ -21,7 +20,7 @@ from mm_jira_bot.repository import (
 )
 from mm_jira_bot.service import IncidentBotService
 
-logger = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 def _datetime_iso(value) -> str | None:
@@ -197,7 +196,7 @@ async def websocket_loop(service: IncidentBotService) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log_event(logger, logging.ERROR, "mattermost.websocket.failed", error=str(exc))
+            log.error("mattermost.websocket.failed", error=str(exc))
             await asyncio.sleep(5)
 
 
@@ -208,7 +207,7 @@ async def pending_work_loop(service: IncidentBotService) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log_event(logger, logging.ERROR, "pending_work.failed", error=str(exc))
+            log.error("pending_work.failed", error=str(exc))
         await asyncio.sleep(service.settings.pending_work_interval_seconds)
 
 
@@ -246,7 +245,7 @@ def create_app(
             try:
                 await service.backfill_recent_alerts()
             except Exception as exc:
-                log_event(logger, logging.ERROR, "startup.backfill_failed", error=str(exc))
+                log.error("startup.backfill_failed", error=str(exc))
         if settings.enable_websocket:
             app.state.background_tasks.append(asyncio.create_task(websocket_loop(service)))
         app.state.background_tasks.append(asyncio.create_task(pending_work_loop(service)))
@@ -275,10 +274,7 @@ def create_app(
 
         slash_token = settings.mattermost_slash_token
         if slash_token and form.get("token") != slash_token:
-            log_event(
-                logger,
-                logging.WARNING,
-                "mattermost.slash_command.invalid_token",
+            log.warning("mattermost.slash_command.invalid_token",
                 user_id=form.get("user_id"),
             )
             return JSONResponse(

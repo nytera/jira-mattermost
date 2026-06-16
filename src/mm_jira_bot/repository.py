@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Iterable
 
 from sqlalchemy import (
     Boolean,
@@ -208,13 +208,7 @@ class AlertTicketRepository:
             return ticket, True
 
     def attach_jira_issue(self, post_id: str, issue_key: str, issue_url: str) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
-            ticket.jira_issue_key = issue_key
-            ticket.jira_issue_url = issue_url
-            ticket.creation_status = "jira_created"
-            ticket.last_error = None
-            session.commit()
+        self.replace_jira_issue(post_id, issue_key, issue_url)
 
     def replace_jira_issue(
         self,
@@ -224,34 +218,33 @@ class AlertTicketRepository:
         *,
         reset_confirmation_comment: bool = False,
     ) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             ticket.jira_issue_key = issue_key
             ticket.jira_issue_url = issue_url
             ticket.creation_status = "jira_created"
             ticket.last_error = None
             if reset_confirmation_comment:
                 ticket.jira_confirmation_comment_added = False
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def mark_jira_create_failed(self, post_id: str, error: str) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             ticket.creation_status = "failed_jira"
             ticket.last_error = error
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def set_last_error(self, post_id: str, error: str) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             ticket.last_error = error
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def mark_pending_confirmation(
         self, post_id: str, user_id: str, confirmed_at: datetime
     ) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             if ticket.valid_incident:
                 return
             ticket.confirmation_status = "pending_confirmation"
@@ -260,35 +253,36 @@ class AlertTicketRepository:
             if ticket.confirmed_by_user_id is None:
                 ticket.confirmed_by_user_id = user_id
                 ticket.confirmed_at = confirmed_at
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def mark_confirmation_started(
         self, post_id: str, user_id: str, confirmed_at: datetime
     ) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             if not ticket.valid_incident:
                 ticket.confirmation_status = "confirming"
             if ticket.confirmed_by_user_id is None:
                 ticket.confirmed_by_user_id = user_id
             if ticket.confirmed_at is None:
                 ticket.confirmed_at = confirmed_at
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def set_incident_message(
         self, post_id: str, incident_post_id: str, incident_message_url: str
     ) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             ticket.incident_post_id = incident_post_id
             ticket.incident_message_url = incident_message_url
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def mark_jira_confirmation_comment_added(self, post_id: str) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             ticket.jira_confirmation_comment_added = True
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def mark_confirmed(
         self,
@@ -297,8 +291,7 @@ class AlertTicketRepository:
         user_id: str,
         confirmed_at: datetime,
     ) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             ticket.valid_incident = True
             ticket.confirmation_status = "confirmed"
             ticket.confirmed_by_user_id = ticket.confirmed_by_user_id or user_id
@@ -306,23 +299,24 @@ class AlertTicketRepository:
             ticket.pending_confirmation_by_user_id = None
             ticket.pending_confirmation_at = None
             ticket.last_error = None
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def mark_confirmation_failed(self, post_id: str, error: str) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             if not ticket.valid_incident:
                 ticket.confirmation_status = "failed_confirmation"
             ticket.last_error = error
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def sync_valid_incident_from_jira(self, post_id: str) -> None:
-        with self._session_factory() as session:
-            ticket = self._require_ticket(session, post_id)
+        def apply(ticket: AlertTicket) -> None:
             ticket.valid_incident = True
             if ticket.confirmation_status not in {"confirmed", "confirming"}:
                 ticket.confirmation_status = "confirmed"
-            session.commit()
+
+        self._mutate(post_id, apply)
 
     def list_pending_jira(self, limit: int = 50) -> list[AlertTicket]:
         with self._session_factory() as session:
@@ -359,6 +353,14 @@ class AlertTicketRepository:
             raise KeyError(f"Alert ticket for post_id={post_id} not found")
         return ticket
 
+    def _mutate(
+        self, post_id: str, apply: Callable[[AlertTicket], None]
+    ) -> None:
+        with self._session_factory() as session:
+            ticket = self._require_ticket(session, post_id)
+            apply(ticket)
+            session.commit()
+
 
 def ticket_to_post(ticket: AlertTicket) -> MattermostPost:
     create_at = 0
@@ -375,7 +377,3 @@ def ticket_to_post(ticket: AlertTicket) -> MattermostPost:
         create_at=create_at,
         channel_name=ticket.mattermost_channel_name,
     )
-
-
-def tickets_to_ids(tickets: Iterable[AlertTicket]) -> list[str]:
-    return [ticket.mattermost_post_id for ticket in tickets]
