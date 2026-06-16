@@ -80,8 +80,6 @@ class Settings:
     jira_is_crit_alert_field: str
     jira_confirmed_status_id: str | None
     database_url: str
-    jira_auth_type: str = "bearer"
-    jira_rest_api_version: str = "2"
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     log_level: str = "INFO"
@@ -119,8 +117,6 @@ class Settings:
             jira_is_crit_alert_field=_required("JIRA_IS_CRIT_ALERT_FIELD"),
             jira_confirmed_status_id=_optional("JIRA_CONFIRMED_STATUS_ID"),
             database_url=_required("DATABASE_URL"),
-            jira_auth_type=_optional("JIRA_AUTH_TYPE", "bearer") or "bearer",
-            jira_rest_api_version=_optional("JIRA_REST_API_VERSION", "2") or "2",
             incident_timezone=_optional("INCIDENT_TIMEZONE", "Europe/Moscow")
             or "Europe/Moscow",
             mattermost_slash_token=_optional("MATTERMOST_SLASH_TOKEN"),

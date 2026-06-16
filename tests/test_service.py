@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 from dataclasses import replace
@@ -440,16 +439,7 @@ async def test_jira_client_uses_bearer_auth_by_default(settings):
 
 
 @pytest.mark.asyncio
-async def test_jira_client_can_use_email_token_basic_auth(settings):
-    headers = jira_module.build_jira_auth_headers(replace(settings, jira_auth_type="basic"))
-
-    expected_token = base64.b64encode(b"bot@example.com:jira-token").decode("ascii")
-    assert headers["Authorization"] == f"Basic {expected_token}"
-    assert headers["Content-Type"] == "application/json"
-
-
-@pytest.mark.asyncio
-async def test_jira_client_uses_configured_rest_api_version(settings):
+async def test_jira_client_uses_rest_api_v2(settings):
     requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

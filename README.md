@@ -57,10 +57,8 @@ flowchart LR
 Для on-prem/Data Center Jira создайте personal access token и укажите:
 
 - `JIRA_BASE_URL`, например `https://jira.example.com`;
-- `JIRA_EMAIL`, для `bearer`-auth хранится в настройках, но не используется в HTTP auth;
+- `JIRA_EMAIL`, хранится в настройках, но не используется в HTTP auth для Jira PAT;
 - `JIRA_API_TOKEN`, personal access token;
-- `JIRA_AUTH_TYPE`, `bearer` для on-prem/Data Center PAT или `basic` для Cloud email + API token;
-- `JIRA_REST_API_VERSION`, `2` для on-prem/Data Center или `3` для Cloud;
 - `JIRA_PROJECT_KEY`;
 - `JIRA_ISSUE_TYPE`, имя или numeric id issue type;
 - `JIRA_VALID_INCIDENT_FIELD`, например `Валидность`;
@@ -70,14 +68,12 @@ flowchart LR
 
 Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его.
 
-Для Jira 9.x on-prem/Data Center по умолчанию используется REST API v2 и `Authorization: Bearer ...`. Для option-полей (`select`, `radiobuttons`) бот берет допустимые значения из issue-type create metadata:
+Для Jira 9.x on-prem/Data Center используется REST API v2 и `Authorization: Bearer ...`. Для option-полей (`select`, `radiobuttons`) бот берет допустимые значения из issue-type create metadata:
 
 - `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes`;
 - `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes/{issueTypeId}`.
 
 `JIRA_SOURCE_FIELD` должен иметь option `Crit alert`, а `JIRA_IS_CRIT_ALERT_FIELD` должен иметь option `Да` для выбранных `JIRA_PROJECT_KEY` и `JIRA_ISSUE_TYPE`. `JIRA_VALID_INCIDENT_FIELD` при создании issue не отправляется, потому что дефолт выставляет сама Jira; при подтверждении бот обновляет это поле в option `Валидный`.
-
-Для Jira Cloud задайте `JIRA_REST_API_VERSION=3` и `JIRA_AUTH_TYPE=basic`; Cloud-путь поддерживается, но основной проверенный сценарий сейчас on-prem/Data Center Jira 9.x.
 
 ## Configuration
 
@@ -98,8 +94,6 @@ cp .env.example .env
 - `JIRA_BASE_URL`
 - `JIRA_EMAIL`
 - `JIRA_API_TOKEN`
-- `JIRA_AUTH_TYPE=bearer`
-- `JIRA_REST_API_VERSION=2`
 - `JIRA_PROJECT_KEY`
 - `JIRA_ISSUE_TYPE`
 - `JIRA_VALID_INCIDENT_FIELD`
@@ -239,4 +233,3 @@ pytest
 - Mattermost API documentation: https://developers.mattermost.com/api-documentation/
 - Mattermost slash commands: https://docs.mattermost.com/integrations-guide/slash-commands.html
 - Jira Data Center REST API: https://developer.atlassian.com/server/jira/platform/rest-apis/
-- Jira Cloud REST API v3: https://developer.atlassian.com/cloud/jira/platform/rest/v3/
