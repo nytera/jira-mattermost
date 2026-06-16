@@ -94,6 +94,12 @@ class AlertTicketRepository:
                 select(AlertTicket).where(AlertTicket.mattermost_post_id == post_id)
             )
 
+    def get_by_incident_post_id(self, post_id: str) -> AlertTicket | None:
+        with self._session_factory() as session:
+            return session.scalar(
+                select(AlertTicket).where(AlertTicket.incident_post_id == post_id)
+            )
+
     def list_alerts(
         self, *, limit: int = 50, status: str | None = None
     ) -> list[AlertTicket]:

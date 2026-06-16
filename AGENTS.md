@@ -64,7 +64,7 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 1. **Alert → Jira issue** (`handle_alert_post`): skip non-alert-channel and own-bot posts → `create_or_get_alert` inserts an `alert_tickets` row (unique `mattermost_post_id`) → `_ensure_jira_issue` creates the Jira issue, stores `jira_issue_key`, and replies in the alert thread with the issue link. The DB row is created *before* the Jira call so a crash mid-create is retried later.
 2. **Confirmation → valid incident** (`confirm_incident`, triggered by the `:incident:` reaction or `/incident <permalink>`): posts to the incidents channel, sets Jira `Valid Incident = Валидный`, adds a comment, optional transition, and replies in the alert thread about the status change. If the Jira issue does not exist yet, it is saved as `pending_confirmation` and completed by `pending_work_loop`.
 
-There is also a **lightweight validity path** (`apply_validity_label`, triggered by the two configurable reactions `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` → `Ложный` and `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` → `Ожидаемый`). It only sets Jira's `Валидность` field (`JiraClient.set_validity`) and replies in the alert thread — no incidents-channel post, comment, or transition. Last reaction wins: each distinct label overwrites the field; the `validity_label` column guards against re-applying the same label (no duplicate replies). It does **not** touch the `valid_incident` confirmation state machine and is best-effort (no `pending_work_loop` retry) — if the Jira issue is not ready, the update is skipped.
+There is also a **lightweight validity path** (`apply_validity_label`, triggered by the two configurable reactions `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` → `Ложный` and `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` → `Ожидаемый`). It sets Jira's `Валидность` field (`JiraClient.set_validity`), optionally sets `JIRA_END_FIELD` to the reaction time, and replies in the alert thread — no incidents-channel post, comment, or transition. Last reaction wins: each distinct label overwrites the field; the `validity_label` column guards against re-applying the same label (no duplicate replies). It does **not** touch the `valid_incident` confirmation state machine and is best-effort (no `pending_work_loop` retry) — if the Jira issue is not ready, the update is skipped.
 
 Alert-thread replies (`_post_alert_thread_reply`) are best-effort: they reuse
 the alert `post_id` as `root_id`, are guarded once-only by the same early
@@ -96,6 +96,13 @@ arrival time on create via `format_jira_datetime()`. Jira 9.x REST v2 wants ISO
 `2026-06-16T14:30:00.000+0300`; the `dd.MM.yyyy HH:mm` seen in the UI is only a
 display format. It is not an option field, so createmeta option resolution does
 not apply.
+
+`JIRA_END_FIELD` (optional) is a **date-time picker** field set to the reaction
+time when the lightweight `Ложный` / `Ожидаемый` validity path runs. For valid
+incidents, it is not updated by the confirmation flow; it is updated later when
+someone adds a Mattermost checkmark reaction (`white_check_mark`,
+`heavy_check_mark`, or `ballot_box_with_check`) on the incident message posted
+by the bot. Checkmarks on incident thread replies are ignored.
 
 ### Persistence & timezone
 

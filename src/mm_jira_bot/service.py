@@ -35,6 +35,11 @@ log = get_logger(__name__)
 
 POST_ID_PATTERN = re.compile(r"(?:^|/)(?:_redirect/)?pl/([a-z0-9]{20,32})(?:$|[/?#])")
 BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
+INCIDENT_END_REACTION_NAMES = {
+    "white_check_mark",
+    "heavy_check_mark",
+    "ballot_box_with_check",
+}
 
 
 @dataclass(frozen=True)
@@ -177,13 +182,21 @@ class IncidentBotService:
         validity_label = (
             None if is_incident else self._validity_label_for_emoji(reaction.emoji_name)
         )
-        if not is_incident and validity_label is None:
+        is_incident_end = reaction.emoji_name in INCIDENT_END_REACTION_NAMES
+        if not is_incident and validity_label is None and not is_incident_end:
             return ConfirmationResult(
                 status=ConfirmationStatus.IGNORED,
                 message="Reaction ignored: not configured incident reaction.",
             )
 
         post = await self.mattermost.get_post(reaction.post_id)
+        if is_incident_end and post.channel_id == self.settings.mattermost_incident_channel_id:
+            return await self.apply_incident_end_time(
+                post,
+                ended_at=datetime_from_mattermost_ms(reaction.create_at) or backend_now(),
+                source="reaction",
+            )
+
         if post.channel_id != self.settings.mattermost_alert_channel_id:
             log.info("mattermost.reaction.skipped_non_alert_channel",
                 mattermost_post_id=reaction.post_id,
@@ -206,9 +219,80 @@ class IncidentBotService:
                 source="reaction",
             )
 
-        assert validity_label is not None
+        if validity_label is None:
+            return ConfirmationResult(
+                status=ConfirmationStatus.IGNORED,
+                message="Reaction ignored: checkmark is only handled in incident threads.",
+            )
+
         return await self.apply_validity_label(
-            reaction.post_id, validity_label=validity_label, source="reaction"
+            reaction.post_id,
+            validity_label=validity_label,
+            validity_set_at=datetime_from_mattermost_ms(reaction.create_at),
+            source="reaction",
+        )
+
+    async def apply_incident_end_time(
+        self,
+        post: MattermostPost,
+        *,
+        ended_at: datetime,
+        source: str,
+    ) -> ConfirmationResult:
+        ticket = self.repository.get_by_incident_post_id(post.id)
+        if ticket is None:
+            log.info(
+                "incident.end_time.skipped_unknown_post",
+                mattermost_post_id=post.id,
+                source=source,
+            )
+            return ConfirmationResult(
+                status=ConfirmationStatus.IGNORED,
+                message="Reaction ignored: no incident mapping found for this post.",
+            )
+        if not ticket.valid_incident or ticket.jira_issue_key is None:
+            log.info(
+                "incident.end_time.skipped_not_valid",
+                mattermost_post_id=ticket.mattermost_post_id,
+                incident_post_id=ticket.incident_post_id,
+                source=source,
+            )
+            return ConfirmationResult(
+                status=ConfirmationStatus.IGNORED,
+                message="Reaction ignored: incident is not confirmed.",
+            )
+
+        try:
+            await self.jira.set_end_time(ticket.jira_issue_key, ended_at)
+        except ApiError as exc:
+            self.repository.set_last_error(ticket.mattermost_post_id, str(exc))
+            log.error(
+                "incident.end_time.failed",
+                mattermost_post_id=ticket.mattermost_post_id,
+                incident_post_id=ticket.incident_post_id,
+                jira_issue_key=ticket.jira_issue_key,
+                error=str(exc),
+            )
+            return ConfirmationResult(
+                status=ConfirmationStatus.ERROR,
+                message="Incident end time update failed; please retry.",
+                jira_issue_url=ticket.jira_issue_url,
+                incident_message_url=ticket.incident_message_url,
+            )
+
+        log.info(
+            "incident.end_time.updated",
+            mattermost_post_id=ticket.mattermost_post_id,
+            incident_post_id=ticket.incident_post_id,
+            jira_issue_key=ticket.jira_issue_key,
+            ended_at=ended_at.isoformat(),
+            source=source,
+        )
+        return ConfirmationResult(
+            status=ConfirmationStatus.INCIDENT_ENDED,
+            message="Incident end time updated.",
+            jira_issue_url=ticket.jira_issue_url,
+            incident_message_url=ticket.incident_message_url,
         )
 
     async def apply_validity_label(
@@ -216,6 +300,7 @@ class IncidentBotService:
         post_id: str,
         *,
         validity_label: str,
+        validity_set_at: datetime | None = None,
         source: str,
     ) -> ConfirmationResult:
         """Lightweight path: set Jira "Валидность" and reply in the alert thread.
@@ -250,7 +335,11 @@ class IncidentBotService:
             )
 
         try:
-            await self.jira.set_validity(ticket.jira_issue_key, validity_label)
+            await self.jira.set_validity(
+                ticket.jira_issue_key,
+                validity_label,
+                ended_at=validity_set_at,
+            )
         except ApiError as exc:
             self.repository.set_last_error(post_id, str(exc))
             log.error("incident.validity.failed",

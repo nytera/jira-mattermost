@@ -12,7 +12,12 @@ import mm_jira_bot.jira_payload as jira_payload_module
 from fastapi.testclient import TestClient
 
 from mm_jira_bot.config import Settings, load_dotenv_file
-from mm_jira_bot.domain import JiraIssue, MattermostPost, ReactionEvent
+from mm_jira_bot.domain import (
+    JiraIssue,
+    MattermostPost,
+    ReactionEvent,
+    datetime_from_mattermost_ms,
+)
 from mm_jira_bot.formatting import format_incident_message
 from mm_jira_bot.jira_payload import build_jira_issue_payload
 from mm_jira_bot.repository import (
@@ -59,6 +64,7 @@ class FakeMattermostClient:
             user_id="bot-user",
             message=message,
             create_at=1_700_000_100_000,
+            root_id=root_id,
         )
         self.created_posts.append(
             {
@@ -69,6 +75,7 @@ class FakeMattermostClient:
                 "post": post,
             }
         )
+        self.posts[post.id] = post
         return post
 
     async def fetch_recent_channel_posts(self, channel_id: str, *, limit: int):
@@ -86,6 +93,8 @@ class FakeJiraClient:
         self.transitions: list[tuple[str, str]] = []
         self.valid_by_issue: dict[str, bool] = {}
         self.validity_updates: list[tuple[str, str]] = []
+        self.validity_end_updates: list[tuple[str, datetime]] = []
+        self.end_updates: list[tuple[str, datetime]] = []
         self.validity_by_issue: dict[str, str] = {}
         self.descriptions: list[tuple[str, str]] = []
 
@@ -116,9 +125,16 @@ class FakeJiraClient:
         self.valid_updates.append((issue_key, value))
         self.valid_by_issue[issue_key] = value
 
-    async def set_validity(self, issue_key: str, option_value: str):
+    async def set_validity(
+        self, issue_key: str, option_value: str, *, ended_at: datetime | None = None
+    ):
         self.validity_updates.append((issue_key, option_value))
+        if ended_at is not None:
+            self.validity_end_updates.append((issue_key, ended_at))
         self.validity_by_issue[issue_key] = option_value
+
+    async def set_end_time(self, issue_key: str, ended_at: datetime):
+        self.end_updates.append((issue_key, ended_at))
 
     async def set_description(self, issue_key: str, description: str):
         self.descriptions.append((issue_key, description))
@@ -152,6 +168,7 @@ def settings(tmp_path):
         jira_source_field="customfield_23456",
         jira_is_crit_alert_field="customfield_34567",
         jira_start_field=None,
+        jira_end_field=None,
         jira_confirmed_status_id="31",
         database_url=f"sqlite:///{tmp_path / 'bot.db'}",
         mattermost_slash_token="slash-token",
@@ -314,6 +331,7 @@ async def test_confirms_incident_through_reaction(service):
     assert ticket.valid_incident is True
     assert ticket.incident_post_id is not None
     assert service.jira.valid_updates == [("OPS-1", True)]
+    assert service.jira.validity_end_updates == []
     assert len(service.jira.comments) == 1
     assert len(service.jira.descriptions) == 1
     issue_key, description = service.jira.descriptions[0]
@@ -321,6 +339,97 @@ async def test_confirms_incident_through_reaction(service):
     assert "h2. Хронология" in description
     assert ticket.incident_message_url in description
     assert ticket.mattermost_message_url in description
+
+
+@pytest.mark.asyncio
+async def test_checkmark_on_incident_post_sets_end_time(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="incident",
+            create_at=1,
+        )
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.incident_post_id is not None
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_200_000,
+        )
+    )
+
+    assert result.status == "incident_ended"
+    assert service.jira.end_updates == [
+        ("OPS-1", datetime_from_mattermost_ms(1_700_000_200_000))
+    ]
+    assert service.jira.validity_end_updates == []
+
+
+@pytest.mark.asyncio
+async def test_checkmark_on_incident_thread_reply_is_ignored(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="incident",
+            create_at=1,
+        )
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.incident_post_id is not None
+    reply = MattermostPost(
+        id="incidentreply000000000001",
+        channel_id="incidents-channel",
+        user_id="closer",
+        message="done",
+        create_at=1_700_000_150_000,
+        root_id=ticket.incident_post_id,
+    )
+    service.mattermost.posts[reply.id] = reply
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=reply.id,
+            user_id="closer",
+            emoji_name="heavy_check_mark",
+            create_at=1_700_000_250_000,
+        )
+    )
+
+    assert result.status == "ignored"
+    assert service.jira.end_updates == []
+
+
+@pytest.mark.asyncio
+async def test_checkmark_on_alert_post_is_ignored(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_200_000,
+        )
+    )
+
+    assert result.status == "ignored"
+    assert service.jira.end_updates == []
 
 
 @pytest.mark.asyncio
@@ -341,6 +450,9 @@ async def test_false_reaction_sets_validity_without_incident_post(service):
     ticket = service.repository.get_by_post_id(post.id)
     assert result.status == "validity_set"
     assert service.jira.validity_updates == [("OPS-1", "Ложный")]
+    assert service.jira.validity_end_updates == [
+        ("OPS-1", datetime_from_mattermost_ms(1))
+    ]
     assert ticket.validity_label == "Ложный"
     # Lightweight path: not a confirmed incident, nothing posted to incidents channel.
     assert ticket.valid_incident is False
@@ -378,6 +490,9 @@ async def test_expected_reaction_sets_validity(service):
 
     assert result.status == "validity_set"
     assert service.jira.validity_updates == [("OPS-1", "Ожидаемый")]
+    assert service.jira.validity_end_updates == [
+        ("OPS-1", datetime_from_mattermost_ms(1))
+    ]
 
 
 @pytest.mark.asyncio
@@ -721,6 +836,48 @@ def test_summary_uses_first_non_empty_line_without_leading_emoji(settings):
 
     assert payload["fields"]["summary"] == (
         "[INC] 15.11.2023 - Доля рекламных кликов :: Платформа :: Ниже на 10% :: crit"
+    )
+
+
+def test_summary_uses_alert_title_after_emoji_only_line(settings):
+    message = (
+        "🔴\n"
+        "Деньги | Минус-слова vs Общее | выше на 70% [Crit]\n"
+        "@sre-ads-duty\n"
+    )
+    post = replace(make_alert(), message=message)
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert payload["fields"]["summary"] == (
+        "[INC] 15.11.2023 - Деньги | Минус-слова vs Общее | выше на 70% [Crit]"
+    )
+
+
+def test_summary_removes_mattermost_emoji_shortcode(settings):
+    post = replace(
+        make_alert(),
+        message=":rotating_light: Деньги | Минус-слова vs Общее | выше на 70% [Crit]",
+    )
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert payload["fields"]["summary"] == (
+        "[INC] 15.11.2023 - Деньги | Минус-слова vs Общее | выше на 70% [Crit]"
     )
 
 
@@ -1106,6 +1263,110 @@ async def test_updates_valid_incident_as_jira_option(settings):
             "method": "PUT",
             "path": "/rest/api/2/issue/OPS-1",
             "body": {"fields": {"customfield_12345": {"id": "201"}}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_updates_validity_with_end_field_when_configured(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.read()) if request.method == "PUT" else None,
+            }
+        )
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": "10001", "name": "Incident"}]},
+            )
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001":
+            return httpx.Response(
+                200,
+                json={
+                    "fields": {
+                        "customfield_12345": {
+                            "allowedValues": [{"id": "202", "value": "Ложный"}]
+                        }
+                    }
+                },
+            )
+        if request.url.path == "/rest/api/2/issue/OPS-1":
+            return httpx.Response(204)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        replace(settings, jira_end_field="customfield_56789"),
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        await client.set_validity(
+            "OPS-1",
+            "Ложный",
+            ended_at=datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
+        )
+    finally:
+        await client.aclose()
+
+    assert requests[-1] == {
+        "method": "PUT",
+        "path": "/rest/api/2/issue/OPS-1",
+        "body": {
+            "fields": {
+                "customfield_12345": {"id": "202"},
+                "customfield_56789": "2026-05-30T01:30:00.000+0300",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_updates_end_field_without_validity(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.read()) if request.method == "PUT" else None,
+            }
+        )
+        if request.url.path == "/rest/api/2/issue/OPS-1":
+            return httpx.Response(204)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        replace(settings, jira_end_field="customfield_56789"),
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        await client.set_end_time(
+            "OPS-1",
+            datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
+        )
+    finally:
+        await client.aclose()
+
+    assert requests == [
+        {
+            "method": "PUT",
+            "path": "/rest/api/2/issue/OPS-1",
+            "body": {
+                "fields": {
+                    "customfield_56789": "2026-05-30T01:30:00.000+0300",
+                }
+            },
         }
     ]
 

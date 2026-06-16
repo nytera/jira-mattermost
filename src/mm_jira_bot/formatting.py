@@ -9,6 +9,7 @@ from mm_jira_bot.domain import backend_datetime
 # Leading decorative symbols (status emoji like 🔴, bullets, etc.) and
 # whitespace that Grafana prepends to the alert title line.
 _LEADING_SYMBOLS = re.compile(r"^[\W_]+", re.UNICODE)
+_LEADING_EMOJI_SHORTCODES = re.compile(r"^(?::[a-z0-9_+-]+:\s*)+", re.IGNORECASE)
 
 # When an alert clears, Grafana re-posts the same title prefixed with a green
 # check mark instead of the firing 🔴. Such "resolved" posts must not create a
@@ -35,12 +36,21 @@ class TicketView(Protocol):
 
 def truncate_for_summary(text: str, *, limit: int = 120) -> str:
     normalized = " ".join(text.split())
+    normalized = _LEADING_EMOJI_SHORTCODES.sub("", normalized)
     normalized = _LEADING_SYMBOLS.sub("", normalized)
     if not normalized:
         return "Band alert"
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 1].rstrip() + "..."
+
+
+def extract_alert_title(message: str, *, limit: int = 120) -> str:
+    for line in message.splitlines():
+        title = truncate_for_summary(line, limit=limit)
+        if title != "Band alert":
+            return title
+    return "Band alert"
 
 
 def _jira_link(jira_issue_key: str | None, jira_issue_url: str | None) -> str:

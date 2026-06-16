@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -13,6 +14,7 @@ from mm_jira_bot.jira_payload import (
     JIRA_SOURCE_VALUE,
     build_confirmation_comment,
     build_jira_issue_payload,
+    format_jira_datetime,
     jira_option,
 )
 from mm_jira_bot.logging import get_logger
@@ -86,6 +88,7 @@ class JiraClient(AsyncApiClient):
             configured_source_field=settings.jira_source_field,
             configured_is_crit_alert_field=settings.jira_is_crit_alert_field,
             configured_start_field=settings.jira_start_field,
+            configured_end_field=settings.jira_end_field,
         )
         client = http_client or httpx.AsyncClient(
             base_url=settings.jira_base_url,
@@ -207,17 +210,56 @@ class JiraClient(AsyncApiClient):
             VALID_INCIDENT_CONFIRMED_VALUE if value else VALID_INCIDENT_EMPTY_VALUE,
         )
 
-    async def set_validity(self, issue_key: str, option_value: str) -> None:
+    async def set_end_time(self, issue_key: str, ended_at: datetime) -> None:
+        if not self._settings.jira_end_field:
+            log.info(
+                "jira.end_time.skipped_not_configured",
+                jira_issue_key=issue_key,
+            )
+            return
+
+        field_id = await self._get_field_id(self._settings.jira_end_field)
+        payload = {"fields": {field_id: format_jira_datetime(ended_at)}}
+        log.info(
+            "jira.end_time.payload_prepared",
+            jira_issue_key=issue_key,
+            field_id=field_id,
+        )
+        await self._request(
+            "PUT",
+            self._api_path(f"issue/{issue_key}"),
+            json=payload,
+            error_message="Failed to update Jira issue end time",
+            event="jira.update_end_time",
+            jira_issue_key=issue_key,
+        )
+
+    async def set_validity(
+        self,
+        issue_key: str,
+        option_value: str,
+        *,
+        ended_at: datetime | None = None,
+    ) -> None:
         """Set the "Валидность" field to an arbitrary option value."""
         field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         option_payload = await self._get_option_payload(field_id, option_value)
-        payload = {"fields": {field_id: option_payload}}
+        end_field_id = (
+            await self._get_field_id(self._settings.jira_end_field)
+            if ended_at is not None and self._settings.jira_end_field
+            else None
+        )
+        fields = {field_id: option_payload}
+        if end_field_id is not None:
+            fields[end_field_id] = format_jira_datetime(ended_at)
+        payload = {"fields": fields}
         log.info(
             "jira.validity.payload_prepared",
             jira_issue_key=issue_key,
             field_id=field_id,
             requested_value=option_value,
             option_payload=_payload_option_summary(option_payload),
+            end_field_id=end_field_id,
         )
         await self._request(
             "PUT",

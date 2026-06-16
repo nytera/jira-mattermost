@@ -42,6 +42,7 @@ class MattermostPost:
     message: str
     create_at: int
     channel_name: str | None = None
+    root_id: str | None = None
 
     @classmethod
     def from_api(cls, data: dict, channel_name: str | None = None) -> "MattermostPost":
@@ -52,6 +53,7 @@ class MattermostPost:
             message=data.get("message", ""),
             create_at=int(data.get("create_at") or 0),
             channel_name=channel_name,
+            root_id=data.get("root_id") or None,
         )
 
     @property
@@ -75,6 +77,7 @@ class ConfirmationStatus(StrEnum):
     IGNORED = "ignored"
     ERROR = "error"
     VALIDITY_SET = "validity_set"
+    INCIDENT_ENDED = "incident_ended"
 
 
 @dataclass(frozen=True)

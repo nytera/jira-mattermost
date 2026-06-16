@@ -10,7 +10,7 @@ from mm_jira_bot.domain import (
     backend_now,
     runtime_timezone,
 )
-from mm_jira_bot.formatting import truncate_for_summary
+from mm_jira_bot.formatting import extract_alert_title
 
 JIRA_SOURCE_VALUE = "Crit alert"
 JIRA_IS_CRIT_ALERT_VALUE = "Да"
@@ -87,14 +87,12 @@ def build_jira_issue_payload(
 
     created_at = post.created_at_datetime if post.create_at > 0 else backend_now()
     alert_date = created_at.astimezone(runtime_timezone()).strftime("%d.%m.%Y")
-    first_message_line = next(
-        (line for line in post.message.splitlines() if line.strip()), ""
-    )
+    alert_title = extract_alert_title(post.message)
 
     fields: dict[str, Any] = {
         "project": {"key": settings.jira_project_key},
         "issuetype": issue_type,
-        "summary": f"[INC] {alert_date} - {truncate_for_summary(first_message_line)}",
+        "summary": f"[INC] {alert_date} - {alert_title}",
         "description": build_jira_description(
             post,
             message_url=message_url,
