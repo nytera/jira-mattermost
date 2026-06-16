@@ -191,6 +191,7 @@ class JiraClient:
         self._settings = settings
         self._field_ids: dict[str, str] = {}
         self._create_fields: dict[str, Any] | None = None
+        self._issue_type_id: str | None = None
         self._own_client = http_client is None
         log_event(
             logger,
@@ -476,6 +477,22 @@ class JiraClient:
             )
             return self._create_fields
 
+        try:
+            self._create_fields = await self._get_create_fields_for_issue_type()
+            return self._create_fields
+        except ApiError as exc:
+            if exc.status_code != 404:
+                raise
+            log_event(
+                logger,
+                logging.WARNING,
+                "jira.create_metadata.issue_type_endpoint_failed",
+                jira_project_key=self._settings.jira_project_key,
+                jira_issue_type=self._settings.jira_issue_type,
+                status_code=exc.status_code,
+                error=str(exc),
+            )
+
         params = {
             "projectKeys": self._settings.jira_project_key,
             "expand": "projects.issuetypes.fields",
@@ -536,6 +553,137 @@ class JiraClient:
             jira_issue_type=self._settings.jira_issue_type,
         )
         return self._create_fields
+
+    async def _get_issue_type_id(self) -> str:
+        if self._settings.jira_issue_type.isdigit():
+            return self._settings.jira_issue_type
+        if self._issue_type_id is not None:
+            return self._issue_type_id
+
+        async def operation() -> str:
+            response = await self._client.get(
+                self._api_path(
+                    f"issue/createmeta/{self._settings.jira_project_key}/issuetypes"
+                )
+            )
+            self._raise_for_status(response, "Failed to fetch Jira issue types")
+            data = response.json()
+            issue_types = data.get("values")
+            if not isinstance(issue_types, list):
+                issue_types = data.get("issueTypes")
+            if not isinstance(issue_types, list):
+                issue_types = data if isinstance(data, list) else []
+
+            configured_name = self._settings.jira_issue_type.casefold()
+            available_names: list[str] = []
+            for issue_type in issue_types:
+                if not isinstance(issue_type, dict):
+                    continue
+                name = issue_type.get("name")
+                issue_type_id = issue_type.get("id")
+                if isinstance(name, str):
+                    available_names.append(name)
+                if (
+                    isinstance(name, str)
+                    and name.casefold() == configured_name
+                    and isinstance(issue_type_id, str)
+                    and issue_type_id
+                ):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "jira.issue_type.resolved",
+                        jira_project_key=self._settings.jira_project_key,
+                        jira_issue_type=self._settings.jira_issue_type,
+                        jira_issue_type_id=issue_type_id,
+                    )
+                    return issue_type_id
+
+            raise ApiError(
+                f"Jira issue type '{self._settings.jira_issue_type}' was not found "
+                f"for project {self._settings.jira_project_key}. "
+                f"Available issue types: {', '.join(available_names) or 'none'}",
+                retryable=False,
+            )
+
+        self._issue_type_id = await retry_async(
+            operation,
+            attempts=self._settings.api_retry_attempts,
+            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
+            logger=logger,
+            event="jira.get_issue_types",
+            jira_project_key=self._settings.jira_project_key,
+            jira_issue_type=self._settings.jira_issue_type,
+        )
+        return self._issue_type_id
+
+    async def _get_create_fields_for_issue_type(self) -> dict[str, Any]:
+        issue_type_id = await self._get_issue_type_id()
+
+        async def operation() -> dict[str, Any]:
+            response = await self._client.get(
+                self._api_path(
+                    "issue/createmeta/"
+                    f"{self._settings.jira_project_key}/issuetypes/{issue_type_id}"
+                )
+            )
+            self._raise_for_status(
+                response, "Failed to fetch Jira issue type create metadata"
+            )
+            data = response.json()
+            fields = data.get("fields")
+            if isinstance(fields, dict):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "jira.create_metadata.loaded",
+                    jira_project_key=self._settings.jira_project_key,
+                    jira_issue_type=self._settings.jira_issue_type,
+                    jira_issue_type_id=issue_type_id,
+                    field_count=len(fields),
+                    endpoint="issue_type",
+                )
+                return fields
+
+            field_values = data.get("values")
+            if isinstance(field_values, list):
+                parsed_fields: dict[str, Any] = {}
+                for field in field_values:
+                    if not isinstance(field, dict):
+                        continue
+                    field_id = field.get("fieldId") or field.get("key") or field.get("id")
+                    if isinstance(field_id, str) and field_id:
+                        parsed_fields[field_id] = field
+                if parsed_fields:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "jira.create_metadata.loaded",
+                        jira_project_key=self._settings.jira_project_key,
+                        jira_issue_type=self._settings.jira_issue_type,
+                        jira_issue_type_id=issue_type_id,
+                        field_count=len(parsed_fields),
+                        endpoint="issue_type",
+                    )
+                    return parsed_fields
+
+            raise ApiError(
+                "Jira issue type create metadata did not include fields for "
+                f"project={self._settings.jira_project_key} "
+                f"issue_type={self._settings.jira_issue_type}",
+                retryable=False,
+            )
+
+        return await retry_async(
+            operation,
+            attempts=self._settings.api_retry_attempts,
+            base_delay_seconds=self._settings.api_retry_base_delay_seconds,
+            logger=logger,
+            event="jira.get_issue_type_create_metadata",
+            jira_project_key=self._settings.jira_project_key,
+            jira_issue_type=self._settings.jira_issue_type,
+            jira_issue_type_id=issue_type_id,
+        )
 
     async def _get_option_payload(self, field_id: str, value: str) -> dict[str, str]:
         fields = await self._get_create_fields()

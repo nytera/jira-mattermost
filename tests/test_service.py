@@ -375,35 +375,28 @@ async def test_creates_issue_with_jira_option_ids_from_create_metadata(settings)
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.read()) if request.method == "POST" else None
         requests.append({"method": request.method, "path": request.url.path, "body": body})
-        if request.url.path == "/rest/api/2/issue/createmeta":
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": "10001", "name": "Incident"}]},
+            )
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001":
             return httpx.Response(
                 200,
                 json={
-                    "projects": [
-                        {
-                            "issuetypes": [
-                                {
-                                    "fields": {
-                                        "customfield_12345": {
-                                            "allowedValues": [
-                                                {"id": "101", "value": "Не заполнено"}
-                                            ]
-                                        },
-                                        "customfield_23456": {
-                                            "allowedValues": [
-                                                {"id": "102", "value": "Crit alert"}
-                                            ]
-                                        },
-                                        "customfield_34567": {
-                                            "allowedValues": [
-                                                {"id": "103", "value": "Да"}
-                                            ]
-                                        },
-                                    }
-                                }
+                    "fields": {
+                        "customfield_12345": {
+                            "allowedValues": [
+                                {"id": "101", "value": "Не заполнено"}
                             ]
-                        }
-                    ]
+                        },
+                        "customfield_23456": {
+                            "allowedValues": [{"id": "102", "value": "Crit alert"}]
+                        },
+                        "customfield_34567": {
+                            "allowedValues": [{"id": "103", "value": "Да"}]
+                        },
+                    }
                 },
             )
         if request.url.path == "/rest/api/2/issue":
@@ -428,7 +421,8 @@ async def test_creates_issue_with_jira_option_ids_from_create_metadata(settings)
 
     issue_body = requests[-1]["body"]["fields"]
     assert issue.key == "OPS-1"
-    assert requests[0]["path"] == "/rest/api/2/issue/createmeta"
+    assert requests[0]["path"] == "/rest/api/2/issue/createmeta/OPS/issuetypes"
+    assert requests[1]["path"] == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001"
     assert issue_body["customfield_12345"] == {"id": "101"}
     assert issue_body["customfield_23456"] == {"id": "102"}
     assert issue_body["customfield_34567"] == {"id": "103"}
@@ -529,25 +523,20 @@ async def test_updates_valid_incident_as_jira_option(settings):
                 "body": json.loads(request.read()) if request.method == "PUT" else None,
             }
         )
-        if request.url.path == "/rest/api/2/issue/createmeta":
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": "10001", "name": "Incident"}]},
+            )
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001":
             return httpx.Response(
                 200,
                 json={
-                    "projects": [
-                        {
-                            "issuetypes": [
-                                {
-                                    "fields": {
-                                        "customfield_12345": {
-                                            "allowedValues": [
-                                                {"id": "201", "value": "Валидный"}
-                                            ]
-                                        }
-                                    }
-                                }
-                            ]
+                    "fields": {
+                        "customfield_12345": {
+                            "allowedValues": [{"id": "201", "value": "Валидный"}]
                         }
-                    ]
+                    }
                 },
             )
         if request.url.path == "/rest/api/2/issue/OPS-1":
@@ -569,7 +558,12 @@ async def test_updates_valid_incident_as_jira_option(settings):
     assert requests == [
         {
             "method": "GET",
-            "path": "/rest/api/2/issue/createmeta",
+            "path": "/rest/api/2/issue/createmeta/OPS/issuetypes",
+            "body": None,
+        },
+        {
+            "method": "GET",
+            "path": "/rest/api/2/issue/createmeta/OPS/issuetypes/10001",
             "body": None,
         },
         {
