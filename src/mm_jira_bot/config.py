@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,11 +19,8 @@ def load_dotenv_file(path: str | Path = ".env") -> None:
         value = value.strip()
         if not key or key in os.environ:
             continue
-        if value:
-            try:
-                value = shlex.split(value, comments=False, posix=True)[0]
-            except ValueError:
-                value = value.strip("\"'")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
         os.environ[key] = value
 
 
@@ -69,7 +65,9 @@ class Settings:
     jira_api_token: str
     jira_project_key: str
     jira_issue_type: str
-    jira_valid_incident_field_id: str
+    jira_valid_incident_field: str
+    jira_source_field: str
+    jira_is_crit_alert_field: str
     jira_confirmed_status_id: str | None
     database_url: str
     incident_timezone: str = "Europe/Moscow"
@@ -78,9 +76,9 @@ class Settings:
     api_retry_attempts: int = 4
     api_retry_base_delay_seconds: float = 0.5
     pending_work_interval_seconds: int = 30
-    backfill_recent_posts_limit: int = 100
+    backfill_recent_posts_limit: int = 0
     enable_websocket: bool = True
-    enable_backfill_on_startup: bool = True
+    enable_backfill_on_startup: bool = False
 
     @classmethod
     def from_env(cls, dotenv_path: str | Path = ".env") -> "Settings":
@@ -100,7 +98,13 @@ class Settings:
             jira_api_token=_required("JIRA_API_TOKEN"),
             jira_project_key=_required("JIRA_PROJECT_KEY"),
             jira_issue_type=_required("JIRA_ISSUE_TYPE"),
-            jira_valid_incident_field_id=_required("JIRA_VALID_INCIDENT_FIELD_ID"),
+            jira_valid_incident_field=(
+                _optional("JIRA_VALID_INCIDENT_FIELD")
+                or _optional("JIRA_VALID_INCIDENT_FIELD_NAME")
+                or _required("JIRA_VALID_INCIDENT_FIELD_ID")
+            ),
+            jira_source_field=_required("JIRA_SOURCE_FIELD"),
+            jira_is_crit_alert_field=_required("JIRA_IS_CRIT_ALERT_FIELD"),
             jira_confirmed_status_id=_optional("JIRA_CONFIRMED_STATUS_ID"),
             database_url=_required("DATABASE_URL"),
             incident_timezone=_optional("INCIDENT_TIMEZONE", "Europe/Moscow")
@@ -112,8 +116,8 @@ class Settings:
                 "API_RETRY_BASE_DELAY_SECONDS", 0.5
             ),
             pending_work_interval_seconds=_int_env("PENDING_WORK_INTERVAL_SECONDS", 30),
-            backfill_recent_posts_limit=_int_env("BACKFILL_RECENT_POSTS_LIMIT", 100),
+            backfill_recent_posts_limit=_int_env("BACKFILL_RECENT_POSTS_LIMIT", 0),
             enable_websocket=_optional("ENABLE_WEBSOCKET", "true") != "false",
-            enable_backfill_on_startup=_optional("ENABLE_BACKFILL_ON_STARTUP", "true")
-            != "false",
+            enable_backfill_on_startup=_optional("ENABLE_BACKFILL_ON_STARTUP", "false")
+            == "true",
         )

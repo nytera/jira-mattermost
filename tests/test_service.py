@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import replace
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 import mm_jira_bot.jira as jira_module
 from fastapi.testclient import TestClient
 
-from mm_jira_bot.config import Settings
+from mm_jira_bot.config import Settings, load_dotenv_file
 from mm_jira_bot.domain import JiraIssue, MattermostPost, ReactionEvent, utc_now
 from mm_jira_bot.formatting import format_incident_message
 from mm_jira_bot.jira import build_jira_issue_payload
@@ -107,7 +110,9 @@ def settings(tmp_path):
         jira_api_token="jira-token",
         jira_project_key="OPS",
         jira_issue_type="Incident",
-        jira_valid_incident_field_id="customfield_12345",
+        jira_valid_incident_field="customfield_12345",
+        jira_source_field="customfield_23456",
+        jira_is_crit_alert_field="customfield_34567",
         jira_confirmed_status_id="31",
         database_url=f"sqlite:///{tmp_path / 'bot.db'}",
         mattermost_slash_token="slash-token",
@@ -141,6 +146,47 @@ def make_alert(post_id: str = POST_ID, channel_id: str = "alerts-channel") -> Ma
         create_at=1_700_000_000_000,
         channel_name="alerts",
     )
+
+
+def test_loads_russian_jira_field_name_with_spaces(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "JIRA_VALID_INCIDENT_FIELD=Валидный инцидент\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("JIRA_VALID_INCIDENT_FIELD", raising=False)
+
+    load_dotenv_file(env_file)
+
+    assert os.environ["JIRA_VALID_INCIDENT_FIELD"] == "Валидный инцидент"
+
+
+def test_settings_do_not_backfill_old_messages_by_default(tmp_path, monkeypatch):
+    required_env = {
+        "MATTERMOST_URL": "https://mattermost.example.com",
+        "MATTERMOST_TOKEN": "mm-token",
+        "MATTERMOST_ALERT_CHANNEL_ID": "alerts-channel",
+        "MATTERMOST_INCIDENT_CHANNEL_ID": "incidents-channel",
+        "MATTERMOST_BOT_USER_ID": "bot-user",
+        "JIRA_BASE_URL": "https://jira.example.com",
+        "JIRA_EMAIL": "bot@example.com",
+        "JIRA_API_TOKEN": "jira-token",
+        "JIRA_PROJECT_KEY": "OPS",
+        "JIRA_ISSUE_TYPE": "Incident",
+        "JIRA_VALID_INCIDENT_FIELD": "Валидность",
+        "JIRA_SOURCE_FIELD": "Источник",
+        "JIRA_IS_CRIT_ALERT_FIELD": "Был ли крит алерт?",
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'bot.db'}",
+    }
+    for key, value in required_env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("BACKFILL_RECENT_POSTS_LIMIT", raising=False)
+    monkeypatch.delenv("ENABLE_BACKFILL_ON_STARTUP", raising=False)
+
+    loaded_settings = Settings.from_env(tmp_path / "missing.env")
+
+    assert loaded_settings.backfill_recent_posts_limit == 0
+    assert loaded_settings.enable_backfill_on_startup is False
 
 
 @pytest.mark.asyncio
@@ -248,6 +294,9 @@ def test_builds_jira_payload(settings):
     post = replace(make_alert(), message="CPU usage is above 95%\nsecond line")
     payload = build_jira_issue_payload(
         settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
         post,
         message_url="https://mattermost.example.com/_redirect/pl/post",
         channel_name="alerts",
@@ -256,7 +305,9 @@ def test_builds_jira_payload(settings):
     fields = payload["fields"]
     assert fields["project"] == {"key": "OPS"}
     assert fields["issuetype"] == {"name": "Incident"}
-    assert fields["customfield_12345"] is False
+    assert fields["customfield_12345"] == {"value": "Не заполнено"}
+    assert fields["customfield_23456"] == {"value": "Crit alert"}
+    assert fields["customfield_34567"] == {"value": "Да"}
     assert fields["summary"] == "[INC] 15.11.23 - CPU usage is above 95%"
     assert fields["description"]["type"] == "doc"
 
@@ -270,12 +321,88 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
     post = replace(make_alert(), create_at=0)
     payload = build_jira_issue_payload(
         settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
         post,
         message_url="https://mattermost.example.com/_redirect/pl/post",
         channel_name="alerts",
     )
 
     assert payload["fields"]["summary"] == "[INC] 30.05.26 - CPU usage is above 95%"
+
+
+@pytest.mark.asyncio
+async def test_resolves_valid_incident_field_name_from_jira(settings):
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/rest/api/3/field":
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": "summary", "name": "Summary"},
+                    {"id": "customfield_12345", "name": "Valid Incident"},
+                ],
+            )
+        if request.url.path == "/rest/api/3/issue/OPS-1":
+            return httpx.Response(
+                200, json={"fields": {"customfield_12345": {"value": "Валидный"}}}
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        replace(settings, jira_valid_incident_field="Valid Incident"),
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        value = await client.get_valid_incident("OPS-1")
+    finally:
+        await client.aclose()
+
+    assert value is True
+    assert requests == ["/rest/api/3/field", "/rest/api/3/issue/OPS-1"]
+
+
+@pytest.mark.asyncio
+async def test_updates_valid_incident_as_jira_option(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.read()),
+            }
+        )
+        if request.url.path == "/rest/api/3/issue/OPS-1":
+            return httpx.Response(204)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        await client.set_valid_incident("OPS-1", True)
+    finally:
+        await client.aclose()
+
+    assert requests == [
+        {
+            "method": "PUT",
+            "path": "/rest/api/3/issue/OPS-1",
+            "body": {"fields": {"customfield_12345": {"value": "Валидный"}}},
+        }
+    ]
 
 
 def test_builds_incident_channel_message(service):

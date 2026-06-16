@@ -6,21 +6,21 @@
 
 1. Бот подключается к Mattermost WebSocket API и слушает события `posted` и `reaction_added`.
 2. Новое сообщение в `MATTERMOST_ALERT_CHANNEL_ID` сохраняется в таблицу `alert_tickets`.
-3. Для сообщения создается Jira issue с текстом алерта, автором, временем, permalink, `post_id`, каналом и `Valid Incident = false`.
+3. Для сообщения создается Jira issue с текстом алерта, автором, временем, permalink, `post_id`, каналом, `Valid Incident = Не заполнено`, `Источник = Crit alert` и `Был ли крит алерт? = Да`.
 4. Связь `mattermost_post_id -> jira_issue_key` хранится локально и защищена уникальным индексом.
 5. Пользователь подтверждает инцидент реакцией `:incident:` на оригинальное сообщение или slash-командой `/incident <link>`.
-6. Бот публикует сообщение в `MATTERMOST_INCIDENT_CHANNEL_ID`, обновляет Jira `Valid Incident = true`, добавляет комментарий со ссылкой на incident-сообщение и, если задано, делает transition issue.
+6. Бот публикует сообщение в `MATTERMOST_INCIDENT_CHANNEL_ID`, обновляет Jira `Valid Incident = Валидный`, добавляет комментарий со ссылкой на incident-сообщение и, если задано, делает transition issue.
 
 ```mermaid
 flowchart LR
   A["Alert channel post"] --> B["alert_tickets row"]
-  B --> C["Jira issue Valid Incident=false"]
+  B --> C["Jira issue Valid Incident=Не заполнено"]
   A --> D["reaction :incident:"]
   A --> E["/incident permalink"]
   D --> F["Confirm by original post_id"]
   E --> F
   F --> G["Post to incidents channel"]
-  F --> H["Update Jira Valid Incident=true"]
+  F --> H["Update Jira Valid Incident=Валидный"]
   H --> I["Jira comment + optional transition"]
 ```
 
@@ -61,10 +61,12 @@ flowchart LR
 - `JIRA_API_TOKEN`;
 - `JIRA_PROJECT_KEY`;
 - `JIRA_ISSUE_TYPE`, имя или numeric id issue type;
-- `JIRA_VALID_INCIDENT_FIELD_ID`, например `customfield_12345`;
+- `JIRA_VALID_INCIDENT_FIELD`, например `Valid Incident` или `Валидный инцидент`;
+- `JIRA_SOURCE_FIELD`, например `Источник`;
+- `JIRA_IS_CRIT_ALERT_FIELD`, например `Был ли крит алерт?`;
 - `JIRA_CONFIRMED_STATUS_ID`, id transition в статус `Confirmed Incident`, опционально.
 
-Custom field id можно найти в Jira admin UI в настройках поля или через Jira REST API field list. Для Jira Cloud используется REST API v3 и Atlassian Document Format для `description` и комментариев.
+Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его. Для Jira Cloud используется REST API v3 и Atlassian Document Format для `description` и комментариев.
 
 ## Configuration
 
@@ -87,7 +89,9 @@ cp .env.example .env
 - `JIRA_API_TOKEN`
 - `JIRA_PROJECT_KEY`
 - `JIRA_ISSUE_TYPE`
-- `JIRA_VALID_INCIDENT_FIELD_ID`
+- `JIRA_VALID_INCIDENT_FIELD`
+- `JIRA_SOURCE_FIELD`
+- `JIRA_IS_CRIT_ALERT_FIELD`
 - `JIRA_CONFIRMED_STATUS_ID`
 - `DATABASE_URL`
 - `INCIDENT_TIMEZONE=Europe/Moscow`, timezone для даты в названии Jira issue
@@ -152,7 +156,7 @@ DATABASE_URL=postgresql://incident_bot:incident_bot@postgres:5432/incident_bot
 - Повторное событие `posted` видит существующий `jira_issue_key` и пропускает создание.
 - Повторная реакция или slash-команда возвращает уже существующий Jira issue и не публикует второй incident post.
 - Jira comment добавляется один раз, флаг хранится в `jira_confirmation_comment_added`.
-- Если Jira уже вернула `Valid Incident = true`, локальный `valid_incident` синхронизируется.
+- Если Jira уже вернула `Valid Incident = Валидный`, локальный `valid_incident` синхронизируется.
 
 ## Recovery and Retry
 
@@ -164,7 +168,8 @@ DATABASE_URL=postgresql://incident_bot:incident_bot@postgres:5432/incident_bot
 
 - поднимает pending worker;
 - обрабатывает незавершенные Jira creation и confirmation;
-- опционально делает backfill последних сообщений из канала алертов (`BACKFILL_RECENT_POSTS_LIMIT`).
+- по умолчанию не делает backfill старых сообщений из канала алертов и создает задачи только по новым WebSocket событиям после запуска;
+- если нужно намеренно обработать последние сообщения из канала, включите `ENABLE_BACKFILL_ON_STARTUP=true` и задайте `BACKFILL_RECENT_POSTS_LIMIT`.
 
 ## Logs
 
