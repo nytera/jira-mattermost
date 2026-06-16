@@ -339,7 +339,7 @@ def test_builds_jira_payload(settings):
     fields = payload["fields"]
     assert fields["project"] == {"key": "OPS"}
     assert fields["issuetype"] == {"name": "Incident"}
-    assert fields["customfield_12345"] == {"value": "Не заполнено"}
+    assert "customfield_12345" not in fields
     assert fields["customfield_23456"] == {"value": "Crit alert"}
     assert fields["customfield_34567"] == {"value": "Да"}
     assert fields["summary"] == "[INC] 15.11.23 - CPU usage is above 95%"
@@ -369,7 +369,7 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
 
 
 @pytest.mark.asyncio
-async def test_creates_issue_with_jira_option_ids_from_create_metadata(settings):
+async def test_creates_issue_with_default_valid_incident_and_option_ids(settings):
     requests: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -387,14 +387,16 @@ async def test_creates_issue_with_jira_option_ids_from_create_metadata(settings)
                     "fields": {
                         "customfield_12345": {
                             "allowedValues": [
-                                {"id": "101", "value": "Не заполнено"}
+                                {"id": "101", "value": "Валидный"},
+                                {"id": "102", "value": "Ложный"},
+                                {"id": "103", "value": "Ожидаемый"},
                             ]
                         },
                         "customfield_23456": {
-                            "allowedValues": [{"id": "102", "value": "Crit alert"}]
+                            "allowedValues": [{"id": "201", "value": "Crit alert"}]
                         },
                         "customfield_34567": {
-                            "allowedValues": [{"id": "103", "value": "Да"}]
+                            "allowedValues": [{"id": "301", "value": "Да"}]
                         },
                     }
                 },
@@ -423,9 +425,9 @@ async def test_creates_issue_with_jira_option_ids_from_create_metadata(settings)
     assert issue.key == "OPS-1"
     assert requests[0]["path"] == "/rest/api/2/issue/createmeta/OPS/issuetypes"
     assert requests[1]["path"] == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001"
-    assert issue_body["customfield_12345"] == {"id": "101"}
-    assert issue_body["customfield_23456"] == {"id": "102"}
-    assert issue_body["customfield_34567"] == {"id": "103"}
+    assert "customfield_12345" not in issue_body
+    assert issue_body["customfield_23456"] == {"id": "201"}
+    assert issue_body["customfield_34567"] == {"id": "301"}
     assert isinstance(issue_body["description"], str)
 
 

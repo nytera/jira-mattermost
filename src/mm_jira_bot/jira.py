@@ -150,13 +150,13 @@ def build_jira_issue_payload(
             channel_name=channel_name,
             use_adf=settings.jira_rest_api_version == "3",
         ),
-        valid_incident_field_id: valid_incident_option
-        or jira_option(VALID_INCIDENT_EMPTY_VALUE),
         source_field_id: source_option or jira_option(JIRA_SOURCE_VALUE),
         is_crit_alert_field_id: is_crit_alert_option
         or jira_option(JIRA_IS_CRIT_ALERT_VALUE),
         "labels": ["mattermost-alert"],
     }
+    if valid_incident_option is not None:
+        fields[valid_incident_field_id] = valid_incident_option
     return {"fields": fields}
 
 
@@ -233,9 +233,6 @@ class JiraClient:
         is_crit_alert_field_id = await self._get_field_id(
             self._settings.jira_is_crit_alert_field
         )
-        valid_incident_option = await self._get_option_payload(
-            valid_incident_field_id, VALID_INCIDENT_EMPTY_VALUE
-        )
         source_option = await self._get_option_payload(
             source_field_id, JIRA_SOURCE_VALUE
         )
@@ -250,7 +247,6 @@ class JiraClient:
             post,
             message_url=message_url,
             channel_name=channel_name,
-            valid_incident_option=valid_incident_option,
             source_option=source_option,
             is_crit_alert_option=is_crit_alert_option,
         )
@@ -267,7 +263,7 @@ class JiraClient:
             summary_length=len(str(fields.get("summary", ""))),
             description_type=type(description).__name__,
             valid_incident_field_id=valid_incident_field_id,
-            valid_incident_option=_payload_option_summary(valid_incident_option),
+            valid_incident_on_create=False,
             source_field_id=source_field_id,
             source_option=_payload_option_summary(source_option),
             is_crit_alert_field_id=is_crit_alert_field_id,
