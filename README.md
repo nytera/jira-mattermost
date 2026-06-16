@@ -6,7 +6,7 @@
 
 1. Бот подключается к Mattermost WebSocket API и слушает события `posted` и `reaction_added`.
 2. Новое сообщение в `MATTERMOST_ALERT_CHANNEL_ID` сохраняется в таблицу `alert_tickets`.
-3. Для сообщения создается Jira issue с текстом алерта, автором, временем, permalink, `post_id`, каналом, `Valid Incident = Не заполнено`, `Источник = Crit alert` и `Был ли крит алерт? = Да`.
+3. Для сообщения создается Jira issue с текстом алерта, автором, временем, permalink, `post_id`, каналом, `Источник = Crit alert` и `Был ли крит алерт? = Да`. Поле `Valid Incident`/`Валидность` при создании не отправляется: Jira должна поставить свое дефолтное значение.
 4. Связь `mattermost_post_id -> jira_issue_key` хранится локально и защищена уникальным индексом.
 5. Пользователь подтверждает инцидент реакцией `:incident:` на оригинальное сообщение или slash-командой `/incident <link>`.
 6. Бот публикует сообщение в `MATTERMOST_INCIDENT_CHANNEL_ID`, обновляет Jira `Valid Incident = Валидный`, добавляет комментарий со ссылкой на incident-сообщение и, если задано, делает transition issue.
@@ -14,7 +14,7 @@
 ```mermaid
 flowchart LR
   A["Alert channel post"] --> B["alert_tickets row"]
-  B --> C["Jira issue Valid Incident=Не заполнено"]
+  B --> C["Jira issue with Jira default Valid Incident"]
   A --> D["reaction :incident:"]
   A --> E["/incident permalink"]
   D --> F["Confirm by original post_id"]
@@ -54,21 +54,30 @@ flowchart LR
 
 ## Jira Setup
 
-Создайте Jira API token в Atlassian Account settings и укажите:
+Для on-prem/Data Center Jira создайте personal access token и укажите:
 
-- `JIRA_BASE_URL`, например `https://company.atlassian.net`;
-- `JIRA_EMAIL`;
-- `JIRA_API_TOKEN`;
+- `JIRA_BASE_URL`, например `https://jira.example.com`;
+- `JIRA_EMAIL`, для `bearer`-auth хранится в настройках, но не используется в HTTP auth;
+- `JIRA_API_TOKEN`, personal access token;
 - `JIRA_AUTH_TYPE`, `bearer` для on-prem/Data Center PAT или `basic` для Cloud email + API token;
 - `JIRA_REST_API_VERSION`, `2` для on-prem/Data Center или `3` для Cloud;
 - `JIRA_PROJECT_KEY`;
 - `JIRA_ISSUE_TYPE`, имя или numeric id issue type;
-- `JIRA_VALID_INCIDENT_FIELD`, например `Valid Incident` или `Валидный инцидент`;
+- `JIRA_VALID_INCIDENT_FIELD`, например `Валидность`;
 - `JIRA_SOURCE_FIELD`, например `Источник`;
 - `JIRA_IS_CRIT_ALERT_FIELD`, например `Был ли крит алерт?`;
 - `JIRA_CONFIRMED_STATUS_ID`, id transition в статус `Confirmed Incident`, опционально.
 
-Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его. По умолчанию используется REST API v2 и `Authorization: Bearer ...`, что подходит для on-prem/Data Center Jira с personal access token. Для Jira Cloud задайте `JIRA_REST_API_VERSION=3` и `JIRA_AUTH_TYPE=basic`.
+Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его.
+
+Для Jira 9.x on-prem/Data Center по умолчанию используется REST API v2 и `Authorization: Bearer ...`. Для option-полей (`select`, `radiobuttons`) бот берет допустимые значения из issue-type create metadata:
+
+- `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes`;
+- `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes/{issueTypeId}`.
+
+`JIRA_SOURCE_FIELD` должен иметь option `Crit alert`, а `JIRA_IS_CRIT_ALERT_FIELD` должен иметь option `Да` для выбранных `JIRA_PROJECT_KEY` и `JIRA_ISSUE_TYPE`. `JIRA_VALID_INCIDENT_FIELD` при создании issue не отправляется, потому что дефолт выставляет сама Jira; при подтверждении бот обновляет это поле в option `Валидный`.
+
+Для Jira Cloud задайте `JIRA_REST_API_VERSION=3` и `JIRA_AUTH_TYPE=basic`; Cloud-путь поддерживается, но основной проверенный сценарий сейчас on-prem/Data Center Jira 9.x.
 
 ## Configuration
 
@@ -171,9 +180,22 @@ DATABASE_URL=postgresql://incident_bot:incident_bot@postgres:5432/incident_bot
 После перезапуска сервис:
 
 - поднимает pending worker;
-- обрабатывает незавершенные Jira creation и confirmation;
+- обрабатывает незавершенные Jira creation и confirmation из таблицы `alert_tickets`;
 - по умолчанию не делает backfill старых сообщений из канала алертов и создает задачи только по новым WebSocket событиям после запуска;
 - если нужно намеренно обработать последние сообщения из канала, включите `ENABLE_BACKFILL_ON_STARTUP=true` и задайте `BACKFILL_RECENT_POSTS_LIMIT`.
+
+Если в БД уже есть старые строки без `jira_issue_key`, pending worker будет пытаться создать Jira issue для них каждые `PENDING_WORK_INTERVAL_SECONDS`. Чтобы полностью остановить ретраи старых алертов, очистите такие строки вручную после проверки:
+
+```sql
+SELECT id, mattermost_post_id, creation_status, confirmation_status, created_at, last_error
+FROM alert_tickets
+WHERE jira_issue_key IS NULL
+ORDER BY created_at;
+
+DELETE FROM alert_tickets
+WHERE jira_issue_key IS NULL
+  AND creation_status IN ('pending_jira', 'failed_jira');
+```
 
 ## Logs
 
@@ -182,6 +204,13 @@ DATABASE_URL=postgresql://incident_bot:incident_bot@postgres:5432/incident_bot
 - `mattermost.alert.received`;
 - `jira.issue.created`;
 - `jira.issue.create_failed`;
+- `jira.client.configured`;
+- `jira.field.resolved`;
+- `jira.issue_type.resolved`;
+- `jira.create_metadata.loaded`;
+- `jira.option.resolved`;
+- `jira.issue.payload_prepared`;
+- `jira.http.error`;
 - `mattermost.reaction.received`;
 - `mattermost.slash_command.received`;
 - `incident.confirmed`;
@@ -203,7 +232,7 @@ docker compose logs -f bot
 pytest
 ```
 
-Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload и формат incident-сообщения.
+Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload, Jira option metadata и формат incident-сообщения.
 
 ## API References
 
