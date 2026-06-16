@@ -52,7 +52,7 @@ def create_app(
     service: IncidentBotService | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.log_format)
 
     if service is None:
         engine = create_database_engine(settings.database_url)

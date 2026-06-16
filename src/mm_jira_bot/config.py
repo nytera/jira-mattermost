@@ -79,6 +79,7 @@ class Settings:
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     log_level: str = "INFO"
+    log_format: str = "json"
     api_retry_attempts: int = 4
     api_retry_base_delay_seconds: float = 0.5
     pending_work_interval_seconds: int = 30
@@ -119,6 +120,7 @@ class Settings:
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
             mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
             log_level=_env("LOG_LEVEL", "INFO"),
+            log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),
             api_retry_base_delay_seconds=_float_env(
                 "API_RETRY_BASE_DELAY_SECONDS", 0.5
