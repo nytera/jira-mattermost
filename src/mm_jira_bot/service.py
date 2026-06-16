@@ -386,11 +386,13 @@ class IncidentBotService:
         if ticket.jira_issue_key:
             return
         post = ticket_to_post(ticket)
+        author_name = await self._resolve_user_display(post.user_id)
         try:
             issue = await self.jira.create_issue(
                 post,
                 message_url=ticket.mattermost_message_url,
                 channel_name=ticket.mattermost_channel_name,
+                author_name=author_name,
             )
             self.repository.attach_jira_issue(
                 ticket.mattermost_post_id, issue.key, issue.url

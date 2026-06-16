@@ -85,10 +85,22 @@ class FakeJiraClient:
         self.transitions: list[tuple[str, str]] = []
         self.valid_by_issue: dict[str, bool] = {}
 
-    async def create_issue(self, post, *, message_url: str, channel_name: str | None):
+    async def create_issue(
+        self,
+        post,
+        *,
+        message_url: str,
+        channel_name: str | None,
+        author_name: str | None = None,
+    ):
         key = f"OPS-{len(self.created_payloads) + 1}"
         self.created_payloads.append(
-            {"post": post, "message_url": message_url, "channel_name": channel_name}
+            {
+                "post": post,
+                "message_url": message_url,
+                "channel_name": channel_name,
+                "author_name": author_name,
+            }
         )
         self.valid_by_issue[key] = False
         return JiraIssue(key=key, url=f"https://jira.example.com/browse/{key}")
@@ -418,10 +430,16 @@ def test_builds_jira_payload(settings):
     assert fields["customfield_23456"] == {"value": "Crit alert"}
     assert fields["customfield_34567"] == {"value": "Да"}
     assert fields["summary"] == "[INC] 15.11.2023 - CPU usage is above 95%"
-    assert isinstance(fields["description"], str)
-    assert "Mattermost alert" in fields["description"]
-    assert "Message time: 2023-11-15T01:13:20+03:00" in fields["description"]
-    assert "Original Mattermost message: https://mattermost.example.com/_redirect/pl/post" in fields["description"]
+    description = fields["description"]
+    assert isinstance(description, str)
+    assert "h3. 🔔 Алерт из Mattermost" in description
+    assert "{quote}\nCPU usage is above 95%\nsecond line\n{quote}" in description
+    assert "|Время сообщения|15.11.2023 01:13|" in description
+    assert (
+        "|Исходное сообщение|[Открыть в Mattermost|"
+        "https://mattermost.example.com/_redirect/pl/post]|" in description
+    )
+    assert f"{{{{{POST_ID}}}}}" in description
 
 
 def test_summary_uses_first_non_empty_line_without_leading_emoji(settings):
@@ -496,7 +514,7 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
     )
 
     assert payload["fields"]["summary"] == "[INC] 30.05.2026 - CPU usage is above 95%"
-    assert "Message time: " in payload["fields"]["description"]
+    assert "|Время сообщения|—|" in payload["fields"]["description"]
 
 
 @pytest.mark.asyncio
