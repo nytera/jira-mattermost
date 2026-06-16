@@ -35,7 +35,7 @@ HTTP endpoints: `GET /healthz` and `POST /mattermost/slash/incident` (the `/inci
 |--------|------|
 | `service.py` | Orchestration. The only place that coordinates Mattermost + Jira + repository. Read this first. |
 | `mattermost.py` | Mattermost REST + WebSocket client; event parsers (`parse_posted_event`, `parse_reaction_event`). |
-| `jira.py` | Jira Data Center REST v2 client (Bearer auth). Field-name→id resolution, option-value resolution via createmeta, issue payload building. |
+| `jira.py` | Jira **9.x Data Center / on-prem** REST v2 client (Bearer auth). Field-name→id resolution, option-value resolution via createmeta, issue payload building. |
 | `repository.py` | SQLAlchemy model `AlertTicket` + `AlertTicketRepository` (all DB access). |
 | `domain.py` | Frozen dataclasses, enums, and timezone helpers. |
 | `formatting.py` | Incident-message and Jira-summary text. |
@@ -54,6 +54,8 @@ Idempotency keys live in `AlertTicket`: `jira_issue_key`, `incident_post_id`, `j
 ### Jira field/option resolution (the non-obvious part)
 
 `JIRA_*_FIELD` settings accept a **human field name** (incl. Russian, e.g. `Валидность`) or a `customfield_NNNNN` id. The name-based path exists so operators configure fields by their readable Jira name instead of hunting for `customfield_*` ids: `JiraClient` resolves names to ids once via `GET /rest/api/2/field` and caches them. For `select`/`radiobuttons` fields, allowed option values are likewise fetched from issue-type **createmeta** (`issue/createmeta/{projectKey}/issuetypes[/{id}]`) and matched case-insensitively, so option ids don't have to be configured by hand; a missing option raises a non-retryable `ApiError`. `Valid Incident` is deliberately **not** sent on create — the intent is for a freshly created issue to carry Jira's own default value, and the bot only sets it to `Валидный` later, on confirmation.
+
+`JIRA_START_FIELD` (optional) is a **date-time picker** field set to the alert arrival time on create via `format_jira_datetime()`. Jira 9.x REST v2 wants ISO 8601 with a `[+-]hhmm` offset (no colon) and mandatory fractional seconds, e.g. `2026-06-16T14:30:00.000+0300`; the `dd.MM.yyyy HH:mm` seen in the UI is only a display format. It is not an option field, so createmeta option resolution does not apply.
 
 ### Persistence & timezone
 

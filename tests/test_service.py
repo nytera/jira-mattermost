@@ -129,6 +129,7 @@ def settings(tmp_path):
         jira_valid_incident_field="customfield_12345",
         jira_source_field="customfield_23456",
         jira_is_crit_alert_field="customfield_34567",
+        jira_start_field=None,
         jira_confirmed_status_id="31",
         database_url=f"sqlite:///{tmp_path / 'bot.db'}",
         mattermost_slash_token="slash-token",
@@ -423,6 +424,38 @@ def test_builds_jira_payload(settings):
     assert "Original Mattermost message: https://mattermost.example.com/_redirect/pl/post" in fields["description"]
 
 
+def test_builds_jira_payload_with_start_field(settings):
+    post = make_alert()
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+        start_field_id="customfield_45678",
+    )
+
+    # Jira date-time picker wants ISO 8601 with a [+-]hhmm offset and
+    # mandatory fractional seconds, derived from the alert arrival time.
+    assert payload["fields"]["customfield_45678"] == "2023-11-15T01:13:20.000+0300"
+
+
+def test_builds_jira_payload_without_start_field_by_default(settings):
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        make_alert(),
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert "customfield_45678" not in payload["fields"]
+
+
 def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, monkeypatch):
     monkeypatch.setattr(
         jira_module,
@@ -505,6 +538,49 @@ async def test_creates_issue_with_default_valid_incident_and_option_ids(settings
     assert issue_body["customfield_23456"] == {"id": "201"}
     assert issue_body["customfield_34567"] == {"id": "301"}
     assert isinstance(issue_body["description"], str)
+
+
+@pytest.mark.asyncio
+async def test_create_issue_sends_start_field_when_configured(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read()) if request.method == "POST" else None
+        requests.append({"method": request.method, "path": request.url.path, "body": body})
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes":
+            return httpx.Response(200, json={"values": [{"id": "10001", "name": "Incident"}]})
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001":
+            return httpx.Response(
+                200,
+                json={
+                    "fields": {
+                        "customfield_23456": {"allowedValues": [{"id": "201", "value": "Crit alert"}]},
+                        "customfield_34567": {"allowedValues": [{"id": "301", "value": "Да"}]},
+                    }
+                },
+            )
+        if request.url.path == "/rest/api/2/issue":
+            return httpx.Response(201, json={"key": "OPS-1"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        replace(settings, jira_start_field="customfield_45678"),
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        await client.create_issue(
+            make_alert(),
+            message_url="https://mattermost.example.com/_redirect/pl/post",
+            channel_name="alerts",
+        )
+    finally:
+        await client.aclose()
+
+    issue_body = requests[-1]["body"]["fields"]
+    assert issue_body["customfield_45678"] == "2023-11-15T01:13:20.000+0300"
 
 
 @pytest.mark.asyncio

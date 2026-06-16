@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -30,6 +31,16 @@ def jira_option(value: str, option_id: str | None = None) -> dict[str, str]:
     if option_id:
         return {"id": option_id}
     return {"value": value}
+
+
+def format_jira_datetime(value: datetime) -> str:
+    """Format a datetime for a Jira date-time picker field.
+
+    Jira's REST API v2 expects ISO 8601 with a ``[+-]hhmm`` offset (no colon)
+    and mandatory fractional seconds, e.g. ``2026-06-16T14:30:00.000+0300``.
+    The ``dd.MM.yyyy HH:mm`` shown in the UI is only a display format.
+    """
+    return value.astimezone(runtime_timezone()).strftime("%Y-%m-%dT%H:%M:%S.000%z")
 
 
 def _payload_option_summary(payload: dict[str, str]) -> dict[str, str]:
@@ -78,6 +89,7 @@ def build_jira_issue_payload(
     *,
     message_url: str,
     channel_name: str | None,
+    start_field_id: str | None = None,
     valid_incident_option: dict[str, str] | None = None,
     source_option: dict[str, str] | None = None,
     is_crit_alert_option: dict[str, str] | None = None,
@@ -107,6 +119,8 @@ def build_jira_issue_payload(
         or jira_option(JIRA_IS_CRIT_ALERT_VALUE),
         "labels": ["mattermost-alert"],
     }
+    if start_field_id is not None:
+        fields[start_field_id] = format_jira_datetime(created_at)
     if valid_incident_option is not None:
         fields[valid_incident_field_id] = valid_incident_option
     return {"fields": fields}
@@ -148,6 +162,7 @@ class JiraClient:
             configured_valid_incident_field=settings.jira_valid_incident_field,
             configured_source_field=settings.jira_source_field,
             configured_is_crit_alert_field=settings.jira_is_crit_alert_field,
+            configured_start_field=settings.jira_start_field,
         )
         self._client = http_client or httpx.AsyncClient(
             base_url=settings.jira_base_url,
@@ -176,6 +191,11 @@ class JiraClient:
         is_crit_alert_field_id = await self._get_field_id(
             self._settings.jira_is_crit_alert_field
         )
+        start_field_id = (
+            await self._get_field_id(self._settings.jira_start_field)
+            if self._settings.jira_start_field
+            else None
+        )
         source_option = await self._get_option_payload(
             source_field_id, JIRA_SOURCE_VALUE
         )
@@ -190,6 +210,7 @@ class JiraClient:
             post,
             message_url=message_url,
             channel_name=channel_name,
+            start_field_id=start_field_id,
             source_option=source_option,
             is_crit_alert_option=is_crit_alert_option,
         )
@@ -207,6 +228,7 @@ class JiraClient:
             description_type=type(description).__name__,
             valid_incident_field_id=valid_incident_field_id,
             valid_incident_on_create=False,
+            start_field_id=start_field_id,
             source_field_id=source_field_id,
             source_option=_payload_option_summary(source_option),
             is_crit_alert_field_id=is_crit_alert_field_id,

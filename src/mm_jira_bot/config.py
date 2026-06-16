@@ -80,6 +80,7 @@ class Settings:
     jira_valid_incident_field: str
     jira_source_field: str
     jira_is_crit_alert_field: str
+    jira_start_field: str | None
     jira_confirmed_status_id: str | None
     database_url: str
     incident_timezone: str = "Europe/Moscow"
@@ -120,6 +121,7 @@ class Settings:
             ),
             jira_source_field=_required("JIRA_SOURCE_FIELD"),
             jira_is_crit_alert_field=_required("JIRA_IS_CRIT_ALERT_FIELD"),
+            jira_start_field=_optional("JIRA_START_FIELD"),
             jira_confirmed_status_id=_optional("JIRA_CONFIRMED_STATUS_ID"),
             database_url=_required("DATABASE_URL"),
             incident_timezone=_optional("INCIDENT_TIMEZONE", "Europe/Moscow")

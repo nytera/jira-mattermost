@@ -64,6 +64,7 @@ flowchart LR
 - `JIRA_VALID_INCIDENT_FIELD`, например `Валидность`;
 - `JIRA_SOURCE_FIELD`, например `Источник`;
 - `JIRA_IS_CRIT_ALERT_FIELD`, например `Был ли крит алерт?`;
+- `JIRA_START_FIELD`, например `Начало`, date-time picker поле, в которое пишется время прихода алерта, опционально;
 - `JIRA_CONFIRMED_STATUS_ID`, id transition в статус `Confirmed Incident`, опционально.
 
 Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его.
@@ -74,6 +75,8 @@ flowchart LR
 - `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes/{issueTypeId}`.
 
 `JIRA_SOURCE_FIELD` должен иметь option `Crit alert`, а `JIRA_IS_CRIT_ALERT_FIELD` должен иметь option `Да` для выбранных `JIRA_PROJECT_KEY` и `JIRA_ISSUE_TYPE`. `JIRA_VALID_INCIDENT_FIELD` при создании issue не отправляется, потому что дефолт выставляет сама Jira; при подтверждении бот обновляет это поле в option `Валидный`.
+
+`JIRA_START_FIELD` (если задано) — date-time picker поле, которое заполняется временем прихода алерта при создании issue. Значение отправляется в формате ISO 8601 с offset вида `+0300` и обязательной дробной частью секунд (например, `2026-06-16T14:30:00.000+0300`); `dd.MM.yyyy HH:mm` — это только формат отображения в Jira UI. Время приводится к `INCIDENT_TIMEZONE`.
 
 ## Configuration
 
