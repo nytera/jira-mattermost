@@ -881,6 +881,91 @@ def test_summary_removes_mattermost_emoji_shortcode(settings):
     )
 
 
+def test_summary_uses_grafana_alert_markdown_link_title(settings):
+    message = (
+        "🔴 [Деньги | Минус-слова vs Общее | выше на 70% [Crit]]"
+        "(http://grafana.wb.ru/alerting/grafana/abc123/view)\n"
+        "@sre-ads-duty\n"
+    )
+    post = replace(make_alert(), message=message)
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert payload["fields"]["summary"] == (
+        "[INC] 15.11.2023 - Деньги | Минус-слова vs Общее | выше на 70% [Crit]"
+    )
+
+
+def test_summary_uses_grafana_alert_angle_link_title(settings):
+    message = (
+        "🔴 <http://grafana.wb.ru/alerting/grafana/abc123/view|"
+        "Доля рекламных кликов :: Платформа :: Ниже на 10% :: crit>\n"
+        "@sre-ads-duty\n"
+    )
+    post = replace(make_alert(), message=message)
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert payload["fields"]["summary"] == (
+        "[INC] 15.11.2023 - Доля рекламных кликов :: Платформа :: Ниже на 10% :: crit"
+    )
+
+
+def test_summary_uses_grafana_attachment_title_when_message_is_empty(settings):
+    post = MattermostPost.from_api(
+        {
+            "id": POST_ID,
+            "channel_id": "alerts-channel",
+            "user_id": "grafana-bot",
+            "message": "",
+            "create_at": 1700000000000,
+            "props": {
+                "attachments": [
+                    {
+                        "title": "ads_stat-consumer_antifraud_remove_messages 20% [Crit]",
+                        "title_link": (
+                            "http://grafana.wb.ru/alerting/grafana/abc123/view"
+                        ),
+                        "text": (
+                            "Message: Кол-во сообщений на удаление в датабас "
+                            "антифрода снизилось на 20%"
+                        ),
+                    }
+                ]
+            },
+        }
+    )
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert payload["fields"]["summary"] == (
+        "[INC] 15.11.2023 - "
+        "ads_stat-consumer_antifraud_remove_messages 20% [Crit]"
+    )
+    assert "Message: Кол-во сообщений" in payload["fields"]["description"]
+
+
 def test_builds_jira_payload_with_start_field(settings):
     post = make_alert()
     payload = build_jira_issue_payload(

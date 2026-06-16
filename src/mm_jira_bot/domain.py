@@ -34,6 +34,52 @@ def backend_now() -> datetime:
     return datetime.now(_runtime_timezone)
 
 
+def _attachment_field_text(field: dict) -> str | None:
+    title = str(field.get("title") or "").strip()
+    value = str(field.get("value") or "").strip()
+    if title and value:
+        return f"{title}: {value}"
+    return title or value or None
+
+
+def _attachment_text(attachment: dict) -> str:
+    lines: list[str] = []
+    for key in ("pretext", "title", "text"):
+        value = str(attachment.get(key) or "").strip()
+        if value:
+            lines.append(value)
+    fields = attachment.get("fields")
+    if isinstance(fields, list):
+        lines.extend(
+            field_text
+            for field in fields
+            if isinstance(field, dict)
+            for field_text in [_attachment_field_text(field)]
+            if field_text
+        )
+    return "\n".join(lines)
+
+
+def _message_from_api(data: dict) -> str:
+    message = data.get("message") or ""
+    if message:
+        return str(message)
+
+    props = data.get("props")
+    if not isinstance(props, dict):
+        return ""
+    attachments = props.get("attachments")
+    if not isinstance(attachments, list):
+        return ""
+    return "\n\n".join(
+        text
+        for attachment in attachments
+        if isinstance(attachment, dict)
+        for text in [_attachment_text(attachment)]
+        if text
+    )
+
+
 @dataclass(frozen=True)
 class MattermostPost:
     id: str
@@ -50,7 +96,7 @@ class MattermostPost:
             id=data["id"],
             channel_id=data["channel_id"],
             user_id=data["user_id"],
-            message=data.get("message", ""),
+            message=_message_from_api(data),
             create_at=int(data.get("create_at") or 0),
             channel_name=channel_name,
             root_id=data.get("root_id") or None,
