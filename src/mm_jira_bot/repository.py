@@ -70,6 +70,7 @@ class AlertTicket(Base):
         DateTime(timezone=True)
     )
     jira_confirmation_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
+    validity_label: Mapped[str | None] = mapped_column(String(64))
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=backend_now
@@ -307,6 +308,12 @@ class AlertTicketRepository:
             if not ticket.valid_incident:
                 ticket.confirmation_status = "failed_confirmation"
             ticket.last_error = error
+
+        self._mutate(post_id, apply)
+
+    def set_validity_label(self, post_id: str, label: str) -> None:
+        def apply(ticket: AlertTicket) -> None:
+            ticket.validity_label = label
 
         self._mutate(post_id, apply)
 

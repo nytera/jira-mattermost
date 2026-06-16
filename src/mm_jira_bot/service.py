@@ -18,7 +18,12 @@ from mm_jira_bot.formatting import (
     format_incident_message,
     format_thread_issue_created,
     format_thread_status_changed,
+    format_thread_validity_changed,
     is_resolved_alert,
+)
+from mm_jira_bot.jira import (
+    VALID_INCIDENT_EXPECTED_VALUE,
+    VALID_INCIDENT_FALSE_VALUE,
 )
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
@@ -139,6 +144,14 @@ class IncidentBotService:
                 )
         return self.repository.get_by_post_id(post.id)
 
+    def _validity_label_for_emoji(self, emoji_name: str) -> str | None:
+        """Map the two lightweight reactions to their "Валидность" option."""
+        if emoji_name == self.settings.mattermost_false_incident_reaction_name:
+            return VALID_INCIDENT_FALSE_VALUE
+        if emoji_name == self.settings.mattermost_expected_incident_reaction_name:
+            return VALID_INCIDENT_EXPECTED_VALUE
+        return None
+
     async def handle_reaction(
         self, reaction: ReactionEvent
     ) -> ConfirmationResult:
@@ -147,7 +160,13 @@ class IncidentBotService:
             emoji_name=reaction.emoji_name,
             user_id=reaction.user_id,
         )
-        if reaction.emoji_name != self.settings.mattermost_incident_reaction_name:
+        is_incident = (
+            reaction.emoji_name == self.settings.mattermost_incident_reaction_name
+        )
+        validity_label = (
+            None if is_incident else self._validity_label_for_emoji(reaction.emoji_name)
+        )
+        if not is_incident and validity_label is None:
             return ConfirmationResult(
                 status=ConfirmationStatus.IGNORED,
                 message="Reaction ignored: not configured incident reaction.",
@@ -168,11 +187,98 @@ class IncidentBotService:
         if ticket is None or ticket.jira_issue_key is None:
             await self.handle_alert_post(post)
 
-        return await self.confirm_incident(
-            reaction.post_id,
-            confirmed_by_user_id=reaction.user_id,
-            confirmed_at=datetime_from_mattermost_ms(reaction.create_at),
-            source="reaction",
+        if is_incident:
+            return await self.confirm_incident(
+                reaction.post_id,
+                confirmed_by_user_id=reaction.user_id,
+                confirmed_at=datetime_from_mattermost_ms(reaction.create_at),
+                source="reaction",
+            )
+
+        assert validity_label is not None
+        return await self.apply_validity_label(
+            reaction.post_id, validity_label=validity_label, source="reaction"
+        )
+
+    async def apply_validity_label(
+        self,
+        post_id: str,
+        *,
+        validity_label: str,
+        source: str,
+    ) -> ConfirmationResult:
+        """Lightweight path: set Jira "Валидность" and reply in the alert thread.
+
+        Unlike :meth:`confirm_incident`, this does not post to the incidents
+        channel, add a comment, or transition the issue. The last reaction wins:
+        each distinct label overwrites the Jira field. ``validity_label`` on the
+        ticket guards against re-applying the same label (no duplicate replies).
+        """
+        ticket = self.repository.get_by_post_id(post_id)
+        if ticket is None or ticket.jira_issue_key is None:
+            log.warning("incident.validity.jira_not_ready",
+                mattermost_post_id=post_id,
+                validity_label=validity_label,
+                source=source,
+            )
+            return ConfirmationResult(
+                status=ConfirmationStatus.PENDING_JIRA,
+                message="Validity update is skipped: the Jira issue is not ready yet.",
+            )
+
+        if ticket.validity_label == validity_label:
+            log.info("incident.validity.skipped_unchanged",
+                mattermost_post_id=post_id,
+                jira_issue_key=ticket.jira_issue_key,
+                validity_label=validity_label,
+            )
+            return ConfirmationResult(
+                status=ConfirmationStatus.VALIDITY_SET,
+                message=f"Validity is already set to {validity_label}.",
+                jira_issue_url=ticket.jira_issue_url,
+            )
+
+        try:
+            await self.jira.set_validity(ticket.jira_issue_key, validity_label)
+        except ApiError as exc:
+            self.repository.set_last_error(post_id, str(exc))
+            log.error("incident.validity.failed",
+                mattermost_post_id=post_id,
+                jira_issue_key=ticket.jira_issue_key,
+                validity_label=validity_label,
+                error=str(exc),
+            )
+            return ConfirmationResult(
+                status=ConfirmationStatus.ERROR,
+                message="Validity update failed; please retry.",
+                jira_issue_url=ticket.jira_issue_url,
+            )
+
+        self.repository.set_validity_label(post_id, validity_label)
+        log.info("incident.validity.updated",
+            mattermost_post_id=post_id,
+            jira_issue_key=ticket.jira_issue_key,
+            validity_label=validity_label,
+            source=source,
+        )
+        await self._post_alert_thread_reply(
+            post_id,
+            channel_id=ticket.mattermost_channel_id,
+            message=format_thread_validity_changed(
+                validity_label=validity_label,
+                jira_issue_key=ticket.jira_issue_key,
+                jira_issue_url=ticket.jira_issue_url,
+            ),
+            event="mattermost.alert_thread.validity_notice_published",
+            props={
+                "jira_issue_key": ticket.jira_issue_key,
+                "validity_label": validity_label,
+            },
+        )
+        return ConfirmationResult(
+            status=ConfirmationStatus.VALIDITY_SET,
+            message=f"Validity set to {validity_label}.",
+            jira_issue_url=ticket.jira_issue_url,
         )
 
     async def handle_slash_command(self, *, user_id: str, text: str) -> CommandResponse:

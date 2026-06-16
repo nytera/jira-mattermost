@@ -22,6 +22,8 @@ log = get_logger(__name__)
 CUSTOM_FIELD_ID_PATTERN = re.compile(r"^customfield_\d+$")
 VALID_INCIDENT_EMPTY_VALUE = "Не заполнено"
 VALID_INCIDENT_CONFIRMED_VALUE = "Валидный"
+VALID_INCIDENT_FALSE_VALUE = "Ложный"
+VALID_INCIDENT_EXPECTED_VALUE = "Ожидаемый"
 
 
 def _payload_option_summary(payload: dict[str, str]) -> dict[str, str]:
@@ -172,14 +174,18 @@ class JiraClient(AsyncApiClient):
         )
 
     async def set_valid_incident(self, issue_key: str, value: bool) -> None:
-        field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
-        option_value = (
-            VALID_INCIDENT_CONFIRMED_VALUE if value else VALID_INCIDENT_EMPTY_VALUE
+        await self.set_validity(
+            issue_key,
+            VALID_INCIDENT_CONFIRMED_VALUE if value else VALID_INCIDENT_EMPTY_VALUE,
         )
+
+    async def set_validity(self, issue_key: str, option_value: str) -> None:
+        """Set the "Валидность" field to an arbitrary option value."""
+        field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         option_payload = await self._get_option_payload(field_id, option_value)
         payload = {"fields": {field_id: option_payload}}
         log.info(
-            "jira.valid_incident.payload_prepared",
+            "jira.validity.payload_prepared",
             jira_issue_key=issue_key,
             field_id=field_id,
             requested_value=option_value,
@@ -190,7 +196,7 @@ class JiraClient(AsyncApiClient):
             self._api_path(f"issue/{issue_key}"),
             json=payload,
             error_message="Failed to update Jira issue",
-            event="jira.update_valid_incident",
+            event="jira.update_validity",
             jira_issue_key=issue_key,
         )
 

@@ -78,6 +78,8 @@ class Settings:
     database_url: str
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
+    mattermost_false_incident_reaction_name: str = "man_gesturing_no"
+    mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
     log_level: str = "INFO"
     log_format: str = "json"
     api_retry_attempts: int = 4
@@ -119,6 +121,12 @@ class Settings:
             database_url=_required("DATABASE_URL"),
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
             mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
+            mattermost_false_incident_reaction_name=_env(
+                "MATTERMOST_FALSE_INCIDENT_REACTION_NAME", "man_gesturing_no"
+            ),
+            mattermost_expected_incident_reaction_name=_env(
+                "MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME", "arrows_counterclockwise"
+            ),
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),

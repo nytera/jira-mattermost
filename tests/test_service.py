@@ -85,6 +85,8 @@ class FakeJiraClient:
         self.comments: list[tuple[str, str, str]] = []
         self.transitions: list[tuple[str, str]] = []
         self.valid_by_issue: dict[str, bool] = {}
+        self.validity_updates: list[tuple[str, str]] = []
+        self.validity_by_issue: dict[str, str] = {}
 
     async def create_issue(
         self,
@@ -112,6 +114,10 @@ class FakeJiraClient:
     async def set_valid_incident(self, issue_key: str, value: bool):
         self.valid_updates.append((issue_key, value))
         self.valid_by_issue[issue_key] = value
+
+    async def set_validity(self, issue_key: str, option_value: str):
+        self.validity_updates.append((issue_key, option_value))
+        self.validity_by_issue[issue_key] = option_value
 
     async def add_confirmation_comment(
         self, issue_key: str, *, incident_message_url: str, confirmed_by_user_id: str
@@ -305,6 +311,126 @@ async def test_confirms_incident_through_reaction(service):
     assert ticket.incident_post_id is not None
     assert service.jira.valid_updates == [("OPS-1", True)]
     assert len(service.jira.comments) == 1
+
+
+@pytest.mark.asyncio
+async def test_false_reaction_sets_validity_without_incident_post(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="man_gesturing_no",
+            create_at=1,
+        )
+    )
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert result.status == "validity_set"
+    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
+    assert ticket.validity_label == "Ложный"
+    # Lightweight path: not a confirmed incident, nothing posted to incidents channel.
+    assert ticket.valid_incident is False
+    assert ticket.incident_post_id is None
+    incident_posts = [
+        created
+        for created in service.mattermost.created_posts
+        if created["channel_id"] == "incidents-channel"
+    ]
+    assert incident_posts == []
+    thread_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post.id
+    ]
+    # One reply for issue creation, one for the validity change.
+    assert len(thread_replies) == 2
+    assert "Ложный" in thread_replies[1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_expected_reaction_sets_validity(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="arrows_counterclockwise",
+            create_at=1,
+        )
+    )
+
+    assert result.status == "validity_set"
+    assert service.jira.validity_updates == [("OPS-1", "Ожидаемый")]
+
+
+@pytest.mark.asyncio
+async def test_last_validity_reaction_wins(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="v", emoji_name="incident", create_at=1)
+    )
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=2
+        )
+    )
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert service.jira.valid_updates == [("OPS-1", True)]
+    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+    assert ticket.validity_label == "Ложный"
+
+
+@pytest.mark.asyncio
+async def test_repeated_validity_reaction_is_idempotent(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=1
+        )
+    )
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=2
+        )
+    )
+
+    assert result.status == "validity_set"
+    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
+    validity_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post.id and "Валидность" in created["message"]
+    ]
+    assert len(validity_replies) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_reaction_is_ignored(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="v", emoji_name="thumbsup", create_at=1)
+    )
+
+    assert result.status == "ignored"
+    assert service.jira.validity_updates == []
 
 
 @pytest.mark.asyncio

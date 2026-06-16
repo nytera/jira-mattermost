@@ -73,6 +73,18 @@ def format_thread_status_changed(
     return "\n".join(lines)
 
 
+def format_thread_validity_changed(
+    *,
+    validity_label: str,
+    jira_issue_key: str | None,
+    jira_issue_url: str | None,
+) -> str:
+    return (
+        f"Поле «Валидность» обновлено: {validity_label}. "
+        f"Задача Jira: {_jira_link(jira_issue_key, jira_issue_url)}."
+    )
+
+
 def format_incident_message(
     ticket: TicketView,
     *,

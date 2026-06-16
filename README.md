@@ -52,6 +52,15 @@ flowchart LR
 
 Также поддерживается Mattermost redirect permalink вида `/_redirect/pl/<post_id>`.
 
+## Validity Reactions
+
+Помимо подтверждения валидного инцидента (`:incident:`), есть две «лёгкие» реакции, которые только проставляют поле `Валидность` в Jira и пишут короткий ответ в тред алерта. Они **не** публикуют сообщение в канал инцидентов, не добавляют комментарий и не меняют статус задачи:
+
+- `:man_gesturing_no:` → `Валидность = Ложный`;
+- `:arrows_counterclockwise:` → `Валидность = Ожидаемый`.
+
+Имена реакций настраиваются через `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` и `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME`. Побеждает последняя реакция: каждая новая реакция перезаписывает поле `Валидность` в Jira своим значением. Если на момент реакции Jira issue ещё не создана, обновление пропускается (best-effort).
+
 ## Jira Setup
 
 Для on-prem/Data Center Jira создайте personal access token и укажите:

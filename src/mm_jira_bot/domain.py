@@ -74,6 +74,7 @@ class ConfirmationStatus(StrEnum):
     NOT_FOUND = "not_found"
     IGNORED = "ignored"
     ERROR = "error"
+    VALIDITY_SET = "validity_set"
 
 
 @dataclass(frozen=True)
