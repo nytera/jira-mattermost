@@ -101,9 +101,10 @@ def build_jira_issue_payload(
         issue_type = {"name": settings.jira_issue_type}
 
     created_at = post.created_at_datetime if post.create_at > 0 else backend_now()
-    alert_date = created_at.astimezone(runtime_timezone()).strftime("%d.%m.%y")
-    message_lines = post.message.splitlines()
-    first_message_line = message_lines[0] if message_lines else ""
+    alert_date = created_at.astimezone(runtime_timezone()).strftime("%d.%m.%Y")
+    first_message_line = next(
+        (line for line in post.message.splitlines() if line.strip()), ""
+    )
 
     fields: dict[str, Any] = {
         "project": {"key": settings.jira_project_key},

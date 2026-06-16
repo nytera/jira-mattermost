@@ -417,7 +417,7 @@ def test_builds_jira_payload(settings):
     assert "customfield_12345" not in fields
     assert fields["customfield_23456"] == {"value": "Crit alert"}
     assert fields["customfield_34567"] == {"value": "Да"}
-    assert fields["summary"] == "[INC] 15.11.23 - CPU usage is above 95%"
+    assert fields["summary"] == "[INC] 15.11.2023 - CPU usage is above 95%"
     assert isinstance(fields["description"], str)
     assert "Mattermost alert" in fields["description"]
     assert "Message time: 2023-11-15T01:13:20+03:00" in fields["description"]
@@ -473,7 +473,7 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
         channel_name="alerts",
     )
 
-    assert payload["fields"]["summary"] == "[INC] 30.05.26 - CPU usage is above 95%"
+    assert payload["fields"]["summary"] == "[INC] 30.05.2026 - CPU usage is above 95%"
     assert "Message time: " in payload["fields"]["description"]
 
 
