@@ -25,6 +25,7 @@ from mm_jira_bot.jira import (
     VALID_INCIDENT_EXPECTED_VALUE,
     VALID_INCIDENT_FALSE_VALUE,
 )
+from mm_jira_bot.jira_payload import build_postmortem_description
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
@@ -40,6 +41,16 @@ BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
 class CommandResponse:
     text: str
     response_type: str = "ephemeral"
+
+
+@dataclass(frozen=True)
+class DebugCreateFromLinkResult:
+    ok: bool
+    status: str
+    message: str
+    mattermost_post_id: str | None = None
+    jira_issue_key: str | None = None
+    jira_issue_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -468,6 +479,80 @@ class IncidentBotService:
         for post in posts:
             await self.handle_alert_post(post)
 
+    async def debug_create_from_link(self, link: str) -> DebugCreateFromLinkResult:
+        """Create (or fetch) a Jira issue for an alert given its Band link/post id.
+
+        Reuses the normal :meth:`handle_alert_post` flow, but resolves the post
+        from a pasted permalink and returns explicit feedback for the admin UI.
+        """
+        post_id = parse_post_id_from_text(link)
+        if post_id is None:
+            return DebugCreateFromLinkResult(
+                ok=False,
+                status="invalid_link",
+                message="Не удалось распознать ссылку или post id.",
+            )
+
+        try:
+            post = await self.mattermost.get_post(post_id)
+        except ApiError as exc:
+            log.error("debug_admin.create_from_link.post_lookup_failed",
+                mattermost_post_id=post_id,
+                error=str(exc),
+            )
+            return DebugCreateFromLinkResult(
+                ok=False,
+                status="post_not_found",
+                message=f"Не удалось прочитать сообщение `{post_id}`: {exc}",
+                mattermost_post_id=post_id,
+            )
+
+        if post.channel_id != self.settings.mattermost_alert_channel_id:
+            return DebugCreateFromLinkResult(
+                ok=False,
+                status="skipped",
+                message="Сообщение не в канале алертов.",
+                mattermost_post_id=post_id,
+            )
+        if is_resolved_alert(post.message):
+            return DebugCreateFromLinkResult(
+                ok=False,
+                status="skipped",
+                message="Это resolved-алерт — задача не создаётся.",
+                mattermost_post_id=post_id,
+            )
+
+        existing = self.repository.get_by_post_id(post_id)
+        already_had_issue = bool(existing and existing.jira_issue_key)
+
+        ticket = await self.handle_alert_post(post)
+        if ticket is None:
+            return DebugCreateFromLinkResult(
+                ok=False,
+                status="skipped",
+                message="Сообщение пропущено (бот, не алерт-канал или resolved).",
+                mattermost_post_id=post_id,
+            )
+        if ticket.jira_issue_key:
+            return DebugCreateFromLinkResult(
+                ok=True,
+                status="exists" if already_had_issue else "created",
+                message=(
+                    "Задача уже существовала."
+                    if already_had_issue
+                    else "Задача создана."
+                ),
+                mattermost_post_id=post_id,
+                jira_issue_key=ticket.jira_issue_key,
+                jira_issue_url=ticket.jira_issue_url,
+            )
+        return DebugCreateFromLinkResult(
+            ok=False,
+            status="error",
+            message=ticket.last_error or "Создание задачи не удалось, см. логи.",
+            mattermost_post_id=post_id,
+        )
+
     async def debug_recreate_jira_issue(
         self, post_id: str, *, force: bool = False
     ) -> DebugJiraRecreateResult:
@@ -705,6 +790,21 @@ class IncidentBotService:
             )
 
         if not ticket.jira_confirmation_comment_added:
+            # Runs once per confirmation: swap the alert description for the
+            # postmortem template, then add the confirmation comment. The
+            # description is set first so a later comment failure does not leave
+            # the issue without the template (the guard skips both on retry).
+            await self.jira.set_description(
+                ticket.jira_issue_key,
+                build_postmortem_description(
+                    incident_message_url=ticket.incident_message_url,
+                    alert_message_url=ticket.mattermost_message_url,
+                ),
+            )
+            log.info("jira.description.postmortem_set",
+                mattermost_post_id=ticket.mattermost_post_id,
+                jira_issue_key=ticket.jira_issue_key,
+            )
             await self.jira.add_confirmation_comment(
                 ticket.jira_issue_key,
                 incident_message_url=ticket.incident_message_url,

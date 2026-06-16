@@ -87,6 +87,7 @@ class FakeJiraClient:
         self.valid_by_issue: dict[str, bool] = {}
         self.validity_updates: list[tuple[str, str]] = []
         self.validity_by_issue: dict[str, str] = {}
+        self.descriptions: list[tuple[str, str]] = []
 
     async def create_issue(
         self,
@@ -118,6 +119,9 @@ class FakeJiraClient:
     async def set_validity(self, issue_key: str, option_value: str):
         self.validity_updates.append((issue_key, option_value))
         self.validity_by_issue[issue_key] = option_value
+
+    async def set_description(self, issue_key: str, description: str):
+        self.descriptions.append((issue_key, description))
 
     async def add_confirmation_comment(
         self, issue_key: str, *, incident_message_url: str, confirmed_by_user_id: str
@@ -311,6 +315,12 @@ async def test_confirms_incident_through_reaction(service):
     assert ticket.incident_post_id is not None
     assert service.jira.valid_updates == [("OPS-1", True)]
     assert len(service.jira.comments) == 1
+    assert len(service.jira.descriptions) == 1
+    issue_key, description = service.jira.descriptions[0]
+    assert issue_key == "OPS-1"
+    assert "h2. Хронология" in description
+    assert ticket.incident_message_url in description
+    assert ticket.mattermost_message_url in description
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,12 @@ lifespan, launches two background asyncio tasks against one
 - **`pending_work_loop`** — every `PENDING_WORK_INTERVAL_SECONDS` calls `process_pending_work()` to retry failed Jira creates and pending confirmations from the DB. This is the durability backbone: any partial failure is recovered here.
 
 HTTP endpoints: `GET /healthz` and `POST /mattermost/slash/incident` (the
-`/incident` slash command; validates `MATTERMOST_SLASH_TOKEN` if set).
+`/incident` slash command; validates `MATTERMOST_SLASH_TOKEN` if set). When
+`DEBUG_ADMIN_ENABLED`, `register_debug_admin` also mounts the SPA at
+`GET /debug/admin` plus its JSON API: `summary`, `alerts`, `alerts/{post_id}`,
+`POST alerts/{post_id}/jira/recreate`, `POST alerts/create-from-link` (create a
+Jira issue from a pasted Band link/post id), and `GET api/logs` (reads the
+in-memory `LogRingBuffer` installed by `configure_logging`).
 
 `create_app(service=...)` accepts an injected service — tests pass fakes and a
 temp SQLite DB instead of live clients.

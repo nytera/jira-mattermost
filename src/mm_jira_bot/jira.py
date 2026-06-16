@@ -200,6 +200,22 @@ class JiraClient(AsyncApiClient):
             jira_issue_key=issue_key,
         )
 
+    async def set_description(self, issue_key: str, description: str) -> None:
+        payload = {"fields": {"description": description}}
+        log.info(
+            "jira.description.payload_prepared",
+            jira_issue_key=issue_key,
+            description_length=len(description),
+        )
+        await self._request(
+            "PUT",
+            self._api_path(f"issue/{issue_key}"),
+            json=payload,
+            error_message="Failed to update Jira description",
+            event="jira.update_description",
+            jira_issue_key=issue_key,
+        )
+
     async def add_confirmation_comment(
         self,
         issue_key: str,
