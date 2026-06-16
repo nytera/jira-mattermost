@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Protocol
 
 from mm_jira_bot.domain import backend_datetime
+
+# Leading decorative symbols (status emoji like 🔴, bullets, etc.) and
+# whitespace that Grafana prepends to the alert title line.
+_LEADING_SYMBOLS = re.compile(r"^[\W_]+", re.UNICODE)
 
 
 class TicketView(Protocol):
@@ -15,6 +20,7 @@ class TicketView(Protocol):
 
 def truncate_for_summary(text: str, *, limit: int = 120) -> str:
     normalized = " ".join(text.split())
+    normalized = _LEADING_SYMBOLS.sub("", normalized)
     if not normalized:
         return "Mattermost alert"
     if len(normalized) <= limit:

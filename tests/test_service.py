@@ -424,6 +424,28 @@ def test_builds_jira_payload(settings):
     assert "Original Mattermost message: https://mattermost.example.com/_redirect/pl/post" in fields["description"]
 
 
+def test_summary_uses_first_non_empty_line_without_leading_emoji(settings):
+    message = (
+        "\n"
+        "🔴 Доля рекламных кликов :: Платформа :: Ниже на 10% :: crit\n"
+        "@sre-ads-duty\n"
+    )
+    post = replace(make_alert(), message=message)
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        post,
+        message_url="https://mattermost.example.com/_redirect/pl/post",
+        channel_name="alerts",
+    )
+
+    assert payload["fields"]["summary"] == (
+        "[INC] 15.11.2023 - Доля рекламных кликов :: Платформа :: Ниже на 10% :: crit"
+    )
+
+
 def test_builds_jira_payload_with_start_field(settings):
     post = make_alert()
     payload = build_jira_issue_payload(
