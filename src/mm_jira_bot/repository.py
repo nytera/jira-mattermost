@@ -8,7 +8,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from mm_jira_bot.domain import MattermostPost, datetime_from_mattermost_ms, utc_now
+from mm_jira_bot.domain import MattermostPost, backend_now, datetime_from_mattermost_ms
 
 
 def normalize_database_url(database_url: str) -> str:
@@ -62,10 +62,10 @@ class AlertTicket(Base):
     jira_confirmation_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
+        DateTime(timezone=True), default=backend_now
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+        DateTime(timezone=True), default=backend_now, onupdate=backend_now
     )
 
 

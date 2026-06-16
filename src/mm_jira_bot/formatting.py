@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Protocol
+
+from mm_jira_bot.domain import backend_datetime
 
 
 class TicketView(Protocol):
@@ -26,8 +28,7 @@ def format_incident_message(
     confirmed_by_user_id: str,
     confirmed_at: datetime,
 ) -> str:
-    if confirmed_at.tzinfo is None:
-        confirmed_at = confirmed_at.replace(tzinfo=timezone.utc)
+    confirmed_at = backend_datetime(confirmed_at)
     jira_part = (
         f"[{ticket.jira_issue_key}]({ticket.jira_issue_url})"
         if ticket.jira_issue_key and ticket.jira_issue_url

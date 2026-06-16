@@ -3,12 +3,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+from zoneinfo import ZoneInfo
+
+
+_runtime_timezone = ZoneInfo("UTC")
+
+
+def configure_runtime_timezone(timezone_name: str) -> None:
+    global _runtime_timezone
+    _runtime_timezone = ZoneInfo(timezone_name)
+
+
+def runtime_timezone() -> ZoneInfo:
+    return _runtime_timezone
+
+
+def backend_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_runtime_timezone)
 
 
 def datetime_from_mattermost_ms(value: int | None) -> datetime | None:
     if value is None:
         return None
-    return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(value / 1000, tz=_runtime_timezone)
 
 
 def mattermost_ms_from_datetime(value: datetime | None) -> int:
@@ -19,8 +38,12 @@ def mattermost_ms_from_datetime(value: datetime | None) -> int:
     return int(value.timestamp() * 1000)
 
 
+def backend_now() -> datetime:
+    return datetime.now(_runtime_timezone)
+
+
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return backend_now()
 
 
 @dataclass(frozen=True)

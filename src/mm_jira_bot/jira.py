@@ -3,12 +3,17 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 
 from mm_jira_bot.config import Settings
-from mm_jira_bot.domain import JiraIssue, MattermostPost, utc_now
+from mm_jira_bot.domain import (
+    JiraIssue,
+    MattermostPost,
+    backend_datetime,
+    backend_now,
+    runtime_timezone,
+)
 from mm_jira_bot.formatting import truncate_for_summary
 from mm_jira_bot.logging import log_event
 from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
@@ -44,7 +49,11 @@ def build_jira_description(
     message_url: str,
     channel_name: str | None,
 ) -> str:
-    created_at = post.created_at_datetime.isoformat() if post.created_at_datetime else ""
+    created_at = (
+        backend_datetime(post.created_at_datetime).isoformat()
+        if post.created_at_datetime
+        else ""
+    )
     lines = [
         "Mattermost alert",
         "",
@@ -79,10 +88,8 @@ def build_jira_issue_payload(
     else:
         issue_type = {"name": settings.jira_issue_type}
 
-    created_at = post.created_at_datetime if post.create_at > 0 else utc_now()
-    alert_date = created_at.astimezone(ZoneInfo(settings.incident_timezone)).strftime(
-        "%d.%m.%y"
-    )
+    created_at = post.created_at_datetime if post.create_at > 0 else backend_now()
+    alert_date = created_at.astimezone(runtime_timezone()).strftime("%d.%m.%y")
     message_lines = post.message.splitlines()
     first_message_line = message_lines[0] if message_lines else ""
 

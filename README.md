@@ -101,7 +101,7 @@ cp .env.example .env
 - `JIRA_IS_CRIT_ALERT_FIELD`
 - `JIRA_CONFIRMED_STATUS_ID`
 - `DATABASE_URL`
-- `INCIDENT_TIMEZONE=Europe/Moscow`, timezone для даты в названии Jira issue
+- `INCIDENT_TIMEZONE=Europe/Moscow`, timezone для backend-времени в Jira payload, incident-сообщениях и логах
 
 Для SQLite локально:
 

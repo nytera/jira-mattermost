@@ -11,7 +11,7 @@ import mm_jira_bot.jira as jira_module
 from fastapi.testclient import TestClient
 
 from mm_jira_bot.config import Settings, load_dotenv_file
-from mm_jira_bot.domain import JiraIssue, MattermostPost, ReactionEvent, utc_now
+from mm_jira_bot.domain import JiraIssue, MattermostPost, ReactionEvent
 from mm_jira_bot.formatting import format_incident_message
 from mm_jira_bot.jira import build_jira_issue_payload
 from mm_jira_bot.repository import (
@@ -344,13 +344,14 @@ def test_builds_jira_payload(settings):
     assert fields["summary"] == "[INC] 15.11.23 - CPU usage is above 95%"
     assert isinstance(fields["description"], str)
     assert "Mattermost alert" in fields["description"]
+    assert "Message time: 2023-11-15T01:13:20+03:00" in fields["description"]
     assert "Original Mattermost message: https://mattermost.example.com/_redirect/pl/post" in fields["description"]
 
 
 def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, monkeypatch):
     monkeypatch.setattr(
         jira_module,
-        "utc_now",
+        "backend_now",
         lambda: datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
     )
     post = replace(make_alert(), create_at=0)
@@ -365,6 +366,7 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
     )
 
     assert payload["fields"]["summary"] == "[INC] 30.05.26 - CPU usage is above 95%"
+    assert "Message time: " in payload["fields"]["description"]
 
 
 @pytest.mark.asyncio
@@ -580,10 +582,11 @@ def test_builds_incident_channel_message(service):
     message = format_incident_message(
         ticket,
         confirmed_by_user_id="validator",
-        confirmed_at=utc_now().astimezone(timezone.utc),
+        confirmed_at=datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
     )
 
     assert "CPU usage is above 95%" in message
     assert "Original alert" in message
     assert "OPS-1" in message
     assert "validator" in message
+    assert "Confirmed at: `2026-05-30T01:30:00+03:00`" in message

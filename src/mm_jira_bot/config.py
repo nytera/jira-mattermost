@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from mm_jira_bot.domain import configure_runtime_timezone
+
 
 def load_dotenv_file(path: str | Path = ".env") -> None:
     env_path = Path(path)
@@ -89,6 +91,9 @@ class Settings:
     backfill_recent_posts_limit: int = 0
     enable_websocket: bool = True
     enable_backfill_on_startup: bool = False
+
+    def __post_init__(self) -> None:
+        configure_runtime_timezone(self.incident_timezone)
 
     @classmethod
     def from_env(cls, dotenv_path: str | Path = ".env") -> "Settings":

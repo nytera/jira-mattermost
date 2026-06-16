@@ -11,8 +11,8 @@ from mm_jira_bot.domain import (
     ConfirmationStatus,
     MattermostPost,
     ReactionEvent,
+    backend_now,
     datetime_from_mattermost_ms,
-    utc_now,
 )
 from mm_jira_bot.formatting import format_incident_message
 from mm_jira_bot.logging import log_event
@@ -219,7 +219,7 @@ class IncidentBotService:
         source: str,
         confirmed_at: datetime | None = None,
     ) -> ConfirmationResult:
-        confirmed_at = confirmed_at or utc_now()
+        confirmed_at = confirmed_at or backend_now()
         ticket = self.repository.get_by_post_id(post_id)
         if ticket is None:
             log_event(
