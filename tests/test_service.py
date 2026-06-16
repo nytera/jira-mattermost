@@ -8,12 +8,13 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 import mm_jira_bot.jira as jira_module
+import mm_jira_bot.jira_payload as jira_payload_module
 from fastapi.testclient import TestClient
 
 from mm_jira_bot.config import Settings, load_dotenv_file
 from mm_jira_bot.domain import JiraIssue, MattermostPost, ReactionEvent
 from mm_jira_bot.formatting import format_incident_message
-from mm_jira_bot.jira import build_jira_issue_payload
+from mm_jira_bot.jira_payload import build_jira_issue_payload
 from mm_jira_bot.repository import (
     AlertTicketRepository,
     create_database_engine,
@@ -621,7 +622,7 @@ def test_builds_jira_payload_without_start_field_by_default(settings):
 
 def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, monkeypatch):
     monkeypatch.setattr(
-        jira_module,
+        jira_payload_module,
         "backend_now",
         lambda: datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
     )

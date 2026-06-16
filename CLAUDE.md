@@ -36,12 +36,15 @@ HTTP endpoints: `GET /healthz` and `POST /mattermost/slash/incident` (the `/inci
 | `service.py` | Orchestration. The only place that coordinates Mattermost + Jira + repository. Read this first. |
 | `http.py` | `AsyncApiClient` base for both REST clients: owns the httpx client (`aclose`) and folds per-request retry/HTTP boilerplate into `_retry` / `_request`. |
 | `mattermost.py` | Mattermost REST + WebSocket client (extends `AsyncApiClient`); event parsers (`parse_posted_event`, `parse_reaction_event`). |
-| `jira.py` | Jira **9.x Data Center / on-prem** REST v2 client (Bearer auth, extends `AsyncApiClient`). Field-name→id resolution, option-value resolution via createmeta, issue payload building. |
+| `jira.py` | Jira **9.x Data Center / on-prem** REST v2 client (Bearer auth, extends `AsyncApiClient`). Field-name→id resolution, option-value resolution via createmeta. |
+| `jira_payload.py` | Pure (I/O-free) Jira payload/description builders + shared option constants; unit-tested directly without a client. |
 | `repository.py` | SQLAlchemy model `AlertTicket` + `AlertTicketRepository` (all DB access; mutators go through `_mutate`). |
 | `domain.py` | Frozen dataclasses, enums, and timezone helpers. |
 | `formatting.py` | Incident-message and Jira-summary text. |
 | `retry.py` | `ApiError` + `retry_async` (exponential backoff on 429/5xx only). |
 | `logging.py` | JSON formatter + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`). |
+| `web.py` | FastAPI app factory (`create_app`), background loops, `/healthz` + `/incident` slash. |
+| `debug_admin.py` | Optional debug-admin UI/API (`register_debug_admin`), gated by `DEBUG_ADMIN_ENABLED`. |
 | `config.py` | `.env` loader + `Settings.from_env()`. |
 
 ### Two flows, both idempotent
