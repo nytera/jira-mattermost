@@ -221,7 +221,14 @@ WHERE jira_issue_key IS NULL
 
 ## Logs
 
-Логи пишутся в stdout как JSON. Важные события:
+Логи пишутся в stdout. Формат выбирается переменной `LOG_FORMAT`:
+
+- `LOG_FORMAT=json` (по умолчанию) — по одному JSON-объекту на событие, удобно для сбора в Loki/ELK и т.п.;
+- `LOG_FORMAT=text` — компактные читаемые строки вида `время УРОВЕНЬ событие key=value …`, удобно при локальном запуске.
+
+Уровень логирования задаётся `LOG_LEVEL` (по умолчанию `INFO`).
+
+Важные события:
 
 - `mattermost.alert.received`;
 - `jira.issue.created`;
