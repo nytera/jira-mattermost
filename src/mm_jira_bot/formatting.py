@@ -22,7 +22,7 @@ def truncate_for_summary(text: str, *, limit: int = 120) -> str:
     normalized = " ".join(text.split())
     normalized = _LEADING_SYMBOLS.sub("", normalized)
     if not normalized:
-        return "Mattermost alert"
+        return "Band alert"
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 1].rstrip() + "..."
@@ -76,7 +76,7 @@ def format_incident_message(
             "",
             ticket.mattermost_message_text,
             "",
-            f"- Исходный алерт: [сообщение в Mattermost]({ticket.mattermost_message_url})",
+            f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})",
             f"- Задача Jira: {jira_part}",
             f"- Подтвердил: `{confirmed_by}`",
             f"- Время подтверждения: `{confirmed_at.isoformat()}`",

@@ -432,11 +432,11 @@ def test_builds_jira_payload(settings):
     assert fields["summary"] == "[INC] 15.11.2023 - CPU usage is above 95%"
     description = fields["description"]
     assert isinstance(description, str)
-    assert "h3. 🔔 Алерт из Mattermost" in description
+    assert "h3. 🔔 Алерт из Band" in description
     assert "{quote}\nCPU usage is above 95%\nsecond line\n{quote}" in description
     assert "|Время сообщения|15.11.2023 01:13|" in description
     assert (
-        "|Исходное сообщение|[Открыть в Mattermost|"
+        "|Исходное сообщение|[Открыть в Band|"
         "https://mattermost.example.com/_redirect/pl/post]|" in description
     )
     assert f"{{{{{POST_ID}}}}}" in description

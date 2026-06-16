@@ -186,8 +186,8 @@ class IncidentBotService:
         if post_id is None:
             return CommandResponse(
                 text=(
-                    "Invalid link. Use `/incident <mattermost_message_link>` "
-                    "with a Mattermost permalink to an alert message."
+                    "Invalid link. Use `/incident <band_message_link>` "
+                    "with a Band permalink to an alert message."
                 )
             )
 
@@ -201,7 +201,7 @@ class IncidentBotService:
                 mattermost_post_id=post_id,
                 error=str(exc),
             )
-            return CommandResponse(text=f"Could not read Mattermost post `{post_id}`.")
+            return CommandResponse(text=f"Could not read Band post `{post_id}`.")
 
         if post.channel_id != self.settings.mattermost_alert_channel_id:
             return CommandResponse(text="This message is not in the configured alerts channel.")
@@ -235,7 +235,7 @@ class IncidentBotService:
             )
             return ConfirmationResult(
                 status=ConfirmationStatus.NOT_FOUND,
-                message=f"No Jira issue mapping found for Mattermost post `{post_id}`.",
+                message=f"No Jira issue mapping found for Band post `{post_id}`.",
             )
 
         if ticket.jira_issue_key is None:

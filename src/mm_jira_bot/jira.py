@@ -68,7 +68,7 @@ def build_jira_description(
     )
     message = post.message.strip() or "—"
     lines = [
-        "h3. 🔔 Алерт из Mattermost",
+        "h3. 🔔 Алерт из Band",
         "",
         "{quote}",
         message,
@@ -78,10 +78,10 @@ def build_jira_description(
         f"|Автор|{author_name or post.user_id}|",
         f"|Канал|{channel_name or post.channel_id}|",
         f"|Время сообщения|{created_at}|",
-        f"|Исходное сообщение|[Открыть в Mattermost|{message_url}]|",
+        f"|Исходное сообщение|[Открыть в Band|{message_url}]|",
         "",
         "----",
-        f"_Идентификатор сообщения Mattermost: {{{{{post.id}}}}}_",
+        f"_Идентификатор сообщения Band: {{{{{post.id}}}}}_",
     ]
     return "\n".join(lines)
 
@@ -141,7 +141,7 @@ def build_confirmation_comment(
     confirmed_by_user_id: str,
 ) -> str:
     return (
-        "Alert confirmed as a valid incident from Mattermost.\n\n"
+        "Alert confirmed as a valid incident from Band.\n\n"
         f"Incident channel message: {incident_message_url}\n"
         f"Confirmed by: {confirmed_by_user_id}"
     )
