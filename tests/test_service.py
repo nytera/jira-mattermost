@@ -166,12 +166,16 @@ def service(settings):
     return service
 
 
-def make_alert(post_id: str = POST_ID, channel_id: str = "alerts-channel") -> MattermostPost:
+def make_alert(
+    post_id: str = POST_ID,
+    channel_id: str = "alerts-channel",
+    message: str = "CPU usage is above 95%",
+) -> MattermostPost:
     return MattermostPost(
         id=post_id,
         channel_id=channel_id,
         user_id="author-user",
-        message="CPU usage is above 95%",
+        message=message,
         create_at=1_700_000_000_000,
         channel_name="alerts",
     )
@@ -261,6 +265,18 @@ async def test_creates_jira_issue_for_new_mattermost_message(service):
     assert ticket is not None
     assert ticket.jira_issue_key == "OPS-1"
     assert len(service.jira.created_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_skips_resolved_alert_post(service):
+    post = make_alert(message="✅ CPU usage is above 95% :: crit")
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is None
+    assert len(service.jira.created_payloads) == 0
+    assert service.repository.get_by_post_id(post.id) is None
 
 
 @pytest.mark.asyncio

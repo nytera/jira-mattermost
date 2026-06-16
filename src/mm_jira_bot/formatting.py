@@ -10,6 +10,21 @@ from mm_jira_bot.domain import backend_datetime
 # whitespace that Grafana prepends to the alert title line.
 _LEADING_SYMBOLS = re.compile(r"^[\W_]+", re.UNICODE)
 
+# When an alert clears, Grafana re-posts the same title prefixed with a green
+# check mark instead of the firing 🔴. Such "resolved" posts must not create a
+# Jira issue. Both the literal emoji and the shortcode form are matched.
+_RESOLVED_MARKERS = ("✅", ":white_check_mark:")
+
+
+def is_resolved_alert(message: str) -> bool:
+    """True if the alert's first non-empty line starts with a resolved marker."""
+    for line in message.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        return stripped.startswith(_RESOLVED_MARKERS)
+    return False
+
 
 class TicketView(Protocol):
     mattermost_message_text: str

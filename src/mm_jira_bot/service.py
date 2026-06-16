@@ -18,6 +18,7 @@ from mm_jira_bot.formatting import (
     format_incident_message,
     format_thread_issue_created,
     format_thread_status_changed,
+    is_resolved_alert,
 )
 from mm_jira_bot.logging import log_event
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
@@ -86,6 +87,15 @@ class IncidentBotService:
                 logger,
                 logging.INFO,
                 "mattermost.post.skipped_bot_message",
+                mattermost_post_id=post.id,
+            )
+            return None
+
+        if is_resolved_alert(post.message):
+            log_event(
+                logger,
+                logging.INFO,
+                "mattermost.post.skipped_resolved_alert",
                 mattermost_post_id=post.id,
             )
             return None
