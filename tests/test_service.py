@@ -841,6 +841,97 @@ async def test_creates_issue_with_default_valid_incident_and_option_ids(settings
 
 
 @pytest.mark.asyncio
+async def test_creates_issue_with_paged_create_metadata_fields(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read()) if request.method == "POST" else None
+        requests.append({"method": request.method, "path": request.url.path, "body": body})
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes":
+            return httpx.Response(
+                200,
+                json={
+                    "last": True,
+                    "size": 1,
+                    "start": 0,
+                    "values": [{"id": "10001", "name": "Incident"}],
+                },
+            )
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001":
+            if request.url.params.get("startAt") == "0":
+                return httpx.Response(
+                    200,
+                    json={
+                        "last": False,
+                        "size": 1,
+                        "start": 0,
+                        "total": 4,
+                        "values": [
+                            {
+                                "fieldId": "summary",
+                                "name": "Summary",
+                            },
+                        ],
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "last": True,
+                    "size": 3,
+                    "start": 1,
+                    "total": 3,
+                    "values": [
+                        {
+                            "fieldId": "customfield_12345",
+                            "allowedValues": [
+                                {"id": "101", "value": "Валидный"},
+                            ],
+                        },
+                        {
+                            "fieldId": "customfield_23456",
+                            "allowedValues": [{"id": "201", "value": "Crit alert"}],
+                        },
+                        {
+                            "fieldId": "customfield_34567",
+                            "allowedValues": [{"id": "301", "value": "Да"}],
+                        },
+                    ],
+                },
+            )
+        if request.url.path == "/rest/api/2/issue":
+            return httpx.Response(201, json={"key": "OPS-1"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        issue = await client.create_issue(
+            make_alert(),
+            message_url="https://mattermost.example.com/_redirect/pl/post",
+            channel_name="alerts",
+        )
+    finally:
+        await client.aclose()
+
+    issue_body = requests[-1]["body"]["fields"]
+    field_metadata_requests = [
+        request
+        for request in requests
+        if request["path"] == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001"
+    ]
+    assert issue.key == "OPS-1"
+    assert len(field_metadata_requests) == 2
+    assert issue_body["customfield_23456"] == {"id": "201"}
+    assert issue_body["customfield_34567"] == {"id": "301"}
+
+
+@pytest.mark.asyncio
 async def test_create_issue_sends_start_field_when_configured(settings):
     requests: list[dict] = []
 
