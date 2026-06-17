@@ -89,9 +89,11 @@ class MattermostPost:
     create_at: int
     channel_name: str | None = None
     root_id: str | None = None
+    props: dict | None = None
 
     @classmethod
     def from_api(cls, data: dict, channel_name: str | None = None) -> "MattermostPost":
+        props = data.get("props")
         return cls(
             id=data["id"],
             channel_id=data["channel_id"],
@@ -100,6 +102,7 @@ class MattermostPost:
             create_at=int(data.get("create_at") or 0),
             channel_name=channel_name,
             root_id=data.get("root_id") or None,
+            props=props if isinstance(props, dict) else None,
         )
 
     @property

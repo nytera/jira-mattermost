@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -40,6 +41,20 @@ INCIDENT_END_REACTION_NAMES = {
     "heavy_check_mark",
     "ballot_box_with_check",
 }
+
+
+def _copy_post_attachments(post: MattermostPost) -> list[dict]:
+    props = post.props
+    if not isinstance(props, dict):
+        return []
+    attachments = props.get("attachments")
+    if not isinstance(attachments, list):
+        return []
+    return [
+        deepcopy(attachment)
+        for attachment in attachments
+        if isinstance(attachment, dict)
+    ]
 
 
 @dataclass(frozen=True)
@@ -830,19 +845,25 @@ class IncidentBotService:
     ) -> None:
         if ticket.incident_post_id:
             return
+        alert_attachments = await self._alert_attachments(ticket)
         message = format_incident_message(
             ticket,
             confirmed_by=confirmed_by_display,
             confirmed_at=confirmed_at,
+            include_alert_text=not alert_attachments,
+            include_alert_link=not alert_attachments,
         )
+        props = {
+            "mattermost_alert_post_id": ticket.mattermost_post_id,
+            "jira_issue_key": ticket.jira_issue_key,
+            "confirmed_by_user_id": confirmed_by_user_id,
+        }
+        if alert_attachments:
+            props["attachments"] = alert_attachments
         incident_post = await self.mattermost.create_post(
             channel_id=self.settings.mattermost_incident_channel_id,
             message=message,
-            props={
-                "mattermost_alert_post_id": ticket.mattermost_post_id,
-                "jira_issue_key": ticket.jira_issue_key,
-                "confirmed_by_user_id": confirmed_by_user_id,
-            },
+            props=props,
         )
         incident_url = self.mattermost.permalink(incident_post.id)
         self.repository.set_incident_message(
@@ -852,6 +873,17 @@ class IncidentBotService:
             mattermost_post_id=ticket.mattermost_post_id,
             incident_post_id=incident_post.id,
         )
+
+    async def _alert_attachments(self, ticket: AlertTicket) -> list[dict]:
+        try:
+            post = await self.mattermost.get_post(ticket.mattermost_post_id)
+        except ApiError as exc:
+            log.warning("mattermost.incident_message.alert_lookup_failed",
+                mattermost_post_id=ticket.mattermost_post_id,
+                error=str(exc),
+            )
+            return []
+        return _copy_post_attachments(post)
 
     async def _update_jira_for_confirmation(
         self,

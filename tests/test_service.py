@@ -65,6 +65,7 @@ class FakeMattermostClient:
             message=message,
             create_at=1_700_000_100_000,
             root_id=root_id,
+            props=props,
         )
         self.created_posts.append(
             {
@@ -195,6 +196,7 @@ def make_alert(
     post_id: str = POST_ID,
     channel_id: str = "alerts-channel",
     message: str = "CPU usage is above 95%",
+    props: dict | None = None,
 ) -> MattermostPost:
     return MattermostPost(
         id=post_id,
@@ -203,6 +205,7 @@ def make_alert(
         message=message,
         create_at=1_700_000_000_000,
         channel_name="alerts",
+        props=props,
     )
 
 
@@ -337,6 +340,43 @@ async def test_confirms_incident_through_reaction(service):
     assert "h2. Хронология" in description
     assert ticket.incident_message_url in description
     assert ticket.mattermost_message_url in description
+
+
+@pytest.mark.asyncio
+async def test_confirmed_incident_embeds_grafana_attachment(service):
+    attachments = [
+        {
+            "color": "#F2495C",
+            "title": "Деньги | Минус-слова vs Общее | выше на 70% [Crit]",
+            "title_link": "http://grafana.wb.ru/alerting/grafana/alert-id/view",
+            "text": "Runbook: https://wiki.example.com/runbook",
+            "image_url": "http://grafana.wb.ru/render/d-solo/dashboard/panel.png",
+            "footer": "Grafana v12.4.2",
+        }
+    ]
+    post = make_alert(
+        message="Деньги | Минус-слова vs Общее | выше на 70% [Crit]",
+        props={"attachments": attachments},
+    )
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+
+    incident_posts = [
+        created
+        for created in service.mattermost.created_posts
+        if created["channel_id"] == "incidents-channel"
+    ]
+    assert len(incident_posts) == 1
+    incident_post = incident_posts[0]
+    assert incident_post["props"]["attachments"] == attachments
+    assert incident_post["props"]["attachments"] is not attachments
+    assert "Исходный алерт" not in incident_post["message"]
+    assert "Деньги | Минус-слова vs Общее" not in incident_post["message"]
+    assert "Задача Jira: [OPS-1]" in incident_post["message"]
 
 
 @pytest.mark.asyncio

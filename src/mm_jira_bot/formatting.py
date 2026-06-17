@@ -156,6 +156,8 @@ def format_incident_message(
     *,
     confirmed_by: str,
     confirmed_at: datetime,
+    include_alert_text: bool = True,
+    include_alert_link: bool = True,
 ) -> str:
     confirmed_at = backend_datetime(confirmed_at)
     jira_part = (
@@ -163,15 +165,18 @@ def format_incident_message(
         if ticket.jira_issue_key and ticket.jira_issue_url
         else "Jira issue пока недоступна"
     )
-    return "\n".join(
+    lines = ["### Подтверждённый инцидент", ""]
+    if include_alert_text and ticket.mattermost_message_text.strip():
+        lines.extend([ticket.mattermost_message_text, ""])
+    if include_alert_link:
+        lines.append(
+            f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})"
+        )
+    lines.extend(
         [
-            "### Подтверждённый инцидент",
-            "",
-            ticket.mattermost_message_text,
-            "",
-            f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})",
             f"- Задача Jira: {jira_part}",
             f"- Подтвердил: `{confirmed_by}`",
             f"- Время подтверждения: `{confirmed_at.isoformat()}`",
         ]
     )
+    return "\n".join(lines)
