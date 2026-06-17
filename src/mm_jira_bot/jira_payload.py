@@ -37,27 +37,18 @@ def build_jira_description(
     *,
     message_url: str,
     channel_name: str | None,
-    author_name: str | None = None,
 ) -> str:
     created_at = (
         backend_datetime(post.created_at_datetime).strftime("%d.%m.%Y %H:%M")
         if post.create_at > 0 and post.created_at_datetime
         else "—"
     )
-    message = post.message.strip() or "—"
     lines = [
-        "h3. 🔔 Алерт из Band",
-        "",
-        "{quote}",
-        message,
-        "{quote}",
-        "",
+        "h3. 🔔 Невалидный алерт из Band",
         "||Параметр||Значение||",
-        f"|Автор|{author_name or post.user_id}|",
         f"|Канал|{channel_name or post.channel_id}|",
         f"|Время сообщения|{created_at}|",
         f"|Исходное сообщение|[Открыть в Band|{message_url}]|",
-        "",
         "----",
         f"_Идентификатор сообщения Band: {{{{{post.id}}}}}_",
     ]
@@ -73,7 +64,6 @@ def build_jira_issue_payload(
     *,
     message_url: str,
     channel_name: str | None,
-    author_name: str | None = None,
     start_field_id: str | None = None,
     valid_incident_option: dict[str, str] | None = None,
     source_option: dict[str, str] | None = None,
@@ -97,7 +87,6 @@ def build_jira_issue_payload(
             post,
             message_url=message_url,
             channel_name=channel_name,
-            author_name=author_name,
         ),
         source_field_id: source_option or jira_option(JIRA_SOURCE_VALUE),
         is_crit_alert_field_id: is_crit_alert_option

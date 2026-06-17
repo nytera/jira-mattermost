@@ -774,12 +774,10 @@ class IncidentBotService:
 
     async def _create_jira_issue(self, ticket: AlertTicket) -> JiraIssue:
         post = ticket_to_post(ticket)
-        author_name = await self._resolve_user_display(post.user_id)
         return await self.jira.create_issue(
             post,
             message_url=ticket.mattermost_message_url,
             channel_name=ticket.mattermost_channel_name,
-            author_name=author_name,
         )
 
     async def _resolve_user_display(self, user_id: str) -> str:

@@ -104,7 +104,6 @@ class FakeJiraClient:
         *,
         message_url: str,
         channel_name: str | None,
-        author_name: str | None = None,
     ):
         key = f"OPS-{len(self.created_payloads) + 1}"
         self.created_payloads.append(
@@ -112,7 +111,6 @@ class FakeJiraClient:
                 "post": post,
                 "message_url": message_url,
                 "channel_name": channel_name,
-                "author_name": author_name,
             }
         )
         self.valid_by_issue[key] = False
@@ -807,8 +805,11 @@ def test_builds_jira_payload(settings):
     assert fields["summary"] == "[INC] 15.11.2023 - CPU usage is above 95%"
     description = fields["description"]
     assert isinstance(description, str)
-    assert "h3. 🔔 Алерт из Band" in description
-    assert "{quote}\nCPU usage is above 95%\nsecond line\n{quote}" in description
+    assert "h3. 🔔 Невалидный алерт из Band" in description
+    assert "|Автор|" not in description
+    assert "{quote}" not in description
+    assert "CPU usage is above 95%" not in description
+    assert "|Канал|alerts|" in description
     assert "|Время сообщения|15.11.2023 01:13|" in description
     assert (
         "|Исходное сообщение|[Открыть в Band|"
@@ -963,7 +964,7 @@ def test_summary_uses_grafana_attachment_title_when_message_is_empty(settings):
         "[INC] 15.11.2023 - "
         "ads_stat-consumer_antifraud_remove_messages 20% [Crit]"
     )
-    assert "Message: Кол-во сообщений" in payload["fields"]["description"]
+    assert "Message: Кол-во сообщений" not in payload["fields"]["description"]
 
 
 def test_builds_jira_payload_with_start_field(settings):

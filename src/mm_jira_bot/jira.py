@@ -106,7 +106,6 @@ class JiraClient(AsyncApiClient):
         *,
         message_url: str,
         channel_name: str | None,
-        author_name: str | None = None,
     ) -> JiraIssue:
         valid_incident_field_id = await self._get_field_id(
             self._settings.jira_valid_incident_field
@@ -134,7 +133,6 @@ class JiraClient(AsyncApiClient):
             post,
             message_url=message_url,
             channel_name=channel_name,
-            author_name=author_name,
             start_field_id=start_field_id,
             source_option=source_option,
             is_crit_alert_option=is_crit_alert_option,
