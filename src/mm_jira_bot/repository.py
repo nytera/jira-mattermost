@@ -101,22 +101,32 @@ class AlertTicketRepository:
             )
 
     def list_alerts(
-        self, *, limit: int = 50, status: str | None = None
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+        validity: str | None = None,
     ) -> list[AlertTicket]:
         limit = min(max(limit, 1), 200)
-        statement = select(AlertTicket).order_by(AlertTicket.created_at.desc()).limit(limit)
+        conditions = []
         if status:
-            statement = (
-                select(AlertTicket)
-                .where(
-                    or_(
-                        AlertTicket.creation_status == status,
-                        AlertTicket.confirmation_status == status,
-                    )
+            conditions.append(
+                or_(
+                    AlertTicket.creation_status == status,
+                    AlertTicket.confirmation_status == status,
                 )
-                .order_by(AlertTicket.created_at.desc())
-                .limit(limit)
             )
+        if validity == "empty":
+            conditions.append(
+                AlertTicket.valid_incident.is_(False),
+            )
+            conditions.append(AlertTicket.validity_label.is_(None))
+        statement = (
+            select(AlertTicket)
+            .where(*conditions)
+            .order_by(AlertTicket.created_at.desc())
+            .limit(limit)
+        )
         with self._session_factory() as session:
             return list(session.scalars(statement))
 
@@ -164,6 +174,15 @@ class AlertTicketRepository:
                 )
                 or 0
             )
+            empty_validity = (
+                session.scalar(
+                    select(func.count(AlertTicket.id)).where(
+                        AlertTicket.valid_incident.is_(False),
+                        AlertTicket.validity_label.is_(None),
+                    )
+                )
+                or 0
+            )
             return {
                 "total": total,
                 "creation_statuses": creation_statuses,
@@ -171,6 +190,7 @@ class AlertTicketRepository:
                 "pending_jira": pending_jira,
                 "failed": failed,
                 "confirmed": confirmed,
+                "empty_validity": empty_validity,
             }
 
     def create_or_get_alert(

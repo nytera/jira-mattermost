@@ -722,6 +722,36 @@ def test_debug_admin_lists_alerts_when_enabled(service, settings):
     assert detail_response.json()["mattermost_message_text"] == post.message
 
 
+def test_debug_admin_filters_empty_validity(service, settings):
+    empty_post = make_alert(post_id="emptyvaliditypost000000001")
+    labeled_post = make_alert(post_id="labeledvaliditypost000001")
+    for post in (empty_post, labeled_post):
+        service.repository.create_or_get_alert(
+            post,
+            message_url=service.mattermost.permalink(post.id),
+            channel_name="alerts",
+        )
+    service.repository.set_validity_label(labeled_post.id, "Ложный")
+
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        summary_response = client.get("/debug/admin/api/summary")
+        list_response = client.get("/debug/admin/api/alerts?validity=empty")
+        detail_response = client.get(f"/debug/admin/api/alerts/{empty_post.id}")
+
+    assert summary_response.status_code == 200
+    assert summary_response.json()["empty_validity"] == 1
+    assert list_response.status_code == 200
+    alerts = list_response.json()["alerts"]
+    assert [alert["mattermost_post_id"] for alert in alerts] == [empty_post.id]
+    assert alerts[0]["validity_is_empty"] is True
+    assert alerts[0]["validity_status"] is None
+    assert alerts[0]["mattermost_message_created_at"] is not None
+    assert alerts[0]["created_at"] is not None
+    assert detail_response.status_code == 200
+    assert detail_response.json()["validity_is_empty"] is True
+
+
 def test_debug_admin_retries_jira_creation_for_ticket_without_issue(service, settings):
     post = make_alert()
     service.repository.create_or_get_alert(

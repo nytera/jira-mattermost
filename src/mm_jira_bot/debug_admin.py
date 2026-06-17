@@ -19,7 +19,14 @@ def _message_preview(message: str, *, limit: int = 160) -> str:
     return compact[: limit - 1] + "..."
 
 
+def _validity_status(ticket: AlertTicket) -> str | None:
+    if ticket.valid_incident:
+        return "Валидный"
+    return ticket.validity_label
+
+
 def _ticket_to_debug_dict(ticket: AlertTicket, *, full: bool = False) -> dict:
+    validity_status = _validity_status(ticket)
     data = {
         "id": ticket.id,
         "mattermost_post_id": ticket.mattermost_post_id,
@@ -44,6 +51,8 @@ def _ticket_to_debug_dict(ticket: AlertTicket, *, full: bool = False) -> dict:
         "pending_confirmation_at": _datetime_iso(ticket.pending_confirmation_at),
         "jira_confirmation_comment_added": ticket.jira_confirmation_comment_added,
         "validity_label": ticket.validity_label,
+        "validity_status": validity_status,
+        "validity_is_empty": validity_status is None,
         "last_error": ticket.last_error,
         "created_at": _datetime_iso(ticket.created_at),
         "updated_at": _datetime_iso(ticket.updated_at),
@@ -131,6 +140,15 @@ DEBUG_ADMIN_HTML = """
     .badge.ok { background: color-mix(in srgb, var(--ok) 22%, transparent); color: var(--ok); }
     .badge.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
     .badge.err { background: color-mix(in srgb, var(--err) 22%, transparent); color: var(--err); }
+    .timecell { min-width: 160px; }
+    .time-row { margin-bottom: 5px; }
+    .time-label { display: inline-block; min-width: 44px; color: var(--muted); font-size: 11px; }
+    .time-value { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+    .age { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .validity-timer {
+      display: inline-block; margin-top: 6px; padding: 3px 8px; border-radius: 7px;
+      border: 1px solid currentColor; font-family: var(--mono); font-size: 11px;
+    }
     .actions { display: flex; gap: 6px; flex-wrap: wrap; }
     .actions button { padding: 4px 10px; font-size: 12px; }
     .notice { font-size: 13px; min-height: 18px; }
@@ -199,13 +217,14 @@ DEBUG_ADMIN_HTML = """
           <option value="pending_jira"><option value="jira_created"><option value="failed_jira">
           <option value="confirmed"><option value="confirming"><option value="pending_confirmation"><option value="failed_confirmation">
         </datalist>
+        <button class="ghost" id="validityFilterButton" onclick="applyValidity('empty')">Пустая валидность</button>
         <label class="inline">лимит <input id="limit" type="number" min="1" max="200" value="50" style="width:72px"></label>
         <button onclick="loadAlerts()">Применить</button>
         <span class="grow"></span>
         <span id="alertsNotice" class="notice muted"></span>
       </div>
       <table>
-        <thead><tr><th>Post</th><th>Jira</th><th>Статус</th><th>Сообщение</th><th></th></tr></thead>
+        <thead><tr><th>Post</th><th>Jira</th><th>Создано</th><th>Статус</th><th>Сообщение</th><th></th></tr></thead>
         <tbody id="alerts"></tbody>
       </table>
       <div class="empty" id="alertsEmpty" style="display:none">Нет записей</div>
@@ -245,6 +264,7 @@ DEBUG_ADMIN_HTML = """
     let timer = null;
     let alertsCache = [];
     let logsCache = [];
+    let validityFilter = "";
 
     async function getJson(url, options) {
       const response = await fetch(url, options);
@@ -268,6 +288,56 @@ DEBUG_ADMIN_HTML = """
       else if (["pending_jira", "pending_confirmation", "confirming"].includes(v)) cls = "warn";
       return `<span class="badge ${cls}">${escapeHtml(v)}</span>`;
     }
+    function parseDate(value) {
+      if (!value) return null;
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    function formatDate(value) {
+      const date = parseDate(value);
+      if (!date) return "—";
+      return date.toLocaleString("ru-RU", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+    }
+    function ageMsSince(value) {
+      const date = parseDate(value);
+      return date ? Math.max(0, Date.now() - date.getTime()) : null;
+    }
+    function formatAge(ms) {
+      if (ms == null) return "—";
+      const totalMinutes = Math.floor(ms / 60000);
+      const days = Math.floor(totalMinutes / 1440);
+      const hours = Math.floor((totalMinutes % 1440) / 60);
+      const minutes = totalMinutes % 60;
+      if (days > 0) return `${days}д ${hours}ч`;
+      if (hours > 0) return `${hours}ч ${minutes}м`;
+      return `${minutes}м`;
+    }
+    function emptyValidityAgeSource(it) {
+      return it.mattermost_message_created_at || it.created_at;
+    }
+    function emptyValidityTimer(it) {
+      if (!it.validity_is_empty) return it.validity_status
+        ? `<span class="badge ok">${escapeHtml(it.validity_status)}</span>`
+        : `<span class="badge">—</span>`;
+      const ms = ageMsSince(emptyValidityAgeSource(it));
+      const maxMs = 3 * 24 * 60 * 60 * 1000;
+      const ratio = Math.min(1, (ms || 0) / maxMs);
+      const hue = Math.round(42 - ratio * 38);
+      const color = `hsl(${hue} 82% 56%)`;
+      const bg = `hsla(${hue}, 82%, 56%, ${0.13 + ratio * 0.19})`;
+      return `<span class="validity-timer" style="color:${color};background:${bg}" title="Максимальная краснота через 3 дня">пусто · ${formatAge(ms)}</span>`;
+    }
+    function renderCreatedCell(it) {
+      const alertAge = formatAge(ageMsSince(it.mattermost_message_created_at));
+      const taskAge = formatAge(ageMsSince(it.created_at));
+      return `<div class="timecell">
+        <div class="time-row"><span class="time-label">Алерт</span><span class="time-value">${formatDate(it.mattermost_message_created_at)}</span> <span class="age">${alertAge}</span></div>
+        <div class="time-row"><span class="time-label">Задача</span><span class="time-value">${formatDate(it.created_at)}</span> <span class="age">${taskAge}</span></div>
+      </div>`;
+    }
 
     function switchTab(name) {
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
@@ -286,19 +356,28 @@ DEBUG_ADMIN_HTML = """
         const s = await getJson("/debug/admin/api/summary");
         const active = document.getElementById("status").value.trim();
         const cards = [
-          ["Всего", s.total, ""],
-          ["Без Jira", s.pending_jira, "pending_jira"],
-          ["Ошибки", s.failed, "failed_jira"],
-          ["Подтверждено", s.confirmed, "confirmed"],
+          ["Всего", s.total, "", ""],
+          ["Без Jira", s.pending_jira, "pending_jira", ""],
+          ["Ошибки", s.failed, "failed_jira", ""],
+          ["Подтверждено", s.confirmed, "confirmed", ""],
+          ["Пустая Валидность", s.empty_validity, "", "empty"],
         ];
-        document.getElementById("cards").innerHTML = cards.map(([label, value, filter]) => `
-          <div class="card ${filter && filter === active ? "active" : ""}" onclick="applyStatus('${filter}')">
+        document.getElementById("cards").innerHTML = cards.map(([label, value, filter, validity]) => `
+          <div class="card ${(filter && filter === active) || (validity && validity === validityFilter) ? "active" : ""}" onclick="${validity ? `applyValidity('${validity}')` : `applyStatus('${filter}')`}">
             <div class="label">${label}</div><div class="value">${value}</div>
           </div>`).join("");
       } catch (e) { /* summary is best-effort */ }
     }
     function applyStatus(filter) {
       document.getElementById("status").value = filter || "";
+      validityFilter = "";
+      document.getElementById("validityFilterButton").classList.remove("primary");
+      loadAlerts();
+    }
+    function applyValidity(filter) {
+      validityFilter = validityFilter === filter ? "" : filter;
+      document.getElementById("status").value = "";
+      document.getElementById("validityFilterButton").classList.toggle("primary", Boolean(validityFilter));
       loadAlerts();
     }
 
@@ -310,6 +389,7 @@ DEBUG_ADMIN_HTML = """
         params.set("limit", document.getElementById("limit").value || "50");
         const status = document.getElementById("status").value.trim();
         if (status) params.set("status", status);
+        if (validityFilter) params.set("validity", validityFilter);
         const rows = await getJson(`/debug/admin/api/alerts?${params}`);
         alertsCache = rows.alerts;
         notice.textContent = `${rows.alerts.length} записей`;
@@ -330,8 +410,9 @@ DEBUG_ADMIN_HTML = """
           <td>${link(it.mattermost_message_url, it.mattermost_post_id.slice(0, 8))}
               <div class="mono" style="color:var(--muted)">${escapeHtml(it.mattermost_channel_name || "")}</div></td>
           <td>${it.jira_issue_url ? link(it.jira_issue_url, it.jira_issue_key) : "<span class='badge'>—</span>"}</td>
+          <td>${renderCreatedCell(it)}</td>
           <td>${statusBadge(it.creation_status)}<br>${statusBadge(it.confirmation_status)}
-              ${it.validity_label ? `<br><span class="badge">${escapeHtml(it.validity_label)}</span>` : ""}</td>
+              <br>${emptyValidityTimer(it)}</td>
           <td class="message"><span class="preview">${escapeHtml(it.mattermost_message_preview)}</span>
               ${it.last_error ? `<span class="err-text">${escapeHtml(it.last_error)}</span>` : ""}</td>
           <td><div class="actions">
@@ -437,6 +518,7 @@ DEBUG_ADMIN_HTML = """
     document.getElementById("interval").addEventListener("change", setupTimer);
     document.getElementById("createLink").addEventListener("keydown", (e) => { if (e.key === "Enter") createFromLink(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+    setInterval(() => { if (window._tab === "alerts") renderAlerts(); }, 60000);
 
     window._tab = "alerts";
     refreshActive();
@@ -456,12 +538,21 @@ def register_debug_admin(app: FastAPI, service: IncidentBotService) -> None:
         return service.repository.debug_summary()
 
     @app.get("/debug/admin/api/alerts")
-    async def debug_admin_alerts(limit: int = 50, status: str | None = None) -> dict:
-        tickets = service.repository.list_alerts(limit=limit, status=status)
+    async def debug_admin_alerts(
+        limit: int = 50,
+        status: str | None = None,
+        validity: str | None = None,
+    ) -> dict:
+        tickets = service.repository.list_alerts(
+            limit=limit,
+            status=status,
+            validity=validity,
+        )
         return {
             "alerts": [_ticket_to_debug_dict(ticket) for ticket in tickets],
             "limit": min(max(limit, 1), 200),
             "status": status,
+            "validity": validity,
         }
 
     @app.get("/debug/admin/api/logs")
