@@ -16,9 +16,8 @@ from mm_jira_bot.actions import (
     ACTION_VALID,
     ACTION_VALIDITY,
     alert_action_callback_url,
-    build_alert_actions_attachment,
+    build_alert_controls_attachment,
     build_alert_feedback_attachment,
-    build_alert_title_attachment,
     feedback_dialog_callback_url,
 )
 from mm_jira_bot.config import Settings
@@ -326,26 +325,22 @@ class IncidentBotService:
         *,
         title: str | None = None,
         title_link: str | None = None,
-    ) -> tuple[list[dict], list[dict]] | None:
-        """Alert thread attachments split across two replies, or ``None`` if disabled.
+    ) -> list[dict] | None:
+        """Alert thread attachments for a single reply, or ``None`` if disabled.
 
-        Returns ``(title_attachments, control_attachments)``: the "Создана задача"
-        notice goes in the first reply, the validity menu, follow-up buttons and
-        feedback block in the second. Interactive controls need an absolute callback
-        URL, so they are attached when ``SERVICE_PUBLIC_URL`` is configured. Emoji
-        reactions remain the fallback.
+        Returns two stacked blocks in one reply: a blue main block with the
+        "Создана задача" notice, the validity menu, and the incident/summary
+        buttons under it, then a gray feedback block below. Interactive controls
+        need an absolute callback URL, so they are attached when
+        ``SERVICE_PUBLIC_URL`` is configured. Emoji reactions remain the fallback.
         """
         if not self.settings.service_public_url:
             return None
         callback_url = alert_action_callback_url(self.settings.service_public_url)
-        title_attachments = [
-            build_alert_title_attachment(
+        return [
+            build_alert_controls_attachment(
                 title=title or "Jira",
                 title_link=title_link,
-            ),
-        ]
-        control_attachments = [
-            build_alert_actions_attachment(
                 alert_post_id=alert_post_id,
                 callback_url=callback_url,
             ),
@@ -354,7 +349,6 @@ class IncidentBotService:
                 callback_url=callback_url,
             ),
         ]
-        return title_attachments, control_attachments
 
     async def handle_alert_action(
         self,
@@ -1441,7 +1435,6 @@ class IncidentBotService:
                 title_link=display_issue.url,
             )
             if action_attachments is not None:
-                title_attachments, control_attachments = action_attachments
                 await self._post_alert_thread_reply(
                     ticket.mattermost_post_id,
                     channel_id=ticket.mattermost_channel_id,
@@ -1449,17 +1442,7 @@ class IncidentBotService:
                     event="mattermost.alert_thread.issue_notice_published",
                     props={
                         "jira_issue_key": issue.key,
-                        "attachments": title_attachments,
-                    },
-                )
-                await self._post_alert_thread_reply(
-                    ticket.mattermost_post_id,
-                    channel_id=ticket.mattermost_channel_id,
-                    message="",
-                    event="mattermost.alert_thread.actions_published",
-                    props={
-                        "jira_issue_key": issue.key,
-                        "attachments": control_attachments,
+                        "attachments": action_attachments,
                     },
                 )
             else:

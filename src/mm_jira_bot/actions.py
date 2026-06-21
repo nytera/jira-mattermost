@@ -14,10 +14,13 @@ ACTION_FEEDBACK = "feedback"
 
 ACTION_CALLBACK_PATH = "/mattermost/actions/alert"
 FEEDBACK_DIALOG_CALLBACK_PATH = "/mattermost/dialogs/feedback"
+# Blue accent for the main controls block ("Создана задача" + validity + buttons).
 ACTION_ATTACHMENT_COLOR = "#3B82F6"
+# Muted gray accent for the feedback block below.
 FEEDBACK_ATTACHMENT_COLOR = "#4B5563"
-# The "Создана задача" notice shares the muted gray accent of the feedback block.
-TITLE_ATTACHMENT_COLOR = FEEDBACK_ATTACHMENT_COLOR
+# A blank line (the zero-width space keeps Mattermost from trimming it) that
+# adds a little vertical spacing between the notice and the controls below.
+CONTROLS_SPACER = "\n​"
 
 
 @dataclass(frozen=True)
@@ -42,14 +45,14 @@ VALIDITY_OPTIONS: tuple[AlertActionOption, ...] = (
 )
 
 
-# Order matters: this is the left-to-right order of the follow-up controls.
-ALERT_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
+# Order matters: this is the left-to-right order within each controls block.
+# Incident/Summary live in their own block; feedback gets a separate block below.
+PRIMARY_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
     AlertActionButton(ACTION_INCIDENT, "🚨 Инцидент", style="primary"),
     AlertActionButton(ACTION_SUMMARY, "📝 Summary", style="default"),
 )
-
-FEEDBACK_ACTION_BUTTON = AlertActionButton(
-    ACTION_FEEDBACK, "Обратная связь по алерту", style="default"
+FEEDBACK_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
+    AlertActionButton(ACTION_FEEDBACK, "💬 Обратная связь по алерту", style="default"),
 )
 
 
@@ -61,64 +64,63 @@ def feedback_dialog_callback_url(service_public_url: str) -> str:
     return f"{service_public_url.rstrip('/')}{FEEDBACK_DIALOG_CALLBACK_PATH}"
 
 
-def build_alert_title_attachment(
-    *,
-    title: str,
-    title_link: str | None,
-) -> dict:
-    """Text-only "Создана задача" notice, posted as the first thread reply."""
-    issue_text = f"[{title}]({title_link})" if title_link else title
+def _integration(action: str, *, alert_post_id: str, callback_url: str) -> dict:
+    """The Mattermost callback envelope shared by every interactive control."""
     return {
-        "fallback": title,
-        "color": TITLE_ATTACHMENT_COLOR,
-        "text": f"**Создана задача: {issue_text}**",
+        "url": callback_url,
+        "context": {
+            "action": action,
+            "alert_post_id": alert_post_id,
+        },
     }
 
 
-def build_alert_actions_attachment(
+def _button_action(button: AlertActionButton, *, alert_post_id: str, callback_url: str) -> dict:
+    action: dict = {
+        "id": button.id,
+        "name": button.name,
+        "type": "button",
+        "integration": _integration(
+            button.id, alert_post_id=alert_post_id, callback_url=callback_url
+        ),
+    }
+    if button.style:
+        action["style"] = button.style
+    return action
+
+
+def build_alert_controls_attachment(
     *,
+    title: str,
+    title_link: str | None,
     alert_post_id: str,
     callback_url: str,
 ) -> dict:
-    """Validity menu plus follow-up buttons, posted as the second thread reply."""
-    actions = [
-        {
-            "id": ACTION_VALIDITY,
-            "name": "Выбрать валидность ▼",
-            "type": "select",
-            "integration": {
-                "url": callback_url,
-                "context": {
-                    "action": ACTION_VALIDITY,
-                    "alert_post_id": alert_post_id,
-                },
-            },
-            "options": [
-                {"text": option.text, "value": option.value}
-                for option in VALIDITY_OPTIONS
-            ],
-        }
+    """Main block: "Создана задача" notice, the validity menu, and the
+    incident/summary buttons under it. Rendered with the blue accent."""
+    issue_text = f"[{title}]({title_link})" if title_link else title
+    validity_select = {
+        "id": ACTION_VALIDITY,
+        "name": "Выбрать валидность ▼",
+        "type": "select",
+        "integration": _integration(
+            ACTION_VALIDITY, alert_post_id=alert_post_id, callback_url=callback_url
+        ),
+        "options": [
+            {"text": option.text, "value": option.value}
+            for option in VALIDITY_OPTIONS
+        ],
+    }
+    buttons = [
+        _button_action(button, alert_post_id=alert_post_id, callback_url=callback_url)
+        for button in PRIMARY_ACTION_BUTTONS
     ]
-    for button in ALERT_ACTION_BUTTONS:
-        action: dict = {
-            "id": button.id,
-            "name": button.name,
-            "type": "button",
-            "integration": {
-                "url": callback_url,
-                "context": {
-                    "action": button.id,
-                    "alert_post_id": alert_post_id,
-                },
-            },
-        }
-        if button.style:
-            action["style"] = button.style
-        actions.append(action)
     return {
-        "fallback": "Действия по алерту",
+        "fallback": title,
         "color": ACTION_ATTACHMENT_COLOR,
-        "actions": actions,
+        # Trailing blank line gives a little spacing before the row of controls.
+        "text": f"**Создана задача: {issue_text}**{CONTROLS_SPACER}",
+        "actions": [validity_select, *buttons],
     }
 
 
@@ -127,20 +129,13 @@ def build_alert_feedback_attachment(
     alert_post_id: str,
     callback_url: str,
 ) -> dict:
-    context: dict[str, str] = {
-        "action": FEEDBACK_ACTION_BUTTON.id,
-        "alert_post_id": alert_post_id,
-    }
-    action: dict = {
-        "id": FEEDBACK_ACTION_BUTTON.id,
-        "name": FEEDBACK_ACTION_BUTTON.name,
-        "type": "button",
-        "integration": {"url": callback_url, "context": context},
-    }
-    if FEEDBACK_ACTION_BUTTON.style:
-        action["style"] = FEEDBACK_ACTION_BUTTON.style
+    """Separate block below: the feedback button, rendered with the muted gray accent."""
+    actions = [
+        _button_action(button, alert_post_id=alert_post_id, callback_url=callback_url)
+        for button in FEEDBACK_ACTION_BUTTONS
+    ]
     return {
-        "fallback": "Обратная связь",
+        "fallback": "Обратная связь по алерту",
         "color": FEEDBACK_ATTACHMENT_COLOR,
-        "actions": [action],
+        "actions": actions,
     }

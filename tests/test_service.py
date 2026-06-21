@@ -508,15 +508,13 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
         f"https://jira.example.com/browse/ADSDEV-12024-{post.id[:12]}"
     )
     assert len(service.jira.created_payloads) == 0
-    title_reply, _ = _issue_replies(
-        service, post.id, issue_key=ticket.jira_issue_key
-    )
-    assert title_reply["message"] == ""
-    attachment = title_reply["props"]["attachments"][0]
+    reply = _issue_reply(service, post.id, issue_key=ticket.jira_issue_key)
+    assert reply["message"] == ""
+    attachment = reply["props"]["attachments"][0]
     assert "title" not in attachment
     assert "title_link" not in attachment
     assert attachment["text"] == (
-        "**Создана задача: [ADSDEV-12024](https://jira.example.com/browse/ADSDEV-12024)**"
+        "**Создана задача: [ADSDEV-12024](https://jira.example.com/browse/ADSDEV-12024)**\n​"
     )
     assert ticket.jira_issue_key not in attachment["text"]
 
@@ -2414,52 +2412,60 @@ async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
 
     await service.handle_alert_post(post)
 
-    title_reply, controls_reply = _issue_replies(service, post.id)
+    reply = _issue_reply(service, post.id)
 
-    # First message: the "Создана задача" notice, muted gray like the feedback block.
-    assert title_reply["message"] == ""
-    title_attachments = title_reply["props"]["attachments"]
-    assert len(title_attachments) == 1
-    assert title_attachments[0]["color"] == "#4B5563"
-    assert "title" not in title_attachments[0]
-    assert "title_link" not in title_attachments[0]
-    assert "actions" not in title_attachments[0]
-    assert title_attachments[0]["text"] == (
-        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
-    )
-
-    # Second message: the validity menu, follow-up buttons and feedback block.
-    assert controls_reply["message"] == ""
-    attachments = controls_reply["props"]["attachments"]
+    # One message with two stacked blocks: the blue main block ("Создана задача"
+    # notice + validity menu + incident/summary buttons) and a gray feedback block.
+    assert reply["message"] == ""
+    attachments = reply["props"]["attachments"]
     assert len(attachments) == 2
-    assert attachments[0]["color"] == "#3B82F6"
-    assert "text" not in attachments[0]
-    actions = attachments[0]["actions"]
-    assert [action["id"] for action in actions] == [
+
+    # Block 1: the notice, validity menu, and incident/summary buttons, blue.
+    controls_attachment = attachments[0]
+    assert controls_attachment["color"] == "#3B82F6"
+    assert "title" not in controls_attachment
+    assert "title_link" not in controls_attachment
+    assert controls_attachment["text"] == (
+        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**\n​"
+    )
+    controls_actions = controls_attachment["actions"]
+    assert [action["id"] for action in controls_actions] == [
         "validity",
         "incident",
         "summary",
     ]
-    first = actions[0]["integration"]
-    assert first["url"] == "https://bot.example.com/mattermost/actions/alert"
-    assert first["context"] == {"action": "validity", "alert_post_id": post.id}
-    assert actions[0]["name"] == "Выбрать валидность ▼"
-    assert actions[0]["type"] == "select"
-    assert actions[0]["options"] == [
+    validity = controls_actions[0]
+    assert validity["integration"]["url"] == (
+        "https://bot.example.com/mattermost/actions/alert"
+    )
+    assert validity["integration"]["context"] == {
+        "action": "validity",
+        "alert_post_id": post.id,
+    }
+    assert validity["name"] == "Выбрать валидность ▼"
+    assert validity["type"] == "select"
+    assert validity["options"] == [
         {"text": "Ложный", "value": "false"},
         {"text": "Ожидаемый", "value": "expected"},
         {"text": "Валидный", "value": "valid"},
     ]
-    assert actions[1]["name"] == "🚨 Инцидент"
-    assert actions[1]["style"] == "primary"
-    assert actions[2]["name"] == "📝 Summary"
-    assert actions[2]["style"] == "default"
-    assert attachments[1]["color"] == "#4B5563"
-    assert "text" not in attachments[1]
-    feedback_actions = attachments[1]["actions"]
+    assert controls_actions[1]["name"] == "🚨 Инцидент"
+    assert controls_actions[1]["style"] == "primary"
+    assert controls_actions[2]["name"] == "📝 Summary"
+    assert controls_actions[2]["style"] == "default"
+
+    # Block 2: feedback, in its own gray block below.
+    feedback_attachment = attachments[1]
+    assert feedback_attachment["color"] == "#4B5563"
+    assert "text" not in feedback_attachment
+    feedback_actions = feedback_attachment["actions"]
     assert [action["id"] for action in feedback_actions] == ["feedback"]
-    assert feedback_actions[0]["name"] == "Обратная связь по алерту"
+    assert feedback_actions[0]["name"] == "💬 Обратная связь по алерту"
     assert feedback_actions[0]["style"] == "default"
+    assert feedback_actions[0]["integration"]["context"] == {
+        "action": "feedback",
+        "alert_post_id": post.id,
+    }
 
 
 @pytest.mark.asyncio
