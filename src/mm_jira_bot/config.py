@@ -87,6 +87,7 @@ class Settings:
     database_url: str
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
+    service_public_url: str | None = None
     mattermost_false_incident_reaction_name: str = "man_gesturing_no"
     mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
     log_level: str = "INFO"
@@ -138,6 +139,11 @@ class Settings:
             database_url=_required("DATABASE_URL"),
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
             mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
+            service_public_url=(
+                _env("SERVICE_PUBLIC_URL").rstrip("/")
+                if _env("SERVICE_PUBLIC_URL")
+                else None
+            ),
             mattermost_false_incident_reaction_name=_env(
                 "MATTERMOST_FALSE_INCIDENT_REACTION_NAME", "man_gesturing_no"
             ),

@@ -5,6 +5,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 
+from mm_jira_bot.actions import (
+    ACTION_EXPECTED,
+    ACTION_FALSE,
+    ACTION_INCIDENT,
+    ACTION_SUMMARY,
+    ACTION_VALID,
+    alert_action_callback_url,
+    build_alert_action_attachment,
+)
 from mm_jira_bot.config import Settings
 from mm_jira_bot.domain import (
     ConfirmationResult,
@@ -24,6 +33,7 @@ from mm_jira_bot.formatting import (
     is_resolved_alert,
 )
 from mm_jira_bot.jira import (
+    VALID_INCIDENT_CONFIRMED_VALUE,
     VALID_INCIDENT_EXPECTED_VALUE,
     VALID_INCIDENT_FALSE_VALUE,
 )
@@ -40,6 +50,10 @@ from mm_jira_bot.postmortem import (
 )
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
 from mm_jira_bot.retry import ApiError
+from mm_jira_bot.summary import (
+    build_thread_summary_prompt,
+    format_thread_summary_reply,
+)
 
 log = get_logger(__name__)
 
@@ -70,6 +84,39 @@ def _copy_post_attachments(post: MattermostPost) -> list[dict]:
 class CommandResponse:
     text: str
     response_type: str = "ephemeral"
+
+
+@dataclass(frozen=True)
+class ActionResult:
+    """Ephemeral feedback shown to the user who clicked an alert button."""
+
+    message: str
+
+
+def _validity_action_message(result: ConfirmationResult, validity_label: str) -> str:
+    if result.status == ConfirmationStatus.VALIDITY_SET:
+        return f"Готово: «Валидность» = {validity_label}."
+    if result.status == ConfirmationStatus.PENDING_JIRA:
+        return "Задача Jira ещё создаётся — обновлю «Валидность» автоматически."
+    if result.status == ConfirmationStatus.ERROR:
+        return "Не удалось обновить «Валидность», попробуйте ещё раз."
+    return result.message
+
+
+def _incident_action_message(result: ConfirmationResult) -> str:
+    return {
+        ConfirmationStatus.CONFIRMED: "Инцидент заведён ✅",
+        ConfirmationStatus.ALREADY_CONFIRMED: "Инцидент уже подтверждён.",
+        ConfirmationStatus.PENDING_JIRA: (
+            "Подтверждение сохранено — задача Jira ещё создаётся."
+        ),
+        ConfirmationStatus.ERROR: (
+            "Произошла ошибка при подтверждении, бот повторит позже."
+        ),
+        ConfirmationStatus.NOT_FOUND: (
+            "Не нашёл связку с Jira для этого сообщения."
+        ),
+    }.get(result.status, result.message)
 
 
 @dataclass(frozen=True)
@@ -265,6 +312,143 @@ class IncidentBotService:
             validity_set_at=datetime_from_mattermost_ms(reaction.create_at),
             source="reaction",
         )
+
+    def _alert_action_attachment(self, alert_post_id: str) -> dict | None:
+        """Action-buttons attachment for an alert, or ``None`` if disabled.
+
+        Buttons need an absolute callback URL, so they are only attached when
+        ``SERVICE_PUBLIC_URL`` is configured. Emoji reactions remain the fallback.
+        """
+        if not self.settings.service_public_url:
+            return None
+        return build_alert_action_attachment(
+            alert_post_id=alert_post_id,
+            callback_url=alert_action_callback_url(self.settings.service_public_url),
+        )
+
+    async def handle_alert_action(
+        self,
+        *,
+        action: str,
+        alert_post_id: str,
+        user_id: str,
+    ) -> ActionResult:
+        log.info(
+            "mattermost.action.received",
+            action=action,
+            mattermost_post_id=alert_post_id,
+            user_id=user_id,
+        )
+        if not alert_post_id:
+            return ActionResult(message="Не указан алерт для действия.")
+        try:
+            post = await self.mattermost.get_post(alert_post_id)
+        except ApiError as exc:
+            log.error(
+                "mattermost.action.post_lookup_failed",
+                mattermost_post_id=alert_post_id,
+                action=action,
+                error=str(exc),
+            )
+            return ActionResult(message="Не удалось прочитать сообщение алерта.")
+
+        if action == ACTION_SUMMARY:
+            return await self.generate_thread_summary(
+                post, requested_by_user_id=user_id, source="action"
+            )
+
+        if post.channel_id != self.settings.mattermost_alert_channel_id:
+            return ActionResult(message="Сообщение не в канале алертов.")
+
+        ticket = self.repository.get_by_post_id(alert_post_id)
+        if ticket is None or ticket.jira_issue_key is None:
+            await self.handle_alert_post(post)
+
+        if action == ACTION_INCIDENT:
+            result = await self.confirm_incident(
+                alert_post_id, confirmed_by_user_id=user_id, source="action"
+            )
+            return ActionResult(message=_incident_action_message(result))
+
+        validity_label = {
+            ACTION_VALID: VALID_INCIDENT_CONFIRMED_VALUE,
+            ACTION_FALSE: VALID_INCIDENT_FALSE_VALUE,
+            ACTION_EXPECTED: VALID_INCIDENT_EXPECTED_VALUE,
+        }.get(action)
+        if validity_label is None:
+            log.info(
+                "mattermost.action.unknown",
+                action=action,
+                mattermost_post_id=alert_post_id,
+            )
+            return ActionResult(message="Неизвестное действие.")
+
+        result = await self.apply_validity_label(
+            alert_post_id, validity_label=validity_label, source="action"
+        )
+        return ActionResult(
+            message=_validity_action_message(result, validity_label)
+        )
+
+    async def generate_thread_summary(
+        self,
+        alert_post: MattermostPost,
+        *,
+        requested_by_user_id: str,
+        source: str,
+    ) -> ActionResult:
+        if self.llm is None:
+            log.info(
+                "summary.skipped_llm_not_configured",
+                mattermost_post_id=alert_post.id,
+            )
+            return ActionResult(message="Саммари недоступно: LLM не настроен.")
+
+        root_id = alert_post.root_id or alert_post.id
+        root_post = alert_post
+        if root_id != alert_post.id:
+            try:
+                root_post = await self.mattermost.get_post(root_id)
+            except ApiError:
+                root_post = alert_post
+
+        try:
+            thread_messages, participants, _ = await self._postmortem_thread_context(
+                root_post,
+                reacted_by_user_id=requested_by_user_id,
+            )
+            transcript = format_thread_transcript(thread_messages)
+            prompt = build_thread_summary_prompt(
+                thread_url=self.mattermost.permalink(root_post.id),
+                participants=participants,
+                transcript=transcript,
+                max_chars=self.settings.llm_thread_max_chars,
+            )
+            summary = await self.llm.generate_summary(prompt)
+        except ApiError as exc:
+            log.error(
+                "summary.failed",
+                mattermost_post_id=root_post.id,
+                source=source,
+                error=str(exc),
+            )
+            return ActionResult(
+                message="Не удалось сгенерировать саммари, попробуйте позже."
+            )
+
+        await self._post_alert_thread_reply(
+            root_post.id,
+            channel_id=root_post.channel_id,
+            message=format_thread_summary_reply(summary),
+            event="mattermost.alert_thread.summary_published",
+            props={"summary_requested_by_user_id": requested_by_user_id},
+        )
+        log.info(
+            "summary.completed",
+            mattermost_post_id=root_post.id,
+            source=source,
+        )
+        return ActionResult(message="Саммари опубликовано в треде.")
 
     async def handle_incident_checkmark(
         self,
@@ -1107,6 +1291,12 @@ class IncidentBotService:
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=issue.key,
             )
+            issue_props: dict = {"jira_issue_key": issue.key}
+            action_attachment = self._alert_action_attachment(
+                ticket.mattermost_post_id
+            )
+            if action_attachment is not None:
+                issue_props["attachments"] = [action_attachment]
             await self._post_alert_thread_reply(
                 ticket.mattermost_post_id,
                 channel_id=ticket.mattermost_channel_id,
@@ -1114,7 +1304,7 @@ class IncidentBotService:
                     jira_issue_key=issue.key, jira_issue_url=issue.url
                 ),
                 event="mattermost.alert_thread.issue_notice_published",
-                props={"jira_issue_key": issue.key},
+                props=issue_props,
             )
         except ApiError as exc:
             self.repository.mark_jira_create_failed(ticket.mattermost_post_id, str(exc))

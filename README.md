@@ -63,6 +63,18 @@ flowchart LR
 
 Имена реакций настраиваются через `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` и `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME`. Побеждает последняя реакция: каждая новая реакция перезаписывает поле `Валидность` в Jira своим значением. Если на момент реакции Jira issue ещё не создана, обновление пропускается (best-effort).
 
+## Action Buttons
+
+Если задан `SERVICE_PUBLIC_URL`, бот добавляет под алерт (в свой ответ-в-треде «Создана задача Jira…») интерактивные кнопки. Эмодзи-реакции выше продолжают работать как фоллбэк. Кнопки повторяют те же сценарии:
+
+- ✅ **Валидный** → лёгкий тег `Валидность = Валидный` (как validity-реакция, без поста в канал инцидентов);
+- 🙅 **Ложный** → `Валидность = Ложный`;
+- 🔄 **Ожидаемый** → `Валидность = Ожидаемый`;
+- 🚨 **Дать инцидент** → полное подтверждение инцидента (`:incident:`-флоу: пост в канал инцидентов, комментарий, transition);
+- 📝 **Саммари треда** → бот отправляет тред в LLM и публикует краткое саммари ответом в тред (требует настроенный `LLM_API_TOKEN`; без него кнопка отвечает эфемерным сообщением и ничего не постит).
+
+Mattermost POST'ит нажатия на `https://your-bot.example.com/mattermost/actions/alert`. Чтобы бот мог формировать абсолютный callback URL, `SERVICE_PUBLIC_URL` должен указывать на публичный адрес сервиса (без хвостового `/`). У интерактивных кнопок Mattermost нет встроенной подписи запроса, поэтому эндпоинт рассчитан на доступ только из внутренней сети / за reverse-proxy. Нажавший видит результат эфемерным сообщением. Бот отвечает на нажатие только в своём посте, поэтому отдельных прав в Mattermost кнопки не требуют.
+
 ## Jira Setup
 
 Для on-prem/Data Center Jira создайте personal access token и укажите:
@@ -292,11 +304,18 @@ WHERE jira_issue_key IS NULL
 - `jira.http.error`;
 - `mattermost.reaction.received`;
 - `mattermost.slash_command.received`;
+- `mattermost.action.received`;
+- `mattermost.action.post_lookup_failed`;
+- `mattermost.action.unknown`;
 - `incident.confirmed`;
 - `mattermost.incident_message.published`;
 - `jira.valid_incident.updated`;
 - `jira.comment.added`;
 - `jira.issue.transitioned`;
+- `mattermost.alert_thread.summary_published`;
+- `summary.skipped_llm_not_configured`;
+- `summary.failed`;
+- `summary.completed`;
 - skip-события идемпотентности.
 
 В Docker:
@@ -311,7 +330,7 @@ docker compose logs -f bot
 pytest
 ```
 
-Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload, Jira option metadata и формат incident-сообщения.
+Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload, Jira option metadata и формат incident-сообщения, а также интерактивные кнопки (наличие/отсутствие кнопок в ответе, каждый из пяти action), thread summary через LLM и no-op при отсутствии LLM.
 
 ## API References
 

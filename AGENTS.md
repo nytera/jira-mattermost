@@ -33,8 +33,11 @@ lifespan, launches two background asyncio tasks against one
 - **`websocket_loop`** — connects to Mattermost WS (`websocket_events()`), feeds every event to `service.handle_websocket_event`. Reconnects on failure.
 - **`pending_work_loop`** — every `PENDING_WORK_INTERVAL_SECONDS` calls `process_pending_work()` to retry failed Jira creates and pending confirmations from the DB. This is the durability backbone: any partial failure is recovered here.
 
-HTTP endpoints: `GET /healthz` and `POST /mattermost/slash/incident` (the
-`/incident` slash command; validates `MATTERMOST_SLASH_TOKEN` if set). When
+HTTP endpoints: `GET /healthz`, `POST /mattermost/slash/incident` (the
+`/incident` slash command; validates `MATTERMOST_SLASH_TOKEN` if set), and
+`POST /mattermost/actions/alert` (interactive-button callback → calls
+`service.handle_alert_action`; Mattermost does not sign button callbacks, so this
+endpoint relies on network isolation rather than a token). When
 `DEBUG_ADMIN_ENABLED`, `register_debug_admin` also mounts the SPA at
 `GET /debug/admin` plus its JSON API: `summary`, `alerts`, `alerts/{post_id}`,
 `POST alerts/{post_id}/jira/recreate`, `POST alerts/create-from-link` (create a
@@ -58,6 +61,8 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 | `repository.py` | SQLAlchemy model `AlertTicket` + `AlertTicketRepository` (all DB access; mutators go through `_mutate`). |
 | `domain.py` | Frozen dataclasses, enums, and timezone helpers. |
 | `formatting.py` | Incident-message and Jira-summary text. |
+| `actions.py` | Pure builders/constants for the interactive alert action buttons (attachment + `context`); no I/O. |
+| `summary.py` | Pure builders for the LLM thread-summary prompt and the thread reply. |
 | `retry.py` | `ApiError` + `retry_async` (exponential backoff on 429/5xx only). |
 | `logging.py` | `JsonFormatter` / `TextFormatter` + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`); format chosen by `LOG_FORMAT`. |
 | `web.py` | FastAPI app factory (`create_app`), background loops, `/healthz` + `/incident` slash. |
@@ -75,6 +80,17 @@ Alert-thread replies (`_post_alert_thread_reply`) are best-effort: they reuse
 the alert `post_id` as `root_id`, are guarded once-only by the same early
 returns that protect issue creation / confirmation (no extra DB flag), and
 swallow `ApiError` so a failed notification never breaks the main flow.
+
+**Interactive buttons** (`handle_alert_action`) are an alternative entry point to
+the same two flows plus a thread summary. The bot can't attach buttons to the
+alert (a Grafana/user post), so it hangs them on its own issue-created reply via
+`_alert_action_attachment` (only when `SERVICE_PUBLIC_URL` is set; emoji
+reactions stay as the fallback). Each button posts to `/mattermost/actions/alert`
+with a `context` identifying the action and the alert `post_id`. Dispatch: `valid`
+/ `false` / `expected` → `apply_validity_label` (`Валидный` / `Ложный` /
+`Ожидаемый`); `incident` → `confirm_incident`; `summary` → `generate_thread_summary`
+(LLM, posts a visible thread reply; no-op when LLM is unconfigured). The endpoint
+returns `ephemeral_text` feedback to the clicker.
 
 Idempotency keys live in `AlertTicket`: `jira_issue_key`, `incident_post_id`,
 `jira_confirmation_comment_added`, plus `creation_status` /

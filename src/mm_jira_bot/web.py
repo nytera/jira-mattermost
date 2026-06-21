@@ -281,6 +281,18 @@ def create_app(
             {"response_type": response.response_type, "text": response.text}
         )
 
+    @app.post("/mattermost/actions/alert")
+    async def alert_action(request: Request) -> JSONResponse:
+        payload = await request.json()
+        context = payload.get("context") or {}
+
+        result = await service.handle_alert_action(
+            action=context.get("action", ""),
+            alert_post_id=context.get("alert_post_id", ""),
+            user_id=payload.get("user_id", ""),
+        )
+        return JSONResponse({"ephemeral_text": result.message})
+
     if settings.debug_admin_enabled:
         register_debug_admin(app, service)
 

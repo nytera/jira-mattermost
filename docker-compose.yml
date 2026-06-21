@@ -22,7 +22,9 @@ services:
     restart: unless-stopped
 
     ports:
-      - "5432:5432"
+      # хост 5433 → контейнер 5432 (Postgres внутри слушает 5432).
+      # Левую цифру меняй, если 5432/5433 заняты на хосте; правую не трогай.
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 

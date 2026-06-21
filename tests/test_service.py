@@ -226,10 +226,16 @@ class FakeLlmClient:
     ) -> None:
         self.report = report
         self.prompts: list[str] = []
+        self.summary_prompts: list[str] = []
+        self.summary = "Суть: всё сломалось.\nСтатус: в работе."
 
     async def generate_postmortem(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self.report
+
+    async def generate_summary(self, prompt: str) -> str:
+        self.summary_prompts.append(prompt)
+        return self.summary
 
     async def aclose(self) -> None:
         return None
@@ -2161,3 +2167,165 @@ def test_builds_incident_channel_message(service):
     assert "OPS-1" in message
     assert "@validator" in message
     assert "Время подтверждения: `2026-05-30T01:30:00+03:00`" in message
+
+
+def _build_service(settings):
+    engine = create_database_engine(settings.database_url)
+    init_db(engine)
+    repository = AlertTicketRepository(create_session_factory(engine))
+    return IncidentBotService(
+        settings=settings,
+        repository=repository,
+        mattermost_client=FakeMattermostClient(),
+        jira_client=FakeJiraClient(),
+    )
+
+
+def _issue_reply(service, post_id):
+    replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post_id
+        and "Создана задача Jira" in created["message"]
+    ]
+    assert len(replies) == 1
+    return replies[0]
+
+
+@pytest.mark.asyncio
+async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
+    service = _build_service(
+        replace(settings, service_public_url="https://bot.example.com/")
+    )
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(post)
+
+    attachments = _issue_reply(service, post.id)["props"]["attachments"]
+    actions = attachments[0]["actions"]
+    assert [action["id"] for action in actions] == [
+        "valid",
+        "false",
+        "expected",
+        "incident",
+        "summary",
+    ]
+    first = actions[0]["integration"]
+    assert first["url"] == "https://bot.example.com/mattermost/actions/alert"
+    assert first["context"] == {"action": "valid", "alert_post_id": post.id}
+    assert ":white_check_mark:" in actions[0]["name"]
+
+
+@pytest.mark.asyncio
+async def test_issue_reply_has_no_buttons_without_public_url(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(post)
+
+    assert "attachments" not in _issue_reply(service, post.id)["props"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action,expected_label",
+    [
+        ("valid", "Валидный"),
+        ("false", "Ложный"),
+        ("expected", "Ожидаемый"),
+    ],
+)
+async def test_action_button_sets_validity(service, action, expected_label):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.handle_alert_action(
+        action=action, alert_post_id=post.id, user_id="clicker"
+    )
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert service.jira.validity_updates == [("OPS-1", expected_label)]
+    assert ticket.validity_label == expected_label
+    assert ticket.valid_incident is False
+    assert ticket.incident_post_id is None
+    assert expected_label in result.message
+
+
+@pytest.mark.asyncio
+async def test_incident_button_confirms_incident(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.handle_alert_action(
+        action="incident", alert_post_id=post.id, user_id="clicker"
+    )
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket.valid_incident is True
+    assert ticket.incident_post_id is not None
+    incident_posts = [
+        created
+        for created in service.mattermost.created_posts
+        if created["channel_id"] == "incidents-channel"
+    ]
+    assert len(incident_posts) == 1
+    assert "Инцидент заведён" in result.message
+
+
+@pytest.mark.asyncio
+async def test_summary_button_posts_thread_reply(service):
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_alert_action(
+        action="summary", alert_post_id=post.id, user_id="clicker"
+    )
+
+    assert len(service.llm.summary_prompts) == 1
+    summary_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post.id and "Саммари треда" in created["message"]
+    ]
+    assert len(summary_replies) == 1
+    assert "всё сломалось" in summary_replies[0]["message"]
+    assert "опубликовано" in result.message
+
+
+@pytest.mark.asyncio
+async def test_summary_button_without_llm_is_noop(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.handle_alert_action(
+        action="summary", alert_post_id=post.id, user_id="clicker"
+    )
+
+    summary_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if "Саммари треда" in created["message"]
+    ]
+    assert summary_replies == []
+    assert "LLM не настроен" in result.message
+
+
+def test_alert_action_endpoint_dispatches(service, settings):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/mattermost/actions/alert",
+            json={
+                "user_id": "clicker",
+                "context": {"action": "false", "alert_post_id": post.id},
+            },
+        )
+
+    assert response.status_code == 200
+    assert "Ложный" in response.json()["ephemeral_text"]
+    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
