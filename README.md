@@ -5,7 +5,7 @@
 ## Workflow
 
 1. Бот подключается к Mattermost WebSocket API и слушает события `posted` и `reaction_added`.
-2. Новое сообщение в `MATTERMOST_ALERT_CHANNEL_ID` сохраняется в таблицу `alert_tickets`.
+2. Новое сообщение в `MATTERMOST_ALERT_CHANNEL_ID` сохраняется в таблицу `alert_tickets`; название алерта берется из первой содержательной строки сообщения.
 3. Для сообщения создается Jira issue с текстом алерта, автором, временем, permalink, `post_id`, каналом, `Источник = Crit alert` и `Был ли крит алерт? = Да`. Поле `Valid Incident`/`Валидность` при создании не отправляется: Jira должна поставить свое дефолтное значение. После создания бот отвечает в тред исходного алерта ссылкой на созданную Jira issue.
 4. Связь `mattermost_post_id -> jira_issue_key` хранится локально и защищена уникальным индексом.
 5. Пользователь подтверждает инцидент реакцией `:incident:` на оригинальное сообщение или slash-командой `/incident <link>`.
@@ -34,6 +34,7 @@ flowchart LR
 - WebSocket доступ к `/api/v4/websocket`;
 - REST доступ к `/api/v4/posts`, `/api/v4/channels/{channel_id}`, `/api/v4/channels/{channel_id}/posts`, `/api/v4/users/{user_id}` (чтобы показать имя/username подтвердившего вместо сырого `user_id`).
 - REST доступ к `/api/v4/posts/{post_id}/thread` для генерации постмортема по incident-треду.
+- REST доступ к `/api/v4/actions/dialogs/open` для формы обратной связи.
 
 `MATTERMOST_BOT_USER_ID` нужен, чтобы бот не обрабатывал собственные сообщения.
 
@@ -65,15 +66,20 @@ flowchart LR
 
 ## Action Buttons
 
-Если задан `SERVICE_PUBLIC_URL`, бот добавляет под алерт (в свой ответ-в-треде «Создана задача Jira…») интерактивные кнопки. Эмодзи-реакции выше продолжают работать как фоллбэк. Кнопки повторяют те же сценарии:
+Если задан `SERVICE_PUBLIC_URL`, бот добавляет под алерт (в свой ответ-в-треде
+о созданной Jira-задаче) интерактивную карточку из двух блоков: основной блок с
+жирной строкой `Создана задача`, меню валидности и
+действиями `🚨 Инцидент` / `📝 Summary`; ниже отдельный серый блок
+`Обратная связь по алерту`. Эмодзи-реакции выше продолжают работать как фоллбэк.
+Основной блок использует синий акцент `#3B82F6`, блок обратной связи — серый
+`#4B5563`. Карточка повторяет те же сценарии:
 
-- ✅ **Валидный** → лёгкий тег `Валидность = Валидный` (как validity-реакция, без поста в канал инцидентов);
-- 🙅 **Ложный** → `Валидность = Ложный`;
-- 🔄 **Ожидаемый** → `Валидность = Ожидаемый`;
-- 🚨 **Дать инцидент** → полное подтверждение инцидента (`:incident:`-флоу: пост в канал инцидентов, комментарий, transition);
-- 📝 **Саммари треда** → бот отправляет тред в LLM и публикует краткое саммари ответом в тред (требует настроенный `LLM_API_TOKEN`; без него кнопка отвечает эфемерным сообщением и ничего не постит).
+- **Выбрать валидность ▼** → меню `Ложный` / `Ожидаемый` / `Валидный`;
+- **🚨 Инцидент** → полное подтверждение инцидента (`:incident:`-флоу: пост в канал инцидентов, комментарий, transition);
+- **📝 Summary** → бот отправляет тред в LLM и публикует краткое саммари ответом в тред (требует настроенный `LLM_API_TOKEN`; без него кнопка отвечает эфемерным сообщением и ничего не постит).
+- **Обратная связь по алерту** → открывает Mattermost dialog с textarea, сохраняет сообщение в `alert_feedback` и пишет в тред `Получили обратную связь от <username>`.
 
-Mattermost POST'ит нажатия на `https://your-bot.example.com/mattermost/actions/alert`. Чтобы бот мог формировать абсолютный callback URL, `SERVICE_PUBLIC_URL` должен указывать на публичный адрес сервиса (без хвостового `/`). У интерактивных кнопок Mattermost нет встроенной подписи запроса, поэтому эндпоинт рассчитан на доступ только из внутренней сети / за reverse-proxy. Нажавший видит результат эфемерным сообщением. Бот отвечает на нажатие только в своём посте, поэтому отдельных прав в Mattermost кнопки не требуют.
+Mattermost POST'ит действия на `https://your-bot.example.com/mattermost/actions/alert`, а submit формы обратной связи — на `https://your-bot.example.com/mattermost/dialogs/feedback`. Чтобы бот мог формировать абсолютные callback URL, `SERVICE_PUBLIC_URL` должен указывать на публичный адрес сервиса (без хвостового `/`). У интерактивных действий Mattermost нет встроенной подписи запроса, поэтому эндпоинты рассчитаны на доступ только из внутренней сети / за reverse-proxy. Нажавший видит результат эфемерным сообщением. Бот отвечает на нажатие только в своём посте, поэтому отдельных прав в Mattermost кнопки не требуют.
 
 ## Jira Setup
 
@@ -88,7 +94,9 @@ Mattermost POST'ит нажатия на `https://your-bot.example.com/mattermos
 - `JIRA_IS_CRIT_ALERT_FIELD`, например `Был ли крит алерт?`;
 - `JIRA_START_FIELD`, например `Начало`, date-time picker поле, в которое пишется время прихода алерта, опционально;
 - `JIRA_END_FIELD`, например `Окончание`, date-time picker поле, в которое пишется время реакции `Ложный`/`Ожидаемый` или галочки на сообщении валидного инцидента, опционально;
-- `JIRA_CONFIRMED_STATUS_ID`, id transition в статус `Confirmed Incident`, опционально.
+- `JIRA_CONFIRMED_STATUS_ID`, id transition в статус `Confirmed Incident`, опционально;
+- `JIRA_CREATE_ENABLED=false`, тестовый режим без создания задач в Jira, опционально;
+- `JIRA_STUB_ISSUE_KEY=ADSDEV-12024`, ключ задачи, который бот покажет в Mattermost в тестовом режиме; если не задан, бот сгенерирует ключ вида `PROJECT-12345`.
 
 Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его.
 
@@ -98,6 +106,8 @@ Mattermost POST'ит нажатия на `https://your-bot.example.com/mattermos
 - `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes/{issueTypeId}`.
 
 `JIRA_SOURCE_FIELD` должен иметь option `Crit alert`, а `JIRA_IS_CRIT_ALERT_FIELD` должен иметь option `Да` для выбранных `JIRA_PROJECT_KEY` и `JIRA_ISSUE_TYPE`. `JIRA_VALID_INCIDENT_FIELD` при создании issue не отправляется, потому что дефолт выставляет сама Jira; при подтверждении бот обновляет это поле в option `Валидный`.
+
+Если `JIRA_CREATE_ENABLED=false`, бот не вызывает Jira create issue: он сразу сохраняет stub-ключ как связанную задачу и публикует обычный ответ в Mattermost. Для фиксированного `JIRA_STUB_ISSUE_KEY` в БД хранится уникальный технический ключ с suffix от Mattermost post id, чтобы несколько тестовых алертов не конфликтовали по уникальному индексу, а в Mattermost показывается чистый ключ вроде `ADSDEV-12024`. Остальные Jira-действия после этого, например обновление `Валидность`, комментарии и transition при подтверждении, остаются включены и будут обращаться к Jira по сохранённому stub-ключу.
 
 `JIRA_START_FIELD` (если задано) — date-time picker поле, которое заполняется временем прихода алерта при создании issue. Значение отправляется в формате ISO 8601 с offset вида `+0300` и обязательной дробной частью секунд (например, `2026-06-16T14:30:00.000+0300`); `dd.MM.yyyy HH:mm` — это только формат отображения в Jira UI. Время приводится к `INCIDENT_TIMEZONE`.
 
@@ -133,7 +143,7 @@ Mattermost POST'ит нажатия на `https://your-bot.example.com/mattermos
 - `jira` — заранее резолвит field ids, issue type, createmeta и options `Валидный`, `Ложный`, `Ожидаемый`, `Crit alert`, `Да`;
 - `llm` — если настроен `LLM_API_TOKEN`, делает маленький smoke request в `chat/completions`.
 
-События в логах: `startup.configuration`, `startup.preflight.check_started`, `startup.preflight.check_ok`, `startup.preflight.check_failed`, `startup.preflight.completed`. Ошибка preflight не останавливает приложение, но сразу показывает проблему с доступом, токеном, моделью или Jira metadata.
+В `LOG_FORMAT=json` пишутся все startup-события: `startup.configuration`, `startup.preflight.check_started`, `startup.preflight.check_ok`, `startup.preflight.check_failed`, `startup.preflight.completed`. В `LOG_FORMAT=text` шумные `check_started`/`check_ok` скрываются, остается короткий итог preflight и ошибки. Ошибка preflight не останавливает приложение, но сразу показывает проблему с доступом, токеном, моделью или Jira metadata.
 
 ## Configuration
 
@@ -204,9 +214,11 @@ DEBUG_ADMIN_ENABLED=true
 - `GET /debug/admin` — простая HTML-страница со списком алертов и действиями;
 - `GET /debug/admin/api/summary` — счетчики по статусам;
 - `GET /debug/admin/api/alerts?limit=50&status=failed_jira` — список тикетов;
-- `GET /debug/admin/api/alerts/{post_id}` — полная карточка тикета;
+- `GET /debug/admin/api/alerts/{post_id}` — полная карточка тикета, включая сохраненное название алерта и обратную связь;
 - `POST /debug/admin/api/alerts/{post_id}/jira/recreate` — создать Jira issue для тикета без `jira_issue_key`;
-- `POST /debug/admin/api/alerts/{post_id}/jira/recreate?force=true` — создать новую Jira issue и заменить локальную связь.
+- `POST /debug/admin/api/alerts/{post_id}/jira/recreate?force=true` — создать новую Jira issue и заменить локальную связь;
+- `POST /debug/admin/api/alerts/create-from-link` — создать Jira issue из вставленной Mattermost/Band ссылки или `post_id`;
+- `GET /debug/admin/api/logs` — последние записи из in-memory log buffer.
 
 Важно: у debug-админки нет отдельной авторизации, кроме флага
 `DEBUG_ADMIN_ENABLED`, и она использует тот же HTTP-порт, что и бот
@@ -230,18 +242,21 @@ DATABASE_URL=postgresql://incident_bot:incident_bot@postgres:5432/incident_bot
 
 ## Database Schema
 
-Модель хранится в SQLAlchemy, а SQL-миграция лежит в `migrations/001_create_alert_tickets.sql`. При старте сервис вызывает `create_all`, поэтому для локального запуска отдельный мигратор не нужен.
+Модель хранится в SQLAlchemy, а SQL-миграции лежат в `migrations/`: базовая таблица тикетов, таблица обратной связи и добавление названия алерта. При старте сервис вызывает `create_all` и выполняет небольшие совместимые `ALTER TABLE`, поэтому для локального запуска отдельный мигратор не нужен.
 
 Основная таблица: `alert_tickets`.
 
 Ключевые поля:
 
 - `mattermost_post_id` с уникальным индексом;
+- `mattermost_alert_title`, короткое название алерта из первой строки сообщения;
 - `jira_issue_key`;
 - `valid_incident`;
 - `incident_post_id`;
 - `jira_confirmation_comment_added`;
 - `creation_status` и `confirmation_status` для retry.
+
+Обратная связь хранится в таблице `alert_feedback`: `mattermost_post_id`, `user_id`, отображаемое имя пользователя, текст сообщения и время создания.
 
 ## Idempotency
 
@@ -281,8 +296,8 @@ WHERE jira_issue_key IS NULL
 
 Логи пишутся в stdout. Формат выбирается переменной `LOG_FORMAT`:
 
-- `LOG_FORMAT=json` (по умолчанию) — по одному JSON-объекту на событие, удобно для сбора в Loki/ELK и т.п.;
-- `LOG_FORMAT=text` — компактные читаемые строки вида `время УРОВЕНЬ событие key=value …`, удобно при локальном запуске.
+- `LOG_FORMAT=json` (по умолчанию) — по одному JSON-объекту на событие, удобно для сбора в Loki/ELK и т.п.; сохраняет полную детализацию.
+- `LOG_FORMAT=text` — компактные читаемые строки вида `время УРОВЕНЬ событие key=value …`, удобно при локальном запуске. На `INFO` stdout показывает только важные бизнес-события, а технические `check_ok`, skip/no-op, Jira metadata/cache и низкоуровневые Mattermost notice-события скрываются. `WARNING` и `ERROR` проходят всегда.
 
 Уровень логирования задаётся `LOG_LEVEL` (по умолчанию `INFO`).
 
@@ -290,9 +305,8 @@ WHERE jira_issue_key IS NULL
 
 - `mattermost.alert.received`;
 - `jira.issue.created`;
+- `jira.issue.create_stubbed`;
 - `jira.issue.create_failed`;
-- `mattermost.alert_thread.issue_notice_published`;
-- `mattermost.alert_thread.status_notice_published`;
 - `mattermost.alert_thread.reply_failed`;
 - `mattermost.user.lookup_failed`;
 - `jira.client.configured`;
@@ -307,6 +321,7 @@ WHERE jira_issue_key IS NULL
 - `mattermost.action.received`;
 - `mattermost.action.post_lookup_failed`;
 - `mattermost.action.unknown`;
+- `feedback.received`;
 - `incident.confirmed`;
 - `mattermost.incident_message.published`;
 - `jira.valid_incident.updated`;
@@ -316,6 +331,7 @@ WHERE jira_issue_key IS NULL
 - `summary.skipped_llm_not_configured`;
 - `summary.failed`;
 - `summary.completed`;
+- `postmortem.completed`;
 - skip-события идемпотентности.
 
 В Docker:
@@ -330,10 +346,12 @@ docker compose logs -f bot
 pytest
 ```
 
-Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload, Jira option metadata и формат incident-сообщения, а также интерактивные кнопки (наличие/отсутствие кнопок в ответе, каждый из пяти action), thread summary через LLM и no-op при отсутствии LLM.
+Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload, Jira option metadata и формат incident-сообщения, а также интерактивную карточку (наличие/отсутствие controls, validity menu, incident, summary и feedback actions), thread summary через LLM и no-op при отсутствии LLM.
 
 ## API References
 
 - Mattermost API documentation: https://developers.mattermost.com/api-documentation/
 - Mattermost slash commands: https://docs.mattermost.com/integrations-guide/slash-commands.html
+- Mattermost interactive messages: https://developers.mattermost.com/integrate/plugins/interactive-messages/
+- Mattermost interactive dialogs: https://developers.mattermost.com/integrate/plugins/interactive-dialogs/
 - Jira Data Center REST API: https://developer.atlassian.com/server/jira/platform/rest-apis/

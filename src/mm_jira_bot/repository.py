@@ -11,14 +11,17 @@ from sqlalchemy import (
     Text,
     create_engine,
     func,
+    inspect,
     or_,
     select,
+    text,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from mm_jira_bot.domain import MattermostPost, backend_now, datetime_from_mattermost_ms
+from mm_jira_bot.formatting import extract_alert_title
 
 
 def normalize_database_url(database_url: str) -> str:
@@ -52,6 +55,7 @@ class AlertTicket(Base):
     mattermost_channel_name: Mapped[str | None] = mapped_column(String(255))
     mattermost_message_url: Mapped[str] = mapped_column(Text)
     mattermost_message_text: Mapped[str] = mapped_column(Text)
+    mattermost_alert_title: Mapped[str | None] = mapped_column(String(255))
     mattermost_author_id: Mapped[str] = mapped_column(String(64))
     mattermost_message_created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
@@ -80,8 +84,37 @@ class AlertTicket(Base):
     )
 
 
+class AlertFeedback(Base):
+    __tablename__ = "alert_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mattermost_post_id: Mapped[str] = mapped_column(String(64), index=True)
+    user_id: Mapped[str] = mapped_column(String(64))
+    user_display_name: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=backend_now
+    )
+
+
 def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    _ensure_alert_ticket_columns(engine)
+
+
+def _ensure_alert_ticket_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if not inspector.has_table("alert_tickets"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("alert_tickets")}
+    if "mattermost_alert_title" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE alert_tickets "
+                    "ADD COLUMN mattermost_alert_title VARCHAR(255)"
+                )
+            )
 
 
 class AlertTicketRepository:
@@ -213,6 +246,7 @@ class AlertTicketRepository:
                 mattermost_channel_name=channel_name,
                 mattermost_message_url=message_url,
                 mattermost_message_text=post.message,
+                mattermost_alert_title=extract_alert_title(post.message),
                 mattermost_author_id=post.user_id,
                 mattermost_message_created_at=datetime_from_mattermost_ms(
                     post.create_at
@@ -254,6 +288,7 @@ class AlertTicketRepository:
                 mattermost_channel_name=channel_name,
                 mattermost_message_url=message_url,
                 mattermost_message_text=post.message,
+                mattermost_alert_title=extract_alert_title(post.message),
                 mattermost_author_id=post.user_id,
                 mattermost_message_created_at=datetime_from_mattermost_ms(
                     post.create_at
@@ -392,6 +427,37 @@ class AlertTicketRepository:
             ticket.validity_label = label
 
         self._mutate(post_id, apply)
+
+    def add_feedback(
+        self,
+        post_id: str,
+        *,
+        user_id: str,
+        user_display_name: str,
+        message: str,
+    ) -> AlertFeedback:
+        with self._session_factory() as session:
+            self._require_ticket(session, post_id)
+            feedback = AlertFeedback(
+                mattermost_post_id=post_id,
+                user_id=user_id,
+                user_display_name=user_display_name,
+                message=message,
+            )
+            session.add(feedback)
+            session.commit()
+            session.refresh(feedback)
+            return feedback
+
+    def list_feedback(self, post_id: str) -> list[AlertFeedback]:
+        with self._session_factory() as session:
+            return list(
+                session.scalars(
+                    select(AlertFeedback)
+                    .where(AlertFeedback.mattermost_post_id == post_id)
+                    .order_by(AlertFeedback.created_at)
+                )
+            )
 
     def sync_valid_incident_from_jira(self, post_id: str) -> None:
         def apply(ticket: AlertTicket) -> None:

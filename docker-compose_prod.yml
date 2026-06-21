@@ -1,14 +1,14 @@
 services:
-  bot_dev:
+  bot:
     build: .
     env_file: .env
     ports:
-      - "8085:8080"
+      - "8080:8080"
     depends_on:
-      - postgres_dev
+      - postgres
     restart: unless-stopped
 
-  postgres_dev:
+  postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: incident_bot
@@ -20,14 +20,19 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+
+    ports:
+      # хост 5433 → контейнер 5432 (Postgres внутри слушает 5432).
+      # Левую цифру меняй, если 5432/5433 заняты на хосте; правую не трогай.
+      - "5433:5432"
     volumes:
-      - postgres-data_dev:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
 
 volumes:
-  postgres-data_dev:
+  postgres-data:
 
 networks:
   default:
     ipam:
       config:
-        - subnet: 10.124.0.0/24
+        - subnet: 10.123.0.0/24

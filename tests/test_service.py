@@ -42,6 +42,7 @@ class FakeMattermostClient:
     def __init__(self) -> None:
         self.posts: dict[str, MattermostPost] = {}
         self.created_posts: list[dict] = []
+        self.opened_dialogs: list[dict] = []
         self.display_names: dict[str, str] = {}
 
     def permalink(self, post_id: str) -> str:
@@ -95,6 +96,17 @@ class FakeMattermostClient:
         )
         self.posts[post.id] = post
         return post
+
+    async def open_dialog(
+        self,
+        *,
+        trigger_id: str,
+        url: str,
+        dialog: dict,
+    ) -> None:
+        self.opened_dialogs.append(
+            {"trigger_id": trigger_id, "url": url, "dialog": dialog}
+        )
 
     async def fetch_recent_channel_posts(self, channel_id: str, *, limit: int):
         return []
@@ -340,6 +352,77 @@ def test_settings_do_not_backfill_old_messages_by_default(tmp_path, monkeypatch)
     assert loaded_settings.enable_backfill_on_startup is False
 
 
+def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
+    required_env = {
+        "MATTERMOST_URL": "https://mattermost.example.com",
+        "MATTERMOST_TOKEN": "mm-token",
+        "MATTERMOST_ALERT_CHANNEL_ID": "alerts-channel",
+        "MATTERMOST_INCIDENT_CHANNEL_ID": "incidents-channel",
+        "MATTERMOST_BOT_USER_ID": "bot-user",
+        "JIRA_BASE_URL": "https://jira.example.com",
+        "JIRA_API_TOKEN": "jira-token",
+        "JIRA_PROJECT_KEY": "OPS",
+        "JIRA_ISSUE_TYPE": "Incident",
+        "JIRA_VALID_INCIDENT_FIELD": "Валидность",
+        "JIRA_SOURCE_FIELD": "Источник",
+        "JIRA_IS_CRIT_ALERT_FIELD": "Был ли крит алерт?",
+        "JIRA_CREATE_ENABLED": "false",
+        "JIRA_STUB_ISSUE_KEY": "ADSDEV-12024",
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'bot.db'}",
+    }
+    for key, value in required_env.items():
+        monkeypatch.setenv(key, value)
+
+    loaded_settings = Settings.from_env(tmp_path / "missing.env")
+
+    assert loaded_settings.jira_create_enabled is False
+    assert loaded_settings.jira_stub_issue_key == "ADSDEV-12024"
+
+
+def test_init_db_adds_alert_title_column_to_existing_schema(tmp_path):
+    engine = create_database_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE alert_tickets (
+                id INTEGER PRIMARY KEY,
+                mattermost_post_id VARCHAR(64) NOT NULL UNIQUE,
+                mattermost_channel_id VARCHAR(64) NOT NULL,
+                mattermost_channel_name VARCHAR(255),
+                mattermost_message_url TEXT NOT NULL,
+                mattermost_message_text TEXT NOT NULL,
+                mattermost_author_id VARCHAR(64) NOT NULL,
+                mattermost_message_created_at TIMESTAMP WITH TIME ZONE,
+                jira_issue_key VARCHAR(64) UNIQUE,
+                jira_issue_url TEXT,
+                valid_incident BOOLEAN NOT NULL DEFAULT FALSE,
+                incident_post_id VARCHAR(64) UNIQUE,
+                incident_message_url TEXT,
+                confirmed_by_user_id VARCHAR(64),
+                confirmed_at TIMESTAMP WITH TIME ZONE,
+                creation_status VARCHAR(32) NOT NULL DEFAULT 'pending_jira',
+                confirmation_status VARCHAR(32) NOT NULL DEFAULT 'none',
+                pending_confirmation_by_user_id VARCHAR(64),
+                pending_confirmation_at TIMESTAMP WITH TIME ZONE,
+                jira_confirmation_comment_added BOOLEAN NOT NULL DEFAULT FALSE,
+                validity_label VARCHAR(64),
+                last_error TEXT,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    init_db(engine)
+
+    with engine.connect() as connection:
+        columns = {
+            row[1]
+            for row in connection.exec_driver_sql("PRAGMA table_info(alert_tickets)")
+        }
+    assert "mattermost_alert_title" in columns
+
+
 def test_settings_reports_all_valid_incident_field_env_names(tmp_path, monkeypatch):
     required_env = {
         "MATTERMOST_URL": "https://mattermost.example.com",
@@ -381,7 +464,92 @@ async def test_creates_jira_issue_for_new_mattermost_message(service):
 
     assert ticket is not None
     assert ticket.jira_issue_key == "OPS-1"
+    assert ticket.mattermost_alert_title == "CPU usage is above 95%"
     assert len(service.jira.created_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_stores_grafana_alert_title(service):
+    post = make_alert(
+        message=(
+            "[Деньги | Минус-слова vs Общее | выше на 70% [Crit]]"
+            "(https://grafana.wb.ru/alerting/grafana/alert-id/view)\n"
+            "State: Alerting"
+        )
+    )
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is not None
+    assert ticket.mattermost_alert_title == (
+        "Деньги | Минус-слова vs Общее | выше на 70% [Crit]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_uses_stub_jira_issue_when_creation_disabled(settings):
+    service = _build_service(
+        replace(
+            settings,
+            jira_create_enabled=False,
+            jira_stub_issue_key="ADSDEV-12024",
+            service_public_url="https://bot.example.com/",
+        )
+    )
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is not None
+    assert ticket.jira_issue_key == f"ADSDEV-12024-{post.id[:12]}"
+    assert ticket.jira_issue_url == (
+        f"https://jira.example.com/browse/ADSDEV-12024-{post.id[:12]}"
+    )
+    assert len(service.jira.created_payloads) == 0
+    title_reply, _ = _issue_replies(
+        service, post.id, issue_key=ticket.jira_issue_key
+    )
+    assert title_reply["message"] == ""
+    attachment = title_reply["props"]["attachments"][0]
+    assert "title" not in attachment
+    assert "title_link" not in attachment
+    assert attachment["text"] == (
+        "**Создана задача: [ADSDEV-12024](https://jira.example.com/browse/ADSDEV-12024)**"
+    )
+    assert ticket.jira_issue_key not in attachment["text"]
+
+
+@pytest.mark.asyncio
+async def test_reuses_display_stub_jira_issue_without_db_conflict(settings):
+    service = _build_service(
+        replace(
+            settings,
+            jira_create_enabled=False,
+            jira_stub_issue_key="ADSDEV-12024",
+        )
+    )
+    first_post = make_alert(post_id="firststubalertpost00000001")
+    second_post = make_alert(post_id="secondstubalertpost0000002")
+    service.mattermost.posts[first_post.id] = first_post
+    service.mattermost.posts[second_post.id] = second_post
+
+    first_ticket = await service.handle_alert_post(first_post)
+    second_ticket = await service.handle_alert_post(second_post)
+
+    assert first_ticket is not None
+    assert second_ticket is not None
+    assert first_ticket.jira_issue_key != second_ticket.jira_issue_key
+    assert len(service.jira.created_payloads) == 0
+    first_reply = _issue_reply(
+        service, first_post.id, issue_key=first_ticket.jira_issue_key
+    )
+    second_reply = _issue_reply(
+        service, second_post.id, issue_key=second_ticket.jira_issue_key
+    )
+    assert "Создана задача Jira: [ADSDEV-12024]" in first_reply["message"]
+    assert "Создана задача Jira: [ADSDEV-12024]" in second_reply["message"]
 
 
 @pytest.mark.asyncio
@@ -422,6 +590,42 @@ async def test_mattermost_preflight_checks_bot_user_and_channels(settings):
         "/api/v4/users/me",
         "/api/v4/channels/alerts-channel",
         "/api/v4/channels/incidents-channel",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mattermost_client_opens_dialog(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append({"path": request.url.path, "json": json.loads(request.content)})
+        return httpx.Response(200, json={})
+
+    client = MattermostClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.mattermost_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        await client.open_dialog(
+            trigger_id="trigger-1",
+            url="https://bot.example.com/mattermost/dialogs/feedback",
+            dialog={"title": "Обратная связь"},
+        )
+    finally:
+        await client.aclose()
+
+    assert requests == [
+        {
+            "path": "/api/v4/actions/dialogs/open",
+            "json": {
+                "trigger_id": "trigger-1",
+                "url": "https://bot.example.com/mattermost/dialogs/feedback",
+                "dialog": {"title": "Обратная связь"},
+            },
+        }
     ]
 
 
@@ -1067,8 +1271,12 @@ def test_debug_admin_lists_alerts_when_enabled(service, settings):
     assert summary_response.json()["total"] == 1
     assert list_response.status_code == 200
     assert list_response.json()["alerts"][0]["mattermost_post_id"] == post.id
+    assert list_response.json()["alerts"][0]["mattermost_alert_title"] == (
+        "CPU usage is above 95%"
+    )
     assert "second line" in list_response.json()["alerts"][0]["mattermost_message_preview"]
     assert detail_response.status_code == 200
+    assert detail_response.json()["mattermost_alert_title"] == "CPU usage is above 95%"
     assert detail_response.json()["mattermost_message_text"] == post.message
 
 
@@ -2181,13 +2389,17 @@ def _build_service(settings):
     )
 
 
-def _issue_reply(service, post_id):
-    replies = [
+def _issue_replies(service, post_id, *, issue_key="OPS-1"):
+    return [
         created
         for created in service.mattermost.created_posts
         if created["root_id"] == post_id
-        and "Создана задача Jira" in created["message"]
+        and (created["props"] or {}).get("jira_issue_key") == issue_key
     ]
+
+
+def _issue_reply(service, post_id, *, issue_key="OPS-1"):
+    replies = _issue_replies(service, post_id, issue_key=issue_key)
     assert len(replies) == 1
     return replies[0]
 
@@ -2202,19 +2414,52 @@ async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
 
     await service.handle_alert_post(post)
 
-    attachments = _issue_reply(service, post.id)["props"]["attachments"]
+    title_reply, controls_reply = _issue_replies(service, post.id)
+
+    # First message: the "Создана задача" notice, muted gray like the feedback block.
+    assert title_reply["message"] == ""
+    title_attachments = title_reply["props"]["attachments"]
+    assert len(title_attachments) == 1
+    assert title_attachments[0]["color"] == "#4B5563"
+    assert "title" not in title_attachments[0]
+    assert "title_link" not in title_attachments[0]
+    assert "actions" not in title_attachments[0]
+    assert title_attachments[0]["text"] == (
+        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
+    )
+
+    # Second message: the validity menu, follow-up buttons and feedback block.
+    assert controls_reply["message"] == ""
+    attachments = controls_reply["props"]["attachments"]
+    assert len(attachments) == 2
+    assert attachments[0]["color"] == "#3B82F6"
+    assert "text" not in attachments[0]
     actions = attachments[0]["actions"]
     assert [action["id"] for action in actions] == [
-        "valid",
-        "false",
-        "expected",
+        "validity",
         "incident",
         "summary",
     ]
     first = actions[0]["integration"]
     assert first["url"] == "https://bot.example.com/mattermost/actions/alert"
-    assert first["context"] == {"action": "valid", "alert_post_id": post.id}
-    assert ":white_check_mark:" in actions[0]["name"]
+    assert first["context"] == {"action": "validity", "alert_post_id": post.id}
+    assert actions[0]["name"] == "Выбрать валидность ▼"
+    assert actions[0]["type"] == "select"
+    assert actions[0]["options"] == [
+        {"text": "Ложный", "value": "false"},
+        {"text": "Ожидаемый", "value": "expected"},
+        {"text": "Валидный", "value": "valid"},
+    ]
+    assert actions[1]["name"] == "🚨 Инцидент"
+    assert actions[1]["style"] == "primary"
+    assert actions[2]["name"] == "📝 Summary"
+    assert actions[2]["style"] == "default"
+    assert attachments[1]["color"] == "#4B5563"
+    assert "text" not in attachments[1]
+    feedback_actions = attachments[1]["actions"]
+    assert [action["id"] for action in feedback_actions] == ["feedback"]
+    assert feedback_actions[0]["name"] == "Обратная связь по алерту"
+    assert feedback_actions[0]["style"] == "default"
 
 
 @pytest.mark.asyncio
@@ -2224,24 +2469,29 @@ async def test_issue_reply_has_no_buttons_without_public_url(service):
 
     await service.handle_alert_post(post)
 
-    assert "attachments" not in _issue_reply(service, post.id)["props"]
+    reply = _issue_reply(service, post.id)
+    assert "Создана задача Jira" in reply["message"]
+    assert "attachments" not in reply["props"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "action,expected_label",
+    "selected_option,expected_label",
     [
-        ("valid", "Валидный"),
         ("false", "Ложный"),
         ("expected", "Ожидаемый"),
+        ("valid", "Валидный"),
     ],
 )
-async def test_action_button_sets_validity(service, action, expected_label):
+async def test_action_menu_sets_validity(service, selected_option, expected_label):
     post = make_alert()
     service.mattermost.posts[post.id] = post
 
     result = await service.handle_alert_action(
-        action=action, alert_post_id=post.id, user_id="clicker"
+        action="validity",
+        alert_post_id=post.id,
+        user_id="clicker",
+        selected_option=selected_option,
     )
 
     ticket = service.repository.get_by_post_id(post.id)
@@ -2250,6 +2500,21 @@ async def test_action_button_sets_validity(service, action, expected_label):
     assert ticket.valid_incident is False
     assert ticket.incident_post_id is None
     assert expected_label in result.message
+
+
+@pytest.mark.asyncio
+async def test_legacy_action_button_still_sets_validity(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.handle_alert_action(
+        action="false", alert_post_id=post.id, user_id="clicker"
+    )
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
+    assert ticket.validity_label == "Ложный"
+    assert "Ложный" in result.message
 
 
 @pytest.mark.asyncio
@@ -2313,6 +2578,75 @@ async def test_summary_button_without_llm_is_noop(service):
     assert "LLM не настроен" in result.message
 
 
+@pytest.mark.asyncio
+async def test_feedback_button_opens_dialog(settings):
+    service = _build_service(
+        replace(settings, service_public_url="https://bot.example.com/")
+    )
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.handle_alert_action(
+        action="feedback",
+        alert_post_id=post.id,
+        user_id="clicker",
+        trigger_id="trigger-1",
+    )
+
+    assert "Открыта форма" in result.message
+    assert service.mattermost.opened_dialogs == [
+        {
+            "trigger_id": "trigger-1",
+            "url": "https://bot.example.com/mattermost/dialogs/feedback",
+            "dialog": {
+                "callback_id": "alert_feedback",
+                "title": "Обратная связь",
+                "introduction_text": "Оставьте комментарий по этому алерту.",
+                "elements": [
+                    {
+                        "display_name": "Комментарий",
+                        "name": "feedback",
+                        "type": "textarea",
+                        "placeholder": "Что стоит улучшить?",
+                        "max_length": 3000,
+                    }
+                ],
+                "submit_label": "Отправить",
+                "state": json.dumps({"alert_post_id": post.id}, ensure_ascii=False),
+            },
+        }
+    ]
+    assert service.jira.validity_updates == []
+
+
+@pytest.mark.asyncio
+async def test_feedback_dialog_submission_stores_feedback_and_posts_notice(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    service.mattermost.display_names["clicker"] = "@clicker"
+    await service.handle_alert_post(post)
+
+    result = await service.handle_feedback_dialog_submission(
+        user_id="clicker",
+        state=json.dumps({"alert_post_id": post.id}),
+        submission={"feedback": "Кнопки стали понятнее"},
+    )
+
+    assert result.message == ""
+    feedback = service.repository.list_feedback(post.id)
+    assert len(feedback) == 1
+    assert feedback[0].user_id == "clicker"
+    assert feedback[0].user_display_name == "@clicker"
+    assert feedback[0].message == "Кнопки стали понятнее"
+    notices = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post.id
+        and "Получили обратную связь от @clicker" in created["message"]
+    ]
+    assert len(notices) == 1
+
+
 def test_alert_action_endpoint_dispatches(service, settings):
     post = make_alert()
     service.mattermost.posts[post.id] = post
@@ -2322,10 +2656,41 @@ def test_alert_action_endpoint_dispatches(service, settings):
             "/mattermost/actions/alert",
             json={
                 "user_id": "clicker",
-                "context": {"action": "false", "alert_post_id": post.id},
+                "context": {
+                    "action": "validity",
+                    "alert_post_id": post.id,
+                    "selected_option": "false",
+                },
             },
         )
 
     assert response.status_code == 200
     assert "Ложный" in response.json()["ephemeral_text"]
     assert service.jira.validity_updates == [("OPS-1", "Ложный")]
+
+
+def test_feedback_dialog_endpoint_stores_feedback(service, settings):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    service.mattermost.display_names["clicker"] = "@clicker"
+    service.repository.create_or_get_alert(
+        post,
+        message_url=service.mattermost.permalink(post.id),
+        channel_name="alerts",
+    )
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/mattermost/dialogs/feedback",
+            json={
+                "user_id": "clicker",
+                "state": json.dumps({"alert_post_id": post.id}),
+                "submission": {"feedback": "Хорошая форма"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    feedback = service.repository.list_feedback(post.id)
+    assert len(feedback) == 1
+    assert feedback[0].message == "Хорошая форма"

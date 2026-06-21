@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import json
 import re
+import secrets
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 
 from mm_jira_bot.actions import (
     ACTION_EXPECTED,
+    ACTION_FEEDBACK,
     ACTION_FALSE,
     ACTION_INCIDENT,
     ACTION_SUMMARY,
     ACTION_VALID,
+    ACTION_VALIDITY,
     alert_action_callback_url,
-    build_alert_action_attachment,
+    build_alert_actions_attachment,
+    build_alert_feedback_attachment,
+    build_alert_title_attachment,
+    feedback_dialog_callback_url,
 )
 from mm_jira_bot.config import Settings
 from mm_jira_bot.domain import (
@@ -313,18 +320,41 @@ class IncidentBotService:
             source="reaction",
         )
 
-    def _alert_action_attachment(self, alert_post_id: str) -> dict | None:
-        """Action-buttons attachment for an alert, or ``None`` if disabled.
+    def _alert_action_attachments(
+        self,
+        alert_post_id: str,
+        *,
+        title: str | None = None,
+        title_link: str | None = None,
+    ) -> tuple[list[dict], list[dict]] | None:
+        """Alert thread attachments split across two replies, or ``None`` if disabled.
 
-        Buttons need an absolute callback URL, so they are only attached when
-        ``SERVICE_PUBLIC_URL`` is configured. Emoji reactions remain the fallback.
+        Returns ``(title_attachments, control_attachments)``: the "Создана задача"
+        notice goes in the first reply, the validity menu, follow-up buttons and
+        feedback block in the second. Interactive controls need an absolute callback
+        URL, so they are attached when ``SERVICE_PUBLIC_URL`` is configured. Emoji
+        reactions remain the fallback.
         """
         if not self.settings.service_public_url:
             return None
-        return build_alert_action_attachment(
-            alert_post_id=alert_post_id,
-            callback_url=alert_action_callback_url(self.settings.service_public_url),
-        )
+        callback_url = alert_action_callback_url(self.settings.service_public_url)
+        title_attachments = [
+            build_alert_title_attachment(
+                title=title or "Jira",
+                title_link=title_link,
+            ),
+        ]
+        control_attachments = [
+            build_alert_actions_attachment(
+                alert_post_id=alert_post_id,
+                callback_url=callback_url,
+            ),
+            build_alert_feedback_attachment(
+                alert_post_id=alert_post_id,
+                callback_url=callback_url,
+            ),
+        ]
+        return title_attachments, control_attachments
 
     async def handle_alert_action(
         self,
@@ -332,10 +362,14 @@ class IncidentBotService:
         action: str,
         alert_post_id: str,
         user_id: str,
+        selected_option: str = "",
+        trigger_id: str = "",
     ) -> ActionResult:
         log.info(
             "mattermost.action.received",
             action=action,
+            selected_option=selected_option,
+            trigger_id=trigger_id,
             mattermost_post_id=alert_post_id,
             user_id=user_id,
         )
@@ -360,6 +394,12 @@ class IncidentBotService:
         if post.channel_id != self.settings.mattermost_alert_channel_id:
             return ActionResult(message="Сообщение не в канале алертов.")
 
+        if action == ACTION_FEEDBACK:
+            return await self.open_feedback_dialog(
+                alert_post_id=alert_post_id,
+                trigger_id=trigger_id,
+            )
+
         ticket = self.repository.get_by_post_id(alert_post_id)
         if ticket is None or ticket.jira_issue_key is None:
             await self.handle_alert_post(post)
@@ -369,6 +409,11 @@ class IncidentBotService:
                 alert_post_id, confirmed_by_user_id=user_id, source="action"
             )
             return ActionResult(message=_incident_action_message(result))
+
+        if action == ACTION_VALIDITY:
+            if not selected_option:
+                return ActionResult(message="Не выбрана «Валидность».")
+            action = selected_option
 
         validity_label = {
             ACTION_VALID: VALID_INCIDENT_CONFIRMED_VALUE,
@@ -389,6 +434,100 @@ class IncidentBotService:
         return ActionResult(
             message=_validity_action_message(result, validity_label)
         )
+
+    async def open_feedback_dialog(
+        self,
+        *,
+        alert_post_id: str,
+        trigger_id: str,
+    ) -> ActionResult:
+        if not trigger_id:
+            return ActionResult(message="Не удалось открыть форму: нет trigger_id.")
+        if not self.settings.service_public_url:
+            return ActionResult(message="Не удалось открыть форму: не настроен SERVICE_PUBLIC_URL.")
+        state = json.dumps({"alert_post_id": alert_post_id}, ensure_ascii=False)
+        dialog = {
+            "callback_id": "alert_feedback",
+            "title": "Обратная связь",
+            "introduction_text": "Оставьте комментарий по этому алерту.",
+            "elements": [
+                {
+                    "display_name": "Комментарий",
+                    "name": "feedback",
+                    "type": "textarea",
+                    "placeholder": "Что стоит улучшить?",
+                    "max_length": 3000,
+                }
+            ],
+            "submit_label": "Отправить",
+            "state": state,
+        }
+        try:
+            await self.mattermost.open_dialog(
+                trigger_id=trigger_id,
+                url=feedback_dialog_callback_url(self.settings.service_public_url),
+                dialog=dialog,
+            )
+        except ApiError as exc:
+            log.error(
+                "mattermost.feedback_dialog.open_failed",
+                mattermost_post_id=alert_post_id,
+                error=str(exc),
+            )
+            return ActionResult(message="Не удалось открыть форму обратной связи.")
+        return ActionResult(message="Открыта форма обратной связи.")
+
+    async def handle_feedback_dialog_submission(
+        self,
+        *,
+        user_id: str,
+        state: str,
+        submission: dict,
+        cancelled: bool = False,
+    ) -> ActionResult:
+        if cancelled:
+            return ActionResult(message="")
+        try:
+            data = json.loads(state or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        alert_post_id = str(data.get("alert_post_id") or "")
+        if not alert_post_id:
+            return ActionResult(message="Не указан алерт для обратной связи.")
+        feedback = str(submission.get("feedback") or "").strip()
+        if not feedback:
+            return ActionResult(message="Обратная связь пустая.")
+        user_display = await self._resolve_user_display(user_id)
+        try:
+            ticket = self.repository.get_by_post_id(alert_post_id)
+            if ticket is None:
+                return ActionResult(message="Не нашёл связку алерта.")
+            self.repository.add_feedback(
+                alert_post_id,
+                user_id=user_id,
+                user_display_name=user_display,
+                message=feedback,
+            )
+            log.info(
+                "feedback.received",
+                mattermost_post_id=alert_post_id,
+                user_id=user_id,
+            )
+            await self._post_alert_thread_reply(
+                alert_post_id,
+                channel_id=ticket.mattermost_channel_id,
+                message=f"Получили обратную связь от {user_display}",
+                event="mattermost.alert_thread.feedback_received_published",
+                props={"feedback_user_id": user_id},
+            )
+        except ApiError as exc:
+            log.error(
+                "mattermost.feedback_dialog.submit_failed",
+                mattermost_post_id=alert_post_id,
+                error=str(exc),
+            )
+            return ActionResult(message="Не удалось обработать обратную связь.")
+        return ActionResult(message="")
 
     async def generate_thread_summary(
         self,
@@ -1291,21 +1430,46 @@ class IncidentBotService:
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=issue.key,
             )
-            issue_props: dict = {"jira_issue_key": issue.key}
-            action_attachment = self._alert_action_attachment(
-                ticket.mattermost_post_id
+            display_issue = self._display_jira_issue(issue)
+            issue_message = format_thread_issue_created(
+                jira_issue_key=display_issue.key,
+                jira_issue_url=display_issue.url,
             )
-            if action_attachment is not None:
-                issue_props["attachments"] = [action_attachment]
-            await self._post_alert_thread_reply(
+            action_attachments = self._alert_action_attachments(
                 ticket.mattermost_post_id,
-                channel_id=ticket.mattermost_channel_id,
-                message=format_thread_issue_created(
-                    jira_issue_key=issue.key, jira_issue_url=issue.url
-                ),
-                event="mattermost.alert_thread.issue_notice_published",
-                props=issue_props,
+                title=display_issue.key,
+                title_link=display_issue.url,
             )
+            if action_attachments is not None:
+                title_attachments, control_attachments = action_attachments
+                await self._post_alert_thread_reply(
+                    ticket.mattermost_post_id,
+                    channel_id=ticket.mattermost_channel_id,
+                    message="",
+                    event="mattermost.alert_thread.issue_notice_published",
+                    props={
+                        "jira_issue_key": issue.key,
+                        "attachments": title_attachments,
+                    },
+                )
+                await self._post_alert_thread_reply(
+                    ticket.mattermost_post_id,
+                    channel_id=ticket.mattermost_channel_id,
+                    message="",
+                    event="mattermost.alert_thread.actions_published",
+                    props={
+                        "jira_issue_key": issue.key,
+                        "attachments": control_attachments,
+                    },
+                )
+            else:
+                await self._post_alert_thread_reply(
+                    ticket.mattermost_post_id,
+                    channel_id=ticket.mattermost_channel_id,
+                    message=issue_message,
+                    event="mattermost.alert_thread.issue_notice_published",
+                    props={"jira_issue_key": issue.key},
+                )
         except ApiError as exc:
             self.repository.mark_jira_create_failed(ticket.mattermost_post_id, str(exc))
             log.error("jira.issue.create_failed",
@@ -1314,11 +1478,41 @@ class IncidentBotService:
             )
 
     async def _create_jira_issue(self, ticket: AlertTicket) -> JiraIssue:
+        if not self.settings.jira_create_enabled:
+            return self._stub_jira_issue(ticket)
         post = ticket_to_post(ticket)
         return await self.jira.create_issue(
             post,
             message_url=ticket.mattermost_message_url,
             channel_name=ticket.mattermost_channel_name,
+        )
+
+    def _stub_jira_issue(self, ticket: AlertTicket) -> JiraIssue:
+        issue_key = self.settings.jira_stub_issue_key
+        if not issue_key:
+            issue_key = (
+                f"{self.settings.jira_project_key}-{10000 + secrets.randbelow(90000)}"
+            )
+        else:
+            suffix = ticket.mattermost_post_id[:12]
+            prefix = issue_key[: 63 - len(suffix)]
+            issue_key = f"{prefix}-{suffix}"
+        issue_url = f"{self.settings.jira_base_url}/browse/{issue_key}"
+        log.info(
+            "jira.issue.create_stubbed",
+            mattermost_post_id=ticket.mattermost_post_id,
+            jira_issue_key=issue_key,
+            jira_issue_url=issue_url,
+        )
+        return JiraIssue(key=issue_key, url=issue_url)
+
+    def _display_jira_issue(self, issue: JiraIssue) -> JiraIssue:
+        if self.settings.jira_create_enabled or not self.settings.jira_stub_issue_key:
+            return issue
+        issue_key = self.settings.jira_stub_issue_key
+        return JiraIssue(
+            key=issue_key,
+            url=f"{self.settings.jira_base_url}/browse/{issue_key}",
         )
 
     async def _resolve_user_display(self, user_id: str) -> str:

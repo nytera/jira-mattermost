@@ -217,6 +217,21 @@ class MattermostClient(AsyncApiClient):
             mattermost_channel_id=channel_id,
         )
 
+    async def open_dialog(
+        self,
+        *,
+        trigger_id: str,
+        url: str,
+        dialog: dict,
+    ) -> None:
+        await self._request(
+            "POST",
+            "/api/v4/actions/dialogs/open",
+            json={"trigger_id": trigger_id, "url": url, "dialog": dialog},
+            error_message="Failed to open Mattermost dialog",
+            event="mattermost.dialog.open",
+        )
+
     async def fetch_recent_channel_posts(
         self, channel_id: str, *, limit: int
     ) -> list[MattermostPost]:

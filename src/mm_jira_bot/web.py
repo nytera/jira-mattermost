@@ -290,8 +290,24 @@ def create_app(
             action=context.get("action", ""),
             alert_post_id=context.get("alert_post_id", ""),
             user_id=payload.get("user_id", ""),
+            selected_option=context.get("selected_option")
+            or payload.get("selected_option", ""),
+            trigger_id=payload.get("trigger_id", ""),
         )
         return JSONResponse({"ephemeral_text": result.message})
+
+    @app.post("/mattermost/dialogs/feedback")
+    async def feedback_dialog(request: Request) -> JSONResponse:
+        payload = await request.json()
+        result = await service.handle_feedback_dialog_submission(
+            user_id=payload.get("user_id", ""),
+            state=payload.get("state", ""),
+            submission=payload.get("submission") or {},
+            cancelled=bool(payload.get("cancelled")),
+        )
+        if result.message:
+            return JSONResponse({"error": result.message})
+        return JSONResponse({})
 
     if settings.debug_admin_enabled:
         register_debug_admin(app, service)

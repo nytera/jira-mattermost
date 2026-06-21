@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS alert_tickets (
     mattermost_channel_name VARCHAR(255),
     mattermost_message_url TEXT NOT NULL,
     mattermost_message_text TEXT NOT NULL,
+    mattermost_alert_title VARCHAR(255),
     mattermost_author_id VARCHAR(64) NOT NULL,
     mattermost_message_created_at TIMESTAMP WITH TIME ZONE,
     jira_issue_key VARCHAR(64) UNIQUE,

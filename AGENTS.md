@@ -37,7 +37,9 @@ HTTP endpoints: `GET /healthz`, `POST /mattermost/slash/incident` (the
 `/incident` slash command; validates `MATTERMOST_SLASH_TOKEN` if set), and
 `POST /mattermost/actions/alert` (interactive-button callback → calls
 `service.handle_alert_action`; Mattermost does not sign button callbacks, so this
-endpoint relies on network isolation rather than a token). When
+endpoint relies on network isolation rather than a token), and
+`POST /mattermost/dialogs/feedback` (interactive-dialog submission → stores
+feedback and replies in the alert thread). When
 `DEBUG_ADMIN_ENABLED`, `register_debug_admin` also mounts the SPA at
 `GET /debug/admin` plus its JSON API: `summary`, `alerts`, `alerts/{post_id}`,
 `POST alerts/{post_id}/jira/recreate`, `POST alerts/create-from-link` (create a
@@ -61,10 +63,10 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 | `repository.py` | SQLAlchemy model `AlertTicket` + `AlertTicketRepository` (all DB access; mutators go through `_mutate`). |
 | `domain.py` | Frozen dataclasses, enums, and timezone helpers. |
 | `formatting.py` | Incident-message and Jira-summary text. |
-| `actions.py` | Pure builders/constants for the interactive alert action buttons (attachment + `context`); no I/O. |
+| `actions.py` | Pure builders/constants for the interactive alert attachments/controls (`context`, menu options, button labels); no I/O. |
 | `summary.py` | Pure builders for the LLM thread-summary prompt and the thread reply. |
 | `retry.py` | `ApiError` + `retry_async` (exponential backoff on 429/5xx only). |
-| `logging.py` | `JsonFormatter` / `TextFormatter` + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`); format chosen by `LOG_FORMAT`. |
+| `logging.py` | `JsonFormatter` / `TextFormatter` + text-only INFO filtering + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`); format chosen by `LOG_FORMAT`. |
 | `web.py` | FastAPI app factory (`create_app`), background loops, `/healthz` + `/incident` slash. |
 | `debug_admin.py` | Optional debug-admin UI/API (`register_debug_admin`), gated by `DEBUG_ADMIN_ENABLED`. |
 | `config.py` | `.env` loader + `Settings.from_env()`. |
@@ -74,6 +76,15 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 1. **Alert → Jira issue** (`handle_alert_post`): skip non-alert-channel and own-bot posts → `create_or_get_alert` inserts an `alert_tickets` row (unique `mattermost_post_id`) → `_ensure_jira_issue` creates the Jira issue, stores `jira_issue_key`, and replies in the alert thread with the issue link. The DB row is created *before* the Jira call so a crash mid-create is retried later.
 2. **Confirmation → valid incident** (`confirm_incident`, triggered by the `:incident:` reaction or `/incident <permalink>`): posts to the incidents channel, sets Jira `Valid Incident = Валидный`, adds a comment, optional transition, and replies in the alert thread about the status change. If the Jira issue does not exist yet, it is saved as `pending_confirmation` and completed by `pending_work_loop`.
 
+When `JIRA_CREATE_ENABLED=false`, `_create_jira_issue` does not call Jira
+`create_issue`; it returns a stub `JiraIssue` using `JIRA_STUB_ISSUE_KEY` plus a
+Mattermost-post-id suffix for DB uniqueness, or a generated
+`{JIRA_PROJECT_KEY}-12345`-style key. Mattermost issue-created replies display
+the clean configured `JIRA_STUB_ISSUE_KEY` when present. The rest of the flow
+still treats the stored key as a normal linked Jira issue, so later
+validity/comment/transition operations still call Jira unless separately avoided
+by the test setup.
+
 There is also a **lightweight validity path** (`apply_validity_label`, triggered by the two configurable reactions `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` → `Ложный` and `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` → `Ожидаемый`). It sets Jira's `Валидность` field (`JiraClient.set_validity`), optionally sets `JIRA_END_FIELD` to the reaction time, and replies in the alert thread — no incidents-channel post, comment, or transition. Last reaction wins: each distinct label overwrites the field; the `validity_label` column guards against re-applying the same label (no duplicate replies). It does **not** touch the `valid_incident` confirmation state machine and is best-effort (no `pending_work_loop` retry) — if the Jira issue is not ready, the update is skipped.
 
 Alert-thread replies (`_post_alert_thread_reply`) are best-effort: they reuse
@@ -81,16 +92,23 @@ the alert `post_id` as `root_id`, are guarded once-only by the same early
 returns that protect issue creation / confirmation (no extra DB flag), and
 swallow `ApiError` so a failed notification never breaks the main flow.
 
-**Interactive buttons** (`handle_alert_action`) are an alternative entry point to
-the same two flows plus a thread summary. The bot can't attach buttons to the
-alert (a Grafana/user post), so it hangs them on its own issue-created reply via
-`_alert_action_attachment` (only when `SERVICE_PUBLIC_URL` is set; emoji
-reactions stay as the fallback). Each button posts to `/mattermost/actions/alert`
-with a `context` identifying the action and the alert `post_id`. Dispatch: `valid`
-/ `false` / `expected` → `apply_validity_label` (`Валидный` / `Ложный` /
-`Ожидаемый`); `incident` → `confirm_incident`; `summary` → `generate_thread_summary`
-(LLM, posts a visible thread reply; no-op when LLM is unconfigured). The endpoint
-returns `ephemeral_text` feedback to the clicker.
+**Interactive buttons/menu** (`handle_alert_action`) are an alternative entry
+point to the same two flows plus a thread summary. The bot can't attach controls
+to the alert (a Grafana/user post), so it hangs them on its own issue-created
+reply via `_alert_action_attachments` (only when `SERVICE_PUBLIC_URL` is set;
+emoji reactions stay as the fallback). Current UI is two attachments: the main
+blue (`#3B82F6`) card with bold `Создана задача`, the `Выбрать валидность ▼`
+menu, `🚨 Инцидент`, and `📝 Summary`; plus a separate gray (`#4B5563`)
+feedback card with `Обратная связь по алерту`. Each control posts to
+`/mattermost/actions/alert` with a `context` identifying the action and the alert
+`post_id`. Dispatch: the `validity` message menu carries `selected_option`
+`false` / `expected` / `valid` → `apply_validity_label` (`Ложный` /
+`Ожидаемый` / `Валидный`); `incident` → `confirm_incident`; `summary` →
+`generate_thread_summary` (LLM, posts a visible thread reply; no-op when LLM is
+unconfigured); `feedback` → `open_feedback_dialog`. The dialog submit stores a
+row in `alert_feedback` and posts `Получили обратную связь от username` in the
+alert thread. The action endpoint returns `ephemeral_text` feedback to the
+clicker.
 
 Idempotency keys live in `AlertTicket`: `jira_issue_key`, `incident_post_id`,
 `jira_confirmation_comment_added`, plus `creation_status` /
@@ -134,9 +152,10 @@ fields. Checkmarks on incident thread replies are ignored.
 
 ### Persistence & timezone
 
-`init_db()` runs `Base.metadata.create_all` at startup, so no migration step is
-needed locally; `migrations/001_create_alert_tickets.sql` is the reference
-schema, kept aligned with the model by hand. `normalize_database_url` rewrites
+`init_db()` runs `Base.metadata.create_all` at startup and applies small
+backward-compatible `ALTER TABLE` additions, so no migration step is needed
+locally; files in `migrations/` are the reference schema, kept aligned with the
+model by hand. `normalize_database_url` rewrites
 `postgres://`/`postgresql://` to `postgresql+psycopg://`. All persisted/displayed
 times go through `domain.backend_now()` / `backend_datetime()`, which use the
 `INCIDENT_TIMEZONE` (default `Europe/Moscow`) configured once in
@@ -177,5 +196,5 @@ optional vars are listed in `README.md` / `.env.example`. Copy `.env.example` to
 Mattermost tokens, channel IDs, and database URLs as secrets. Notable defaults:
 `ENABLE_BACKFILL_ON_STARTUP=false` (bot only processes new WS events, not channel
 history), `ENABLE_WEBSOCKET=true`. When changing schema behavior, keep
-`migrations/001_create_alert_tickets.sql`, the SQLAlchemy model, and startup
-initialization expectations aligned.
+`migrations/`, the SQLAlchemy model, and startup initialization expectations
+aligned.

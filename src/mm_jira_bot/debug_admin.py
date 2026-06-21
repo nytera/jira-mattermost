@@ -37,6 +37,7 @@ def _ticket_to_debug_dict(ticket: AlertTicket, *, full: bool = False) -> dict:
         "mattermost_message_created_at": _datetime_iso(
             ticket.mattermost_message_created_at
         ),
+        "mattermost_alert_title": ticket.mattermost_alert_title,
         "mattermost_message_preview": _message_preview(ticket.mattermost_message_text),
         "jira_issue_key": ticket.jira_issue_key,
         "jira_issue_url": ticket.jira_issue_url,

@@ -9,6 +9,52 @@ from mm_jira_bot.domain import backend_now
 
 LOGGER_PREFIX = "mm_jira_bot."
 
+TEXT_INFO_EVENT_ALLOWLIST = frozenset(
+    {
+        "startup.preflight.completed",
+        "startup.preflight.check_failed",
+        "mattermost.alert.received",
+        "jira.issue.created",
+        "jira.issue.create_failed",
+        "jira.issue.create_stubbed",
+        "incident.validity.updated",
+        "incident.confirmed",
+        "feedback.received",
+        "postmortem.completed",
+    }
+)
+
+TEXT_EVENT_LABELS = {
+    "startup.preflight.completed": "startup preflight completed",
+    "startup.preflight.check_failed": "startup preflight failed",
+    "mattermost.alert.received": "alert received",
+    "jira.issue.created": "jira issue created",
+    "jira.issue.create_failed": "jira issue create failed",
+    "jira.issue.create_stubbed": "jira issue stubbed",
+    "incident.validity.updated": "validity updated",
+    "incident.confirmed": "incident confirmed",
+    "feedback.received": "feedback received",
+    "postmortem.completed": "postmortem completed",
+}
+
+TEXT_FIELD_ALIASES = {
+    "mattermost_post_id": "post",
+    "jira_issue_key": "jira",
+    "validity_label": "validity",
+    "user_id": "user",
+    "confirmed_by_user_id": "user",
+    "reacted_by_user_id": "user",
+    "incident_post_id": "incident",
+    "creation_status": "status",
+    "confirmation_status": "status",
+    "dependency_count": "checks",
+    "failed_count": "failed",
+    "duration_ms": "duration_ms",
+    "status": "status",
+    "error": "error",
+    "created": "created",
+}
+
 LEVEL_NAME_TO_NUMBER = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
@@ -49,20 +95,34 @@ class TextFormatter(logging.Formatter):
         logger = record.name
         if logger.startswith(LOGGER_PREFIX):
             logger = logger[len(LOGGER_PREFIX) :]
+        fields = _extra_fields(record)
+        event = str(fields.pop("event", record.getMessage()))
+        message = TEXT_EVENT_LABELS.get(event, record.getMessage())
         parts = [
             timestamp,
             f"{record.levelname:<7}",
             logger,
-            record.getMessage(),
+            message,
         ]
-        fields = _extra_fields(record)
-        fields.pop("event", None)
         for key, value in fields.items():
-            parts.append(f"{key}={_render_value(value)}")
+            alias = TEXT_FIELD_ALIASES.get(key)
+            if alias is None:
+                continue
+            parts.append(f"{alias}={_render_value(value)}")
         line = " ".join(parts)
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)
         return line
+
+
+class TextInfoFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        if record.levelno != logging.INFO:
+            return True
+        event = _extra_fields(record).get("event")
+        return isinstance(event, str) and event in TEXT_INFO_EVENT_ALLOWLIST
 
 
 def _render_value(value: Any) -> str:
@@ -143,6 +203,8 @@ def configure_logging(
 ) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(_build_formatter(log_format))
+    if log_format.lower() == "text":
+        handler.addFilter(TextInfoFilter())
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)

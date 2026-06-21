@@ -85,6 +85,8 @@ class Settings:
     jira_end_field: str | None
     jira_confirmed_status_id: str | None
     database_url: str
+    jira_create_enabled: bool = True
+    jira_stub_issue_key: str | None = None
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     service_public_url: str | None = None
@@ -136,6 +138,8 @@ class Settings:
             jira_start_field=_env("JIRA_START_FIELD"),
             jira_end_field=_env("JIRA_END_FIELD"),
             jira_confirmed_status_id=_env("JIRA_CONFIRMED_STATUS_ID"),
+            jira_create_enabled=_env("JIRA_CREATE_ENABLED", "true") != "false",
+            jira_stub_issue_key=_env("JIRA_STUB_ISSUE_KEY"),
             database_url=_required("DATABASE_URL"),
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
             mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),

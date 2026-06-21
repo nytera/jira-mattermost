@@ -5,16 +5,21 @@ import logging
 
 from mm_jira_bot.logging import (
     JsonFormatter,
+    TextInfoFilter,
     TextFormatter,
     _build_formatter,
     get_logger,
 )
 
 
-def _record(event: str, **fields: object) -> logging.LogRecord:
+def _record(
+    event: str,
+    level: int = logging.INFO,
+    **fields: object,
+) -> logging.LogRecord:
     record = logging.LogRecord(
         name="mm_jira_bot.service",
-        level=logging.INFO,
+        level=level,
         pathname=__file__,
         lineno=1,
         msg=event,
@@ -34,13 +39,22 @@ def test_json_formatter_emits_structured_line() -> None:
     assert payload["jira_issue_key"] == "BAND-1"
 
 
-def test_text_formatter_is_compact_and_drops_redundant_event() -> None:
-    line = TextFormatter().format(_record("jira.issue.created", jira_issue_key="BAND-1"))
+def test_text_formatter_uses_human_label_and_short_field_names() -> None:
+    line = TextFormatter().format(
+        _record(
+            "jira.issue.created",
+            jira_issue_key="BAND-1",
+            mattermost_post_id="post-1",
+            metadata={"hidden": True},
+        )
+    )
     assert "INFO" in line
-    # logger prefix is stripped and event is not repeated as a key=value pair
-    assert "service jira.issue.created" in line
+    assert "service jira issue created" in line
     assert "event=" not in line
-    assert "jira_issue_key=BAND-1" in line
+    assert "jira=BAND-1" in line
+    assert "post=post-1" in line
+    assert "jira_issue_key=" not in line
+    assert "metadata=" not in line
 
 
 def test_text_formatter_quotes_values_with_spaces() -> None:
@@ -53,6 +67,19 @@ def test_build_formatter_selects_by_name() -> None:
     assert isinstance(_build_formatter("TEXT"), TextFormatter)
     assert isinstance(_build_formatter("json"), JsonFormatter)
     assert isinstance(_build_formatter("anything-else"), JsonFormatter)
+
+
+def test_text_info_filter_hides_noisy_info_event() -> None:
+    assert not TextInfoFilter().filter(_record("startup.preflight.check_ok"))
+
+
+def test_text_info_filter_passes_business_info_event() -> None:
+    assert TextInfoFilter().filter(_record("mattermost.alert.received"))
+
+
+def test_text_info_filter_passes_warnings_independently_of_allowlist() -> None:
+    record = _record("startup.preflight.check_ok", level=logging.WARNING)
+    assert TextInfoFilter().filter(record)
 
 
 def test_event_logger_passes_fields_through() -> None:
