@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -20,6 +21,8 @@ from mm_jira_bot.domain import (
 )
 from mm_jira_bot.formatting import format_incident_message
 from mm_jira_bot.jira_payload import build_jira_issue_payload
+from mm_jira_bot.mattermost import MattermostClient
+from mm_jira_bot.postmortem import extract_postmortem_summary
 from mm_jira_bot.repository import (
     AlertTicketRepository,
     create_database_engine,
@@ -27,7 +30,9 @@ from mm_jira_bot.repository import (
     init_db,
 )
 from mm_jira_bot.service import IncidentBotService, parse_post_id_from_text
-from mm_jira_bot.web import create_app
+from mm_jira_bot.llm import PostmortemLlmClient
+from mm_jira_bot.retry import ApiError
+from mm_jira_bot.web import create_app, run_startup_preflight
 
 
 POST_ID = "abcdefghijklmnopqrstuvwx01"
@@ -37,6 +42,7 @@ class FakeMattermostClient:
     def __init__(self) -> None:
         self.posts: dict[str, MattermostPost] = {}
         self.created_posts: list[dict] = []
+        self.display_names: dict[str, str] = {}
 
     def permalink(self, post_id: str) -> str:
         return f"https://mattermost.example.com/_redirect/pl/{post_id}"
@@ -47,7 +53,18 @@ class FakeMattermostClient:
     async def get_post(self, post_id: str) -> MattermostPost:
         return self.posts[post_id]
 
+    async def get_thread_posts(self, post_id: str):
+        root = self.posts[post_id]
+        replies = [
+            post
+            for post in self.posts.values()
+            if post.root_id == post_id
+        ]
+        return sorted([root, *replies], key=lambda post: (post.create_at, post.id))
+
     async def get_user_display_name(self, user_id: str) -> str:
+        if user_id in self.display_names:
+            return self.display_names[user_id]
         return f"@{user_id}"
 
     async def create_post(
@@ -98,6 +115,8 @@ class FakeJiraClient:
         self.end_updates: list[tuple[str, datetime]] = []
         self.validity_by_issue: dict[str, str] = {}
         self.descriptions: list[tuple[str, str]] = []
+        self.postmortem_payloads: list[dict] = []
+        self.generic_comments: list[tuple[str, str]] = []
 
     async def create_issue(
         self,
@@ -112,6 +131,35 @@ class FakeJiraClient:
                 "post": post,
                 "message_url": message_url,
                 "channel_name": channel_name,
+            }
+        )
+        self.valid_by_issue[key] = False
+        return JiraIssue(key=key, url=f"https://jira.example.com/browse/{key}")
+
+    async def create_postmortem_issue(
+        self,
+        post,
+        *,
+        message_url: str,
+        channel_name: str | None,
+        summary: str,
+        description: str,
+    ):
+        key = f"OPS-{len(self.created_payloads) + 1}"
+        self.created_payloads.append(
+            {
+                "post": post,
+                "message_url": message_url,
+                "channel_name": channel_name,
+            }
+        )
+        self.postmortem_payloads.append(
+            {
+                "post": post,
+                "message_url": message_url,
+                "channel_name": channel_name,
+                "summary": summary,
+                "description": description,
             }
         )
         self.valid_by_issue[key] = False
@@ -143,8 +191,45 @@ class FakeJiraClient:
     ):
         self.comments.append((issue_key, incident_message_url, confirmed_by_user_id))
 
+    async def add_comment(self, issue_key: str, body: str):
+        self.generic_comments.append((issue_key, body))
+
     async def transition_issue(self, issue_key: str, transition_id: str):
         self.transitions.append((issue_key, transition_id))
+
+    async def aclose(self) -> None:
+        return None
+
+
+class FakeLlmClient:
+    def __init__(
+        self,
+        report: str = (
+            "[INC] 15.11.2023 - Ошибки API\n"
+            "Участники инцидента: Иван Иванов (@ivanov.ivan), Петр Петров (@petrov.petr)\n"
+            "Автор постмортема: Иван Иванов (@ivanov.ivan)\n"
+            "##Сводка\n"
+            "API начал отвечать 500.\n"
+            "##Решение\n"
+            "Откатили релиз.\n"
+            "##Извлеченные уроки\n"
+            "###Что было сделано хорошо / В чем повезло\n"
+            " - Быстро нашли проблему.\n"
+            "###Что пошло не так / В чем не повезло\n"
+            " - не указано\n"
+            "##Action Items\n"
+            " - Завести алерт на рост 500.\n"
+            "##Хронология\n"
+            "01:15 - Обнаружили проблему\n"
+            "01:20 - Откатили релиз"
+        ),
+    ) -> None:
+        self.report = report
+        self.prompts: list[str] = []
+
+    async def generate_postmortem(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.report
 
     async def aclose(self) -> None:
         return None
@@ -291,6 +376,62 @@ async def test_creates_jira_issue_for_new_mattermost_message(service):
     assert ticket is not None
     assert ticket.jira_issue_key == "OPS-1"
     assert len(service.jira.created_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_mattermost_preflight_checks_bot_user_and_channels(settings):
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/api/v4/users/me":
+            return httpx.Response(
+                200,
+                json={"id": "bot-user", "username": "incident-bot"},
+            )
+        if request.url.path == "/api/v4/channels/alerts-channel":
+            return httpx.Response(200, json={"display_name": "Alerts"})
+        if request.url.path == "/api/v4/channels/incidents-channel":
+            return httpx.Response(200, json={"name": "incidents"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = MattermostClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.mattermost_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        result = await client.preflight_check()
+    finally:
+        await client.aclose()
+
+    assert result["bot_user_id"] == "bot-user"
+    assert result["bot_username"] == "incident-bot"
+    assert result["bot_user_id_matches_config"] is True
+    assert result["alert_channel_name"] == "Alerts"
+    assert result["incident_channel_name"] == "incidents"
+    assert requests == [
+        "/api/v4/users/me",
+        "/api/v4/channels/alerts-channel",
+        "/api/v4/channels/incidents-channel",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_skips_alert_thread_reply(service):
+    post = replace(
+        make_alert(post_id="threadreplypost000000000001"),
+        root_id=POST_ID,
+    )
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is None
+    assert len(service.jira.created_payloads) == 0
+    assert service.repository.get_by_post_id(post.id) is None
 
 
 @pytest.mark.asyncio
@@ -449,6 +590,187 @@ async def test_checkmark_on_incident_thread_reply_is_ignored(service):
 
     assert result.status == "ignored"
     assert service.jira.end_updates == []
+
+
+@pytest.mark.asyncio
+async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_issue(service):
+    service.llm = FakeLlmClient()
+    service.mattermost.display_names.update(
+        {
+            "validator": "Иван Иванов (@ivanov.ivan)",
+            "closer": "Петр Петров (@petrov.petr)",
+            "bot-user": "@incident-bot",
+        }
+    )
+    post = make_alert(message="API 500 on checkout")
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="incident",
+            create_at=1,
+        )
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.incident_post_id is not None
+    reply = MattermostPost(
+        id="incidentreply000000000002",
+        channel_id="incidents-channel",
+        user_id="closer",
+        message="Откатили релиз, ошибки ушли.",
+        create_at=1_700_000_250_000,
+        root_id=ticket.incident_post_id,
+    )
+    service.mattermost.posts[reply.id] = reply
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="validator",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_300_000,
+        )
+    )
+
+    assert result.status == "incident_ended"
+    assert service.jira.end_updates == [
+        ("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))
+    ]
+    assert len(service.jira.created_payloads) == 1
+    assert len(service.llm.prompts) == 1
+    prompt = service.llm.prompts[0]
+    assert "API 500 on checkout" in prompt
+    assert "Откатили релиз" in prompt
+    assert "Иван Иванов (@ivanov.ivan)" in prompt
+    assert "Петр Петров (@petrov.petr)" in prompt
+    assert "##Извлеченные уроки" in prompt
+    assert "###Что было сделано хорошо / В чем повезло" in prompt
+    assert "###Что пошло не так / В чем не повезло" in prompt
+    assert "##Action Items" in prompt
+    assert "только те action items, которые обсуждались в треде" in prompt
+    assert "до 10 слов" in prompt
+    assert "до 80 символов" in prompt
+    assert "до 120 символов" in prompt
+    issue_key, description = service.jira.descriptions[-1]
+    assert issue_key == "OPS-1"
+    assert "|*Авторы ПМ*|Иван Иванов (@ivanov.ivan)|" in description
+    assert "|*Участники инцидента*|" in description
+    assert "Иван Иванов (@ivanov.ivan)" in description
+    assert "Петр Петров (@petrov.petr)" in description
+    assert "[Основное сообщение инцидента|" in description
+    assert ticket.incident_message_url in description
+    assert ticket.mattermost_message_url in description
+    assert "h2. Извлеченные уроки" in description
+    assert "h2. Action Items" in description
+    assert "h2. Хронология" in description
+    assert "API начал отвечать 500." not in description
+    assert "##Хронология" not in description
+    assert service.jira.generic_comments
+    comment_issue_key, comment = service.jira.generic_comments[-1]
+    assert comment_issue_key == "OPS-1"
+    assert "Постмортем сгенерирован" in comment
+    assert "API начал отвечать 500." in comment
+    assert "##Хронология" in comment
+    thread_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == ticket.incident_post_id
+        and "Инцидентный отчет готов" in created["message"]
+    ]
+    assert len(thread_replies) == 1
+    assert "**Что случилось:**" in thread_replies[0]["message"]
+    assert "**Как решили:**" in thread_replies[0]["message"]
+    assert "**Action items:**" in thread_replies[0]["message"]
+    assert "##Сводка" not in thread_replies[0]["message"]
+    assert "##Хронология" not in thread_replies[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_checkmark_on_manual_incident_thread_creates_postmortem_issue(service):
+    service.llm = FakeLlmClient()
+    service.mattermost.display_names.update(
+        {
+            "author": "Анна Автор (@author.anna)",
+            "closer": "Иван Иванов (@ivanov.ivan)",
+        }
+    )
+    root = MattermostPost(
+        id="manualincidentroot000000001",
+        channel_id="incidents-channel",
+        user_id="author",
+        message="Создали инцидент по росту 500 на checkout.",
+        create_at=1_700_000_100_000,
+        channel_name="incidents",
+    )
+    reply = MattermostPost(
+        id="manualincidentreply00000001",
+        channel_id="incidents-channel",
+        user_id="closer",
+        message="Проблема была в релизе, откат помог.",
+        create_at=1_700_000_200_000,
+        root_id=root.id,
+    )
+    service.mattermost.posts[root.id] = root
+    service.mattermost.posts[reply.id] = reply
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=root.id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_300_000,
+        )
+    )
+
+    assert result.status == "incident_ended"
+    ticket = service.repository.get_by_incident_post_id(root.id)
+    assert ticket is not None
+    assert ticket.jira_issue_key == "OPS-1"
+    assert ticket.valid_incident is True
+    assert len(service.jira.postmortem_payloads) == 1
+    payload = service.jira.postmortem_payloads[0]
+    assert payload["summary"] == "[INC] 15.11.2023 - Ошибки API"
+    assert "[Основное сообщение инцидента|" in payload["description"]
+    assert "Анна Автор (@author.anna)" in payload["description"]
+    assert "Иван Иванов (@ivanov.ivan)" in payload["description"]
+    assert "API начал отвечать 500." not in payload["description"]
+    assert service.jira.valid_updates == [("OPS-1", True)]
+    assert service.jira.end_updates == [
+        ("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))
+    ]
+    assert service.jira.generic_comments
+    assert "API начал отвечать 500." in service.jira.generic_comments[-1][1]
+    thread_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == root.id
+        and "Инцидентный отчет готов" in created["message"]
+    ]
+    assert len(thread_replies) == 1
+    assert "Полный постмортем" in thread_replies[0]["message"]
+    assert "##Сводка" not in thread_replies[0]["message"]
+
+
+def test_postmortem_summary_limits_llm_title_words_and_chars():
+    report = (
+        "[INC] 15.11.2023 - "
+        "Очень длинное название инцидента про падение checkout api после релиза "
+        "новой корзины с большим количеством технических деталей"
+    )
+
+    summary = extract_postmortem_summary(report, fallback="fallback")
+    title = summary.split(" - ", 1)[1]
+
+    assert len(summary) <= 120
+    assert len(title) <= 80
+    assert len(title.split()) <= 10
+    assert summary == (
+        "[INC] 15.11.2023 - "
+        "Очень длинное название инцидента про падение checkout api после релиза"
+    )
 
 
 @pytest.mark.asyncio
@@ -673,6 +995,28 @@ def test_invalid_slash_link_returns_ephemeral_response(service, settings):
     assert "Invalid link" in response.json()["text"]
 
 
+@pytest.mark.asyncio
+async def test_startup_preflight_logs_failures_without_raising(service, caplog):
+    class FailingPreflightClient:
+        async def preflight_check(self):
+            raise RuntimeError("preflight boom")
+
+    class PassingPreflightClient:
+        async def preflight_check(self):
+            return {"dependency_ok": True}
+
+    service.mattermost = FailingPreflightClient()
+    service.jira = PassingPreflightClient()
+    service.llm = PassingPreflightClient()
+
+    with caplog.at_level(logging.INFO):
+        await run_startup_preflight(service)
+
+    messages = [record.message for record in caplog.records]
+    assert "startup.preflight.check_failed" in messages
+    assert "startup.preflight.completed" in messages
+
+
 def test_slash_command_handles_missing_jira_mapping(service, settings):
     post = make_alert()
     service.mattermost.posts[post.id] = post
@@ -886,6 +1230,29 @@ def test_builds_jira_payload(settings):
         "https://mattermost.example.com/_redirect/pl/post]|" in description
     )
     assert f"{{{{{POST_ID}}}}}" in description
+
+
+def test_builds_manual_incident_payload_without_alert_only_fields(settings):
+    payload = build_jira_issue_payload(
+        settings,
+        "customfield_12345",
+        "customfield_23456",
+        "customfield_34567",
+        make_alert(channel_id="incidents-channel"),
+        message_url="https://mattermost.example.com/_redirect/pl/incident",
+        channel_name="incidents",
+        summary="[INC] 15.11.2023 - Ручной инцидент",
+        description="PM template",
+        labels=["mattermost-incident", "postmortem"],
+        include_alert_fields=False,
+    )
+
+    fields = payload["fields"]
+    assert fields["summary"] == "[INC] 15.11.2023 - Ручной инцидент"
+    assert fields["description"] == "PM template"
+    assert fields["labels"] == ["mattermost-incident", "postmortem"]
+    assert "customfield_23456" not in fields
+    assert "customfield_34567" not in fields
 
 
 def test_summary_uses_first_non_empty_line_without_leading_emoji(settings):
@@ -1151,6 +1518,105 @@ async def test_creates_issue_with_default_valid_incident_and_option_ids(settings
     assert issue_body["customfield_23456"] == {"id": "201"}
     assert issue_body["customfield_34567"] == {"id": "301"}
     assert isinstance(issue_body["description"], str)
+
+
+@pytest.mark.asyncio
+async def test_jira_preflight_resolves_fields_and_options(settings):
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": "10001", "name": "Incident"}]},
+            )
+        if request.url.path == "/rest/api/2/issue/createmeta/OPS/issuetypes/10001":
+            return httpx.Response(
+                200,
+                json={
+                    "fields": {
+                        "customfield_12345": {
+                            "allowedValues": [
+                                {"id": "101", "value": "Валидный"},
+                                {"id": "102", "value": "Ложный"},
+                                {"id": "103", "value": "Ожидаемый"},
+                            ]
+                        },
+                        "customfield_23456": {
+                            "allowedValues": [{"id": "201", "value": "Crit alert"}]
+                        },
+                        "customfield_34567": {
+                            "allowedValues": [{"id": "301", "value": "Да"}]
+                        },
+                    }
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        result = await client.preflight_check()
+    finally:
+        await client.aclose()
+
+    assert result["jira_issue_type_id"] == "10001"
+    assert result["create_field_count"] == 3
+    assert result["valid_incident_field_id"] == "customfield_12345"
+    assert result["source_option"] == {"id": "201"}
+    assert result["is_crit_alert_option"] == {"id": "301"}
+    assert requests == [
+        "/rest/api/2/issue/createmeta/OPS/issuetypes",
+        "/rest/api/2/issue/createmeta/OPS/issuetypes/10001",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_creates_postmortem_issue_without_alert_source_fields(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read()) if request.method == "POST" else None
+        requests.append({"method": request.method, "path": request.url.path, "body": body})
+        if request.url.path == "/rest/api/2/issue":
+            return httpx.Response(201, json={"key": "OPS-1"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        issue = await client.create_postmortem_issue(
+            make_alert(channel_id="incidents-channel"),
+            message_url="https://mattermost.example.com/_redirect/pl/incident",
+            channel_name="incidents",
+            summary="[INC] 15.11.2023 - Ручной инцидент",
+            description="PM template",
+        )
+    finally:
+        await client.aclose()
+
+    issue_body = requests[-1]["body"]["fields"]
+    assert issue.key == "OPS-1"
+    assert len(requests) == 1
+    assert requests[0]["method"] == "POST"
+    assert requests[0]["path"] == "/rest/api/2/issue"
+    assert issue_body["summary"] == "[INC] 15.11.2023 - Ручной инцидент"
+    assert issue_body["description"] == "PM template"
+    assert issue_body["labels"] == ["mattermost-incident", "postmortem"]
+    assert "customfield_12345" not in issue_body
+    assert "customfield_23456" not in issue_body
+    assert "customfield_34567" not in issue_body
 
 
 @pytest.mark.asyncio
@@ -1525,6 +1991,152 @@ async def test_updates_end_field_without_validity(settings):
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_llm_client_uses_openai_compatible_chat_completions(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.read()),
+            }
+        )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "[INC] 15.11.2023 - Отчет"}}
+                ]
+            },
+        )
+
+    client = PostmortemLlmClient(
+        replace(
+            settings,
+            llm_api_token="llm-token",
+            llm_base_url="https://corellm.wb.ru/deepseek/v1",
+        ),
+        http_client=httpx.AsyncClient(
+            base_url="https://corellm.wb.ru/deepseek/v1/",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        report = await client.generate_postmortem("thread transcript")
+    finally:
+        await client.aclose()
+
+    assert report == "[INC] 15.11.2023 - Отчет"
+    assert requests[0]["method"] == "POST"
+    assert requests[0]["path"] == "/deepseek/v1/chat/completions"
+    assert requests[0]["body"]["model"] == "deepseek-chat"
+    assert requests[0]["body"]["messages"][1]["content"] == "thread transcript"
+    assert "temperature" not in requests[0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_llm_client_assembles_streamed_sse_deltas(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append({"body": json.loads(request.read())})
+        sse = (
+            'data: {"choices":[{"delta":{"content":"[INC] "}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"15.11"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":" - Отчет"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=sse.encode("utf-8"),
+        )
+
+    client = PostmortemLlmClient(
+        replace(settings, llm_api_token="llm-token"),
+        http_client=httpx.AsyncClient(
+            base_url="https://corellm.wb.ru/deepseek/v1/",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        report = await client.generate_postmortem("thread transcript")
+    finally:
+        await client.aclose()
+
+    assert report == "[INC] 15.11 - Отчет"
+    assert requests[0]["body"]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_llm_client_wraps_transport_errors_as_api_error(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = PostmortemLlmClient(
+        replace(settings, llm_api_token="llm-token", api_retry_attempts=1),
+        http_client=httpx.AsyncClient(
+            base_url="https://corellm.wb.ru/deepseek/v1/",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        with pytest.raises(ApiError) as excinfo:
+            await client.generate_postmortem("thread transcript")
+    finally:
+        await client.aclose()
+
+    assert excinfo.value.retryable is True
+    assert "ConnectError" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_llm_preflight_uses_small_openai_compatible_request(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.read()),
+            }
+        )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "OK"}}]},
+        )
+
+    client = PostmortemLlmClient(
+        replace(
+            settings,
+            llm_api_token="llm-token",
+            llm_base_url="https://corellm.wb.ru/deepseek/v1",
+            llm_model="DeepSeek-V3.1 Terminus",
+            llm_max_tokens=8000,
+        ),
+        http_client=httpx.AsyncClient(
+            base_url="https://corellm.wb.ru/deepseek/v1/",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        result = await client.preflight_check()
+    finally:
+        await client.aclose()
+
+    assert result["llm_model"] == "DeepSeek-V3.1 Terminus"
+    assert result["llm_response_length"] == 2
+    assert requests[0]["method"] == "POST"
+    assert requests[0]["path"] == "/deepseek/v1/chat/completions"
+    assert requests[0]["body"]["model"] == "DeepSeek-V3.1 Terminus"
+    assert requests[0]["body"]["messages"][0]["role"] == "user"
+    assert requests[0]["body"]["max_tokens"] == 16
+    assert "temperature" not in requests[0]["body"]
 
 
 def test_builds_incident_channel_message(service):

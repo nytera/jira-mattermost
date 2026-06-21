@@ -10,7 +10,7 @@
 4. Связь `mattermost_post_id -> jira_issue_key` хранится локально и защищена уникальным индексом.
 5. Пользователь подтверждает инцидент реакцией `:incident:` на оригинальное сообщение или slash-командой `/incident <link>`.
 6. Бот публикует сообщение в `MATTERMOST_INCIDENT_CHANNEL_ID`, обновляет Jira `Valid Incident = Валидный`, добавляет комментарий со ссылкой на incident-сообщение и, если задано, делает transition issue. После подтверждения бот также отвечает в тред исходного алерта о том, что инцидент заведён (ссылка на Jira, валидность, ссылка на сообщение в канале инцидентов). Имя подтвердившего показывается как `Имя Фамилия (@username)`, а не как сырой `user_id`.
-7. Когда по валидному инциденту нажимают галочку (`:white_check_mark:`, `:heavy_check_mark:` или `:ballot_box_with_check:`) на сообщении инцидента, которое опубликовал бот, бот заполняет Jira `Окончание` временем этой реакции.
+7. Когда по валидному инциденту нажимают галочку (`:white_check_mark:`, `:heavy_check_mark:` или `:ballot_box_with_check:`) на корневом сообщении incident-треда, бот заполняет Jira `Окончание` временем этой реакции. Если настроен LLM, бот также отправляет весь тред в OpenAI-compatible API, оставляет в Jira description PM-шаблон со ссылкой на инцидент, автором и участниками, добавляет LLM-отчет комментарием и публикует краткое summary обратно в тред. Если галочку поставили на корневом сообщении ручного incident-треда без исходного алерта, бот создает новую Jira issue с PM-шаблоном в description, но не заполняет alert-only поля `Источник` и `Был ли крит алерт?`. Галочки на replies игнорируются.
 
 ```mermaid
 flowchart LR
@@ -33,6 +33,7 @@ flowchart LR
 - канал инцидентов: право писать сообщения;
 - WebSocket доступ к `/api/v4/websocket`;
 - REST доступ к `/api/v4/posts`, `/api/v4/channels/{channel_id}`, `/api/v4/channels/{channel_id}/posts`, `/api/v4/users/{user_id}` (чтобы показать имя/username подтвердившего вместо сырого `user_id`).
+- REST доступ к `/api/v4/posts/{post_id}/thread` для генерации постмортема по incident-треду.
 
 `MATTERMOST_BOT_USER_ID` нужен, чтобы бот не обрабатывал собственные сообщения.
 
@@ -88,7 +89,39 @@ flowchart LR
 
 `JIRA_START_FIELD` (если задано) — date-time picker поле, которое заполняется временем прихода алерта при создании issue. Значение отправляется в формате ISO 8601 с offset вида `+0300` и обязательной дробной частью секунд (например, `2026-06-16T14:30:00.000+0300`); `dd.MM.yyyy HH:mm` — это только формат отображения в Jira UI. Время приводится к `INCIDENT_TIMEZONE`.
 
-`JIRA_END_FIELD` (если задано) — date-time picker поле, которое заполняется временем нажатия lightweight реакции `Ложный`/`Ожидаемый`. Для валидного инцидента (`:incident:` или `/incident`) это поле при подтверждении не обновляется; оно заполняется позже, когда на сообщении инцидента, которое опубликовал бот, нажимают галочку (`:white_check_mark:`, `:heavy_check_mark:` или `:ballot_box_with_check:`). Галочки на ответах в треде инцидента игнорируются. Формат для Jira REST API такой же, как у `JIRA_START_FIELD`.
+`JIRA_END_FIELD` (если задано) — date-time picker поле, которое заполняется временем нажатия lightweight реакции `Ложный`/`Ожидаемый`. Для валидного инцидента (`:incident:` или `/incident`) это поле при подтверждении не обновляется; оно заполняется позже, когда на корневом сообщении incident-треда нажимают галочку (`:white_check_mark:`, `:heavy_check_mark:` или `:ballot_box_with_check:`). Галочки на replies игнорируются. Формат для Jira REST API такой же, как у `JIRA_START_FIELD`.
+
+## LLM Postmortems
+
+Если задан `LLM_API_TOKEN`, галочка на корневом сообщении в `MATTERMOST_INCIDENT_CHANNEL_ID` запускает генерацию постмортема по всему треду инцидента. Бот:
+
+- берет root-сообщение и ответы треда, включая оригинальное сообщение;
+- резолвит имена авторов через Mattermost;
+- передает тред в OpenAI-compatible endpoint `LLM_BASE_URL` (`https://corellm.wb.ru/deepseek/v1` по умолчанию);
+- обновляет Jira description PM-шаблоном и детерминированными полями: основное сообщение инцидента, участники, автор постмортема;
+- добавляет Jira comment с полным LLM-отчетом;
+- публикует короткое summary ответом в incident-тред.
+
+Для ручного incident-треда без исходного алерта новая Jira issue не получает alert-only поля `Источник = Crit alert` и `Был ли крит алерт? = Да`.
+
+Настройки:
+
+- `LLM_BASE_URL`
+- `LLM_API_TOKEN` (также поддерживаются `CORELLM_API_TOKEN` и `OPENAI_API_KEY`)
+- `LLM_MODEL`
+- `LLM_MAX_TOKENS`
+- `LLM_THREAD_MAX_CHARS`
+
+## Startup Preflight
+
+На старте бот логирует конфигурацию без секретов и запускает non-fatal проверки зависимостей:
+
+- `database` — проверяет доступ к БД и пишет счетчики тикетов;
+- `mattermost` — проверяет `/users/me`, `MATTERMOST_ALERT_CHANNEL_ID` и `MATTERMOST_INCIDENT_CHANNEL_ID`;
+- `jira` — заранее резолвит field ids, issue type, createmeta и options `Валидный`, `Ложный`, `Ожидаемый`, `Crit alert`, `Да`;
+- `llm` — если настроен `LLM_API_TOKEN`, делает маленький smoke request в `chat/completions`.
+
+События в логах: `startup.configuration`, `startup.preflight.check_started`, `startup.preflight.check_ok`, `startup.preflight.check_failed`, `startup.preflight.completed`. Ошибка preflight не останавливает приложение, но сразу показывает проблему с доступом, токеном, моделью или Jira metadata.
 
 ## Configuration
 

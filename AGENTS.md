@@ -25,6 +25,11 @@ Single process. `web.py:create_app()` builds the FastAPI app and, in its
 lifespan, launches two background asyncio tasks against one
 `IncidentBotService`:
 
+- **`run_startup_preflight`** — logs sanitized startup configuration and runs
+  non-fatal dependency checks before background work starts. It checks DB
+  access, Mattermost `/users/me` + configured channels, Jira field/issue-type
+  metadata and required option values, and the optional LLM chat-completions
+  smoke request. Successful Jira checks warm field/createmeta caches.
 - **`websocket_loop`** — connects to Mattermost WS (`websocket_events()`), feeds every event to `service.handle_websocket_event`. Reconnects on failure.
 - **`pending_work_loop`** — every `PENDING_WORK_INTERVAL_SECONDS` calls `process_pending_work()` to retry failed Jira creates and pending confirmations from the DB. This is the durability backbone: any partial failure is recovered here.
 
@@ -101,8 +106,15 @@ not apply.
 time when the lightweight `Ложный` / `Ожидаемый` validity path runs. For valid
 incidents, it is not updated by the confirmation flow; it is updated later when
 someone adds a Mattermost checkmark reaction (`white_check_mark`,
-`heavy_check_mark`, or `ballot_box_with_check`) on the incident message posted
-by the bot. Checkmarks on incident thread replies are ignored.
+`heavy_check_mark`, or `ballot_box_with_check`) on the incident thread root post.
+When `LLM_API_TOKEN` is configured, the same checkmark also generates a
+postmortem from the full incident thread through the OpenAI-compatible
+`LLM_BASE_URL`, keeps Jira description as a PM template with the incident root
+link, postmortem author, and participants, adds the generated report as a Jira
+comment, and posts a short summary back to the incident thread. A checkmark on
+an unmapped manual incident thread root post creates a Jira issue with a
+PM-template description, but it does not set the alert-only source/is-crit-alert
+fields. Checkmarks on incident thread replies are ignored.
 
 ### Persistence & timezone
 

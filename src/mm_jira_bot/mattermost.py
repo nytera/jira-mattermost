@@ -95,6 +95,49 @@ class MattermostClient(AsyncApiClient):
     def permalink(self, post_id: str) -> str:
         return build_mattermost_permalink(self._settings.mattermost_url, post_id)
 
+    async def preflight_check(self) -> dict[str, object]:
+        def parse_me(response: httpx.Response) -> dict[str, str | bool]:
+            data = response.json()
+            bot_user_id = str(data.get("id") or "")
+            username = str(data.get("username") or "")
+            return {
+                "bot_user_id": bot_user_id,
+                "bot_username": username,
+                "bot_user_id_matches_config": (
+                    bot_user_id == self._settings.mattermost_bot_user_id
+                ),
+            }
+
+        me = await self._request(
+            "GET",
+            "/api/v4/users/me",
+            error_message="Failed to get Mattermost current user",
+            event="mattermost.preflight.users_me",
+            parse=parse_me,
+        )
+        assert isinstance(me, dict)
+        if not me.get("bot_user_id_matches_config"):
+            log.warning(
+                "mattermost.preflight.bot_user_id_mismatch",
+                configured_bot_user_id=self._settings.mattermost_bot_user_id,
+                actual_bot_user_id=me.get("bot_user_id"),
+                actual_bot_username=me.get("bot_username"),
+            )
+        alert_channel_name = await self.get_channel_name(
+            self._settings.mattermost_alert_channel_id
+        )
+        incident_channel_name = await self.get_channel_name(
+            self._settings.mattermost_incident_channel_id
+        )
+        return {
+            **me,
+            "mattermost_url": self._settings.mattermost_url,
+            "alert_channel_id": self._settings.mattermost_alert_channel_id,
+            "alert_channel_name": alert_channel_name,
+            "incident_channel_id": self._settings.mattermost_incident_channel_id,
+            "incident_channel_name": incident_channel_name,
+        }
+
     async def get_post(self, post_id: str) -> MattermostPost:
         return await self._request(
             "GET",
@@ -102,6 +145,28 @@ class MattermostClient(AsyncApiClient):
             error_message="Failed to get Mattermost post",
             event="mattermost.get_post",
             parse=lambda response: MattermostPost.from_api(response.json()),
+            mattermost_post_id=post_id,
+        )
+
+    async def get_thread_posts(self, post_id: str) -> list[MattermostPost]:
+        def parse(response: httpx.Response) -> list[MattermostPost]:
+            data = response.json()
+            posts = data.get("posts", {})
+            order = data.get("order", [])
+            if isinstance(posts, dict) and isinstance(order, list):
+                return [
+                    MattermostPost.from_api(posts[item])
+                    for item in order
+                    if item in posts and isinstance(posts[item], dict)
+                ]
+            return []
+
+        return await self._request(
+            "GET",
+            f"/api/v4/posts/{post_id}/thread",
+            error_message="Failed to get Mattermost thread",
+            event="mattermost.get_thread",
+            parse=parse,
             mattermost_post_id=post_id,
         )
 

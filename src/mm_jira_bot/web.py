@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from urllib.parse import parse_qs
+from time import perf_counter
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -10,6 +12,7 @@ from fastapi.responses import JSONResponse
 from mm_jira_bot.config import Settings
 from mm_jira_bot.debug_admin import register_debug_admin
 from mm_jira_bot.jira import JiraClient
+from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.logging import configure_logging, get_logger
 from mm_jira_bot.mattermost import MattermostClient
 from mm_jira_bot.repository import (
@@ -21,6 +24,152 @@ from mm_jira_bot.repository import (
 from mm_jira_bot.service import IncidentBotService
 
 log = get_logger(__name__)
+
+
+def _redact_database_url(database_url: str) -> str:
+    try:
+        parsed = urlsplit(database_url)
+    except ValueError:
+        return "<invalid>"
+    if parsed.password is None:
+        return database_url
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    username = parsed.username or ""
+    userinfo = f"{username}:***@" if username else ""
+    return urlunsplit(
+        (
+            parsed.scheme,
+            f"{userinfo}{host}{port}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def _token_format(token: str | None) -> str:
+    if not token:
+        return "missing"
+    if token.count(".") == 2:
+        return "jwt_like"
+    return "opaque"
+
+
+async def _run_dependency_check(
+    dependency: str,
+    check: Callable[[], Awaitable[dict[str, object]]],
+) -> bool:
+    started_at = perf_counter()
+    log.info("startup.preflight.check_started", dependency=dependency)
+    try:
+        details = await check()
+    except Exception as exc:
+        log.error(
+            "startup.preflight.check_failed",
+            dependency=dependency,
+            duration_ms=int((perf_counter() - started_at) * 1000),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return False
+    log.info(
+        "startup.preflight.check_ok",
+        dependency=dependency,
+        duration_ms=int((perf_counter() - started_at) * 1000),
+        **details,
+    )
+    return True
+
+
+async def _database_preflight(service: IncidentBotService) -> dict[str, object]:
+    summary = await asyncio.to_thread(service.repository.debug_summary)
+    return {
+        "database_url": _redact_database_url(service.settings.database_url),
+        "ticket_total": summary.get("total"),
+        "pending_jira": summary.get("pending_jira"),
+        "failed": summary.get("failed"),
+        "confirmed": summary.get("confirmed"),
+    }
+
+
+async def run_startup_preflight(service: IncidentBotService) -> None:
+    settings = service.settings
+    log.info(
+        "startup.configuration",
+        database_url=_redact_database_url(settings.database_url),
+        mattermost_url=settings.mattermost_url,
+        mattermost_alert_channel_id=settings.mattermost_alert_channel_id,
+        mattermost_incident_channel_id=settings.mattermost_incident_channel_id,
+        mattermost_bot_user_id=settings.mattermost_bot_user_id,
+        enable_websocket=settings.enable_websocket,
+        enable_backfill_on_startup=settings.enable_backfill_on_startup,
+        jira_base_url=settings.jira_base_url,
+        jira_project_key=settings.jira_project_key,
+        jira_issue_type=settings.jira_issue_type,
+        jira_start_field_configured=bool(settings.jira_start_field),
+        jira_end_field_configured=bool(settings.jira_end_field),
+        llm_enabled=service.llm is not None,
+        llm_base_url=settings.llm_base_url,
+        llm_model=settings.llm_model,
+        llm_api_token_configured=bool(settings.llm_api_token),
+        llm_api_token_format=_token_format(settings.llm_api_token),
+        llm_max_tokens=settings.llm_max_tokens,
+        llm_thread_max_chars=settings.llm_thread_max_chars,
+        llm_stream=settings.llm_stream,
+        llm_read_timeout=settings.llm_read_timeout,
+    )
+
+    checks: list[tuple[str, Callable[[], Awaitable[dict[str, object]]]]] = [
+        ("database", lambda: _database_preflight(service)),
+    ]
+    mattermost_preflight = getattr(service.mattermost, "preflight_check", None)
+    if callable(mattermost_preflight):
+        checks.append(("mattermost", mattermost_preflight))
+    else:
+        log.info(
+            "startup.preflight.check_skipped",
+            dependency="mattermost",
+            reason="client does not expose preflight_check",
+        )
+    jira_preflight = getattr(service.jira, "preflight_check", None)
+    if callable(jira_preflight):
+        checks.append(("jira", jira_preflight))
+    else:
+        log.info(
+            "startup.preflight.check_skipped",
+            dependency="jira",
+            reason="client does not expose preflight_check",
+        )
+    if service.llm is not None:
+        llm_preflight = getattr(service.llm, "preflight_check", None)
+        if callable(llm_preflight):
+            checks.append(("llm", llm_preflight))
+        else:
+            log.info(
+                "startup.preflight.check_skipped",
+                dependency="llm",
+                reason="client does not expose preflight_check",
+            )
+    else:
+        log.info(
+            "startup.preflight.check_skipped",
+            dependency="llm",
+            reason="not configured",
+        )
+
+    results = await asyncio.gather(
+        *[
+            _run_dependency_check(dependency, check)
+            for dependency, check in checks
+        ]
+    )
+    failed_count = len([result for result in results if not result])
+    log.info(
+        "startup.preflight.completed",
+        dependency_count=len(results),
+        failed_count=failed_count,
+    )
 
 
 async def websocket_loop(service: IncidentBotService) -> None:
@@ -60,11 +209,15 @@ def create_app(
         repository = AlertTicketRepository(create_session_factory(engine))
         mattermost_client = MattermostClient(settings)
         jira_client = JiraClient(settings)
+        llm_client = (
+            PostmortemLlmClient(settings) if settings.llm_api_token else None
+        )
         service = IncidentBotService(
             settings=settings,
             repository=repository,
             mattermost_client=mattermost_client,
             jira_client=jira_client,
+            llm_client=llm_client,
         )
         owns_clients = True
     else:
@@ -76,6 +229,7 @@ def create_app(
         app.state.service = service
         app.state.owns_clients = owns_clients
         app.state.background_tasks = []
+        await run_startup_preflight(service)
         if settings.enable_backfill_on_startup:
             try:
                 await service.backfill_recent_alerts()
@@ -95,6 +249,8 @@ def create_app(
             if app.state.owns_clients:
                 await service.mattermost.aclose()
                 await service.jira.aclose()
+                if service.llm is not None:
+                    await service.llm.aclose()
 
     app = FastAPI(title="Mattermost Jira Incident Bot", lifespan=lifespan)
 

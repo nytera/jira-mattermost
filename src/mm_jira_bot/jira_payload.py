@@ -68,6 +68,10 @@ def build_jira_issue_payload(
     valid_incident_option: dict[str, str] | None = None,
     source_option: dict[str, str] | None = None,
     is_crit_alert_option: dict[str, str] | None = None,
+    summary: str | None = None,
+    description: str | None = None,
+    labels: list[str] | None = None,
+    include_alert_fields: bool = True,
 ) -> dict[str, Any]:
     issue_type: dict[str, str]
     if settings.jira_issue_type.isdigit():
@@ -82,17 +86,19 @@ def build_jira_issue_payload(
     fields: dict[str, Any] = {
         "project": {"key": settings.jira_project_key},
         "issuetype": issue_type,
-        "summary": f"[INC] {alert_date} - {alert_title}",
-        "description": build_jira_description(
+        "summary": summary or f"[INC] {alert_date} - {alert_title}",
+        "description": description or build_jira_description(
             post,
             message_url=message_url,
             channel_name=channel_name,
         ),
-        source_field_id: source_option or jira_option(JIRA_SOURCE_VALUE),
-        is_crit_alert_field_id: is_crit_alert_option
-        or jira_option(JIRA_IS_CRIT_ALERT_VALUE),
-        "labels": ["mattermost-alert"],
+        "labels": labels or ["mattermost-alert"],
     }
+    if include_alert_fields:
+        fields[source_field_id] = source_option or jira_option(JIRA_SOURCE_VALUE)
+        fields[is_crit_alert_field_id] = is_crit_alert_option or jira_option(
+            JIRA_IS_CRIT_ALERT_VALUE
+        )
     if start_field_id is not None:
         fields[start_field_id] = format_jira_datetime(created_at)
     if valid_incident_option is not None:
@@ -100,8 +106,8 @@ def build_jira_issue_payload(
     return {"fields": fields}
 
 
-_POSTMORTEM_TEMPLATE = """|*Авторы ПМ*|(здесь вписываем авторов ПМ)|
-|*Участники инцидента*|(вписываем людей, кто был на инциденте)|
+_POSTMORTEM_TEMPLATE = """|*Авторы ПМ*|__POSTMORTEM_AUTHORS__|
+|*Участники инцидента*|__INCIDENT_PARTICIPANTS__|
 |*Треды Band*|__BAND_LINKS__|
 h2. Сводка
 
@@ -146,18 +152,30 @@ h2. Дополнительная информация
 def build_postmortem_description(
     *,
     incident_message_url: str,
-    alert_message_url: str,
+    alert_message_url: str | None,
+    postmortem_author: str | None = None,
+    participants: list[str] | None = None,
 ) -> str:
     """Postmortem template used as the issue description once an incident is confirmed.
 
-    The "Треды Band" row is wired to the incident channel message (created in the
-    separate incidents channel) and to the originating Band alert.
+    The LLM-generated postmortem goes to Jira comments. The description stays as
+    a fillable PM template and only gets deterministic incident metadata.
     """
-    band_links = (
-        f"[Тред инцидента|{incident_message_url}] / "
-        f"[Исходный алерт|{alert_message_url}]"
+    band_links = f"[Основное сообщение инцидента|{incident_message_url}]"
+    if alert_message_url:
+        band_links += f" / [Исходный алерт|{alert_message_url}]"
+    author_text = postmortem_author or "(здесь вписываем авторов ПМ)"
+    participant_text = (
+        ", ".join(participants)
+        if participants
+        else "(вписываем людей, кто был на инциденте)"
     )
-    return _POSTMORTEM_TEMPLATE.replace("__BAND_LINKS__", band_links)
+    return (
+        _POSTMORTEM_TEMPLATE
+        .replace("__POSTMORTEM_AUTHORS__", author_text)
+        .replace("__INCIDENT_PARTICIPANTS__", participant_text)
+        .replace("__BAND_LINKS__", band_links)
+    )
 
 
 def build_confirmation_comment(

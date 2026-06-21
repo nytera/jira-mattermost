@@ -12,6 +12,20 @@ from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
 T = TypeVar("T")
 
 
+def wrap_transport_error(message: str, exc: httpx.HTTPError) -> ApiError:
+    """Turn a transport-level httpx error into a retryable :class:`ApiError`.
+
+    Connect/read timeouts and connection drops otherwise propagate raw (httpx
+    stringifies them to ``""``), escaping the ``except ApiError`` handlers and,
+    for events handled inline, tearing down the websocket loop. Wrapping them
+    lets ``retry_async`` retry and callers degrade gracefully.
+    """
+    return ApiError(
+        f"{message}: {type(exc).__name__}: {exc}".rstrip(": "),
+        retryable=True,
+    )
+
+
 class AsyncApiClient:
     """Shared base for the Mattermost/Jira REST clients.
 
@@ -65,7 +79,12 @@ class AsyncApiClient:
         **fields: Any,
     ) -> T | None:
         async def operation() -> T | None:
-            response = await self._client.request(method, path, json=json, params=params)
+            try:
+                response = await self._client.request(
+                    method, path, json=json, params=params
+                )
+            except httpx.HTTPError as exc:
+                raise wrap_transport_error(error_message, exc) from exc
             self._raise_for_status(response, error_message)
             return parse(response) if parse is not None else None
 

@@ -234,6 +234,49 @@ class AlertTicketRepository:
                 return existing, False
             return ticket, True
 
+    def create_or_get_incident_thread(
+        self,
+        post: MattermostPost,
+        *,
+        message_url: str,
+        channel_name: str | None,
+    ) -> tuple[AlertTicket, bool]:
+        with self._session_factory() as session:
+            existing = session.scalar(
+                select(AlertTicket).where(AlertTicket.mattermost_post_id == post.id)
+            )
+            if existing:
+                return existing, False
+
+            ticket = AlertTicket(
+                mattermost_post_id=post.id,
+                mattermost_channel_id=post.channel_id,
+                mattermost_channel_name=channel_name,
+                mattermost_message_url=message_url,
+                mattermost_message_text=post.message,
+                mattermost_author_id=post.user_id,
+                mattermost_message_created_at=datetime_from_mattermost_ms(
+                    post.create_at
+                ),
+                incident_post_id=post.id,
+                incident_message_url=message_url,
+                creation_status="pending_postmortem",
+                confirmation_status="none",
+                valid_incident=False,
+            )
+            session.add(ticket)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.scalar(
+                    select(AlertTicket).where(AlertTicket.mattermost_post_id == post.id)
+                )
+                if existing is None:
+                    raise
+                return existing, False
+            return ticket, True
+
     def attach_jira_issue(self, post_id: str, issue_key: str, issue_url: str) -> None:
         self.replace_jira_issue(post_id, issue_key, issue_url)
 
@@ -258,6 +301,13 @@ class AlertTicketRepository:
     def mark_jira_create_failed(self, post_id: str, error: str) -> None:
         def apply(ticket: AlertTicket) -> None:
             ticket.creation_status = "failed_jira"
+            ticket.last_error = error
+
+        self._mutate(post_id, apply)
+
+    def mark_postmortem_failed(self, post_id: str, error: str) -> None:
+        def apply(ticket: AlertTicket) -> None:
+            ticket.creation_status = "failed_postmortem"
             ticket.last_error = error
 
         self._mutate(post_id, apply)
@@ -356,7 +406,10 @@ class AlertTicketRepository:
             return list(
                 session.scalars(
                     select(AlertTicket)
-                    .where(AlertTicket.jira_issue_key.is_(None))
+                    .where(
+                        AlertTicket.jira_issue_key.is_(None),
+                        AlertTicket.creation_status.in_(["pending_jira", "failed_jira"]),
+                    )
                     .order_by(AlertTicket.created_at)
                     .limit(limit)
                 )

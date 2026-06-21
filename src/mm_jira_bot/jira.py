@@ -28,7 +28,9 @@ VALID_INCIDENT_FALSE_VALUE = "Ложный"
 VALID_INCIDENT_EXPECTED_VALUE = "Ожидаемый"
 
 
-def _payload_option_summary(payload: dict[str, str]) -> dict[str, str]:
+def _payload_option_summary(payload: dict[str, str] | None) -> dict[str, str] | None:
+    if payload is None:
+        return None
     return {key: payload[key] for key in ("id", "value") if key in payload}
 
 
@@ -107,6 +109,32 @@ class JiraClient(AsyncApiClient):
         message_url: str,
         channel_name: str | None,
     ) -> JiraIssue:
+        return await self._create_issue(
+            post,
+            message_url=message_url,
+            channel_name=channel_name,
+        )
+
+    async def create_postmortem_issue(
+        self,
+        post: MattermostPost,
+        *,
+        message_url: str,
+        channel_name: str | None,
+        summary: str,
+        description: str,
+    ) -> JiraIssue:
+        return await self._create_issue(
+            post,
+            message_url=message_url,
+            channel_name=channel_name,
+            summary=summary,
+            description=description,
+            labels=["mattermost-incident", "postmortem"],
+            include_alert_fields=False,
+        )
+
+    async def preflight_check(self) -> dict[str, object]:
         valid_incident_field_id = await self._get_field_id(
             self._settings.jira_valid_incident_field
         )
@@ -119,26 +147,110 @@ class JiraClient(AsyncApiClient):
             if self._settings.jira_start_field
             else None
         )
+        end_field_id = (
+            await self._get_field_id(self._settings.jira_end_field)
+            if self._settings.jira_end_field
+            else None
+        )
+        issue_type_id = await self._get_issue_type_id()
+        create_fields = await self._get_create_fields()
+        valid_option = await self._get_option_payload(
+            valid_incident_field_id,
+            VALID_INCIDENT_CONFIRMED_VALUE,
+        )
+        false_option = await self._get_option_payload(
+            valid_incident_field_id,
+            VALID_INCIDENT_FALSE_VALUE,
+        )
+        expected_option = await self._get_option_payload(
+            valid_incident_field_id,
+            VALID_INCIDENT_EXPECTED_VALUE,
+        )
         source_option = await self._get_option_payload(
-            source_field_id, JIRA_SOURCE_VALUE
+            source_field_id,
+            JIRA_SOURCE_VALUE,
         )
         is_crit_alert_option = await self._get_option_payload(
-            is_crit_alert_field_id, JIRA_IS_CRIT_ALERT_VALUE
+            is_crit_alert_field_id,
+            JIRA_IS_CRIT_ALERT_VALUE,
+        )
+        return {
+            "jira_base_url": self._settings.jira_base_url,
+            "jira_project_key": self._settings.jira_project_key,
+            "jira_issue_type": self._settings.jira_issue_type,
+            "jira_issue_type_id": issue_type_id,
+            "create_field_count": len(create_fields),
+            "valid_incident_field_id": valid_incident_field_id,
+            "source_field_id": source_field_id,
+            "is_crit_alert_field_id": is_crit_alert_field_id,
+            "start_field_id": start_field_id,
+            "end_field_id": end_field_id,
+            "valid_option": _payload_option_summary(valid_option),
+            "false_option": _payload_option_summary(false_option),
+            "expected_option": _payload_option_summary(expected_option),
+            "source_option": _payload_option_summary(source_option),
+            "is_crit_alert_option": _payload_option_summary(is_crit_alert_option),
+        }
+
+    async def _create_issue(
+        self,
+        post: MattermostPost,
+        *,
+        message_url: str,
+        channel_name: str | None,
+        summary: str | None = None,
+        description: str | None = None,
+        labels: list[str] | None = None,
+        include_alert_fields: bool = True,
+    ) -> JiraIssue:
+        valid_incident_field_id = await self._get_field_id(
+            self._settings.jira_valid_incident_field
+        )
+        source_field_id = (
+            await self._get_field_id(self._settings.jira_source_field)
+            if include_alert_fields
+            else None
+        )
+        is_crit_alert_field_id = (
+            await self._get_field_id(self._settings.jira_is_crit_alert_field)
+            if include_alert_fields
+            else None
+        )
+        start_field_id = (
+            await self._get_field_id(self._settings.jira_start_field)
+            if self._settings.jira_start_field
+            else None
+        )
+        source_option = (
+            await self._get_option_payload(source_field_id, JIRA_SOURCE_VALUE)
+            if source_field_id is not None
+            else None
+        )
+        is_crit_alert_option = (
+            await self._get_option_payload(
+                is_crit_alert_field_id, JIRA_IS_CRIT_ALERT_VALUE
+            )
+            if is_crit_alert_field_id is not None
+            else None
         )
         payload = build_jira_issue_payload(
             self._settings,
             valid_incident_field_id,
-            source_field_id,
-            is_crit_alert_field_id,
+            source_field_id or "",
+            is_crit_alert_field_id or "",
             post,
             message_url=message_url,
             channel_name=channel_name,
             start_field_id=start_field_id,
             source_option=source_option,
             is_crit_alert_option=is_crit_alert_option,
+            summary=summary,
+            description=description,
+            labels=labels,
+            include_alert_fields=include_alert_fields,
         )
         fields = payload["fields"]
-        description = fields.get("description")
+        prepared_description = fields.get("description")
         log.info(
             "jira.issue.payload_prepared",
             mattermost_post_id=post.id,
@@ -146,7 +258,7 @@ class JiraClient(AsyncApiClient):
             jira_issue_type=self._settings.jira_issue_type,
             jira_rest_api_version="2",
             summary_length=len(str(fields.get("summary", ""))),
-            description_type=type(description).__name__,
+            description_type=type(prepared_description).__name__,
             valid_incident_field_id=valid_incident_field_id,
             valid_incident_on_create=False,
             start_field_id=start_field_id,
@@ -154,6 +266,7 @@ class JiraClient(AsyncApiClient):
             source_option=_payload_option_summary(source_option),
             is_crit_alert_field_id=is_crit_alert_field_id,
             is_crit_alert_option=_payload_option_summary(is_crit_alert_option),
+            labels=fields.get("labels"),
         )
 
         def parse(response: httpx.Response) -> JiraIssue:
@@ -291,12 +404,16 @@ class JiraClient(AsyncApiClient):
         incident_message_url: str,
         confirmed_by_user_id: str,
     ) -> None:
-        payload = {
-            "body": build_confirmation_comment(
+        await self.add_comment(
+            issue_key,
+            build_confirmation_comment(
                 incident_message_url=incident_message_url,
                 confirmed_by_user_id=confirmed_by_user_id,
-            )
-        }
+            ),
+        )
+
+    async def add_comment(self, issue_key: str, body: str) -> None:
+        payload = {"body": body}
         await self._request(
             "POST",
             self._api_path(f"issue/{issue_key}/comment"),

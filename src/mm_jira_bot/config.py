@@ -58,6 +58,14 @@ def _float_env(name: str, default: float) -> float:
     return default if value is None else float(value)
 
 
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = _env(name)
+        if value is not None:
+            return value
+    return None
+
+
 @dataclass(frozen=True)
 class Settings:
     mattermost_url: str
@@ -90,6 +98,13 @@ class Settings:
     enable_websocket: bool = True
     enable_backfill_on_startup: bool = False
     debug_admin_enabled: bool = False
+    llm_base_url: str = "https://corellm.wb.ru/deepseek/v1"
+    llm_api_token: str | None = None
+    llm_model: str = "deepseek-chat"
+    llm_max_tokens: int = 4000
+    llm_thread_max_chars: int = 24000
+    llm_stream: bool = True
+    llm_read_timeout: float = 120.0
 
     def __post_init__(self) -> None:
         configure_runtime_timezone(self.incident_timezone)
@@ -141,4 +156,15 @@ class Settings:
             enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false")
             == "true",
             debug_admin_enabled=_env("DEBUG_ADMIN_ENABLED", "false") == "true",
+            llm_base_url=_env(
+                "LLM_BASE_URL", "https://corellm.wb.ru/deepseek/v1"
+            ).rstrip("/"),
+            llm_api_token=_first_env(
+                "LLM_API_TOKEN", "CORELLM_API_TOKEN", "OPENAI_API_KEY"
+            ),
+            llm_model=_env("LLM_MODEL", "deepseek-chat"),
+            llm_max_tokens=_int_env("LLM_MAX_TOKENS", 4000),
+            llm_thread_max_chars=_int_env("LLM_THREAD_MAX_CHARS", 24000),
+            llm_stream=_env("LLM_STREAM", "true") != "false",
+            llm_read_timeout=_float_env("LLM_READ_TIMEOUT", 120.0),
         )
