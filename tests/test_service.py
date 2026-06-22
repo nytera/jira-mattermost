@@ -508,7 +508,7 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
     assert "title" not in attachment
     assert "title_link" not in attachment
     assert attachment["text"] == (
-        "**Создана задача: [ADSDEV-12024](https://jira.example.com/browse/ADSDEV-12024)**\n​"
+        "**Создана задача: [ADSDEV-12024](https://jira.example.com/browse/ADSDEV-12024)**"
     )
     assert ticket.jira_issue_key not in attachment["text"]
 
@@ -2359,7 +2359,7 @@ async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
     assert "title" not in controls_attachment
     assert "title_link" not in controls_attachment
     assert controls_attachment["text"] == (
-        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**\n​"
+        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
     )
     controls_actions = controls_attachment["actions"]
     assert [action["id"] for action in controls_actions] == [
@@ -2928,7 +2928,10 @@ async def test_incident_create_task_creates_jira_and_updates_card(settings):
     ticket = service.repository.get_by_incident_post_id(post.id)
     assert ticket.jira_issue_key == "OPS-1"
     assert result.update_attachments is not None
-    ids = [a["id"] for a in result.update_attachments[0]["actions"]]
+    card = result.update_attachments[0]
+    # The Jira link lives in the main message, so the card carries no task text.
+    assert "text" not in card
+    ids = [a["id"] for a in card["actions"]]
     assert ids == ["validity", "end_incident", "summary"]
 
 

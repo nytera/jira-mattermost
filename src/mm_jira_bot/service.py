@@ -691,8 +691,6 @@ class IncidentBotService:
         attachment = build_incident_controls_attachment(
             incident_post_id=incident_post_id,
             callback_url=callback_url,
-            issue_key=ticket.jira_issue_key,
-            issue_url=ticket.jira_issue_url,
         )
         return ActionResult(
             message=f"Создана задача {ticket.jira_issue_key}.",
@@ -1866,8 +1864,6 @@ class IncidentBotService:
                         build_incident_controls_attachment(
                             incident_post_id=incident_post.id,
                             callback_url=callback_url,
-                            issue_key=ticket.jira_issue_key,
-                            issue_url=ticket.jira_issue_url,
                         )
                     ]
                 },

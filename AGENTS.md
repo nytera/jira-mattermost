@@ -185,7 +185,7 @@ the ticket row via `create_or_get_incident_thread` (idempotent) and posts a
 early to `handle_incident_action` (keyed by `incident_post_id`, skips the alert-channel
 checks). Actions: `create_task` → `create_postmortem_issue` (no alert fields) and the
 action response's `update` payload swaps the card for the controls (validity menu,
-"🏁 Завершение инцидента", "📝 Саммари"); `validity` → `apply_validity_label`;
+"🏁 Завершить", "📝 Саммари"); `validity` → `apply_validity_label`;
 `end_incident` → reuses `handle_incident_checkmark` (full PM); `summary` →
 `generate_thread_summary` (light). The checkmark flow stays available in parallel.
 

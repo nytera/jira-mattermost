@@ -27,9 +27,6 @@ ACTION_ATTACHMENT_COLOR = "#3B82F6"
 FEEDBACK_ATTACHMENT_COLOR = "#4B5563"
 # Amber accent for the "create task?" prompt on a manual incident post.
 INCIDENT_CREATE_ATTACHMENT_COLOR = "#F59E0B"
-# A blank line (the zero-width space keeps Mattermost from trimming it) that
-# adds a little vertical spacing between the notice and the controls below.
-CONTROLS_SPACER = "\n​"
 
 
 @dataclass(frozen=True)
@@ -65,7 +62,7 @@ FEEDBACK_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
 )
 # Buttons under the validity menu on the manual-incident controls card.
 INCIDENT_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
-    AlertActionButton(ACTION_END_INCIDENT, "🏁 Завершение инцидента", style="primary"),
+    AlertActionButton(ACTION_END_INCIDENT, "🏁 Завершить", style="primary"),
     AlertActionButton(ACTION_SUMMARY, "📝 Саммари", style="default"),
 )
 
@@ -130,7 +127,7 @@ def build_alert_controls_attachment(
         "fallback": title,
         "color": ACTION_ATTACHMENT_COLOR,
         # Trailing blank line gives a little spacing before the row of controls.
-        "text": f"**Создана задача: {issue_text}**{CONTROLS_SPACER}",
+        "text": f"**Создана задача: {issue_text}**",
         "actions": [validity_select, *buttons],
     }
 
@@ -189,16 +186,10 @@ def build_incident_create_attachment(*, incident_post_id: str, callback_url: str
     }
 
 
-def build_incident_controls_attachment(
-    *,
-    incident_post_id: str,
-    callback_url: str,
-    issue_key: str,
-    issue_url: str | None,
-) -> dict:
-    """Second state: link to the Jira issue, the validity menu, and the
-    "Завершение инцидента" / "Саммари" buttons."""
-    issue_text = f"[{issue_key}]({issue_url})" if issue_url else issue_key
+def build_incident_controls_attachment(*, incident_post_id: str, callback_url: str) -> dict:
+    """Management controls: the validity menu and the "Завершить" / "Саммари"
+    buttons. The Jira issue link lives in the main incident message, so the card
+    itself carries no task text — just the controls."""
     validity_select = {
         "id": ACTION_VALIDITY,
         "name": "Выбрать валидность ▼",
@@ -223,6 +214,5 @@ def build_incident_controls_attachment(
     return {
         "fallback": "Управление инцидентом",
         "color": ACTION_ATTACHMENT_COLOR,
-        "text": f"**Инцидент: задача {issue_text}**{CONTROLS_SPACER}",
         "actions": [validity_select, *buttons],
     }
