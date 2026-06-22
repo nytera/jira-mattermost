@@ -3057,3 +3057,53 @@ async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
     ]
     assert len(cards) == 1
     assert cards[0]["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_alert_incident_gets_controls_card(settings):
+    """An alert confirmed as an incident gets the same controls in the incident
+    channel, but without "Создать задачу" (the Jira issue already exists)."""
+    service = _incident_service(settings)
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket.incident_post_id is not None
+    cards = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == ticket.incident_post_id and (c["props"] or {}).get("attachments")
+    ]
+    assert len(cards) == 1
+    ids = [a["id"] for a in cards[0]["props"]["attachments"][0]["actions"]]
+    assert ids == ["validity", "end_incident", "summary"]
+
+
+@pytest.mark.asyncio
+async def test_incident_card_validity_on_alert_incident(settings):
+    """Validity from the incident card resolves the alert-originated ticket
+    (incident_post_id != mattermost_post_id) and sets the Jira field."""
+    service = _incident_service(settings)
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket.incident_post_id != ticket.mattermost_post_id
+
+    result = await service.handle_incident_action(
+        action="validity",
+        incident_post_id=ticket.incident_post_id,
+        user_id="closer",
+        selected_option="false",
+    )
+
+    assert "Ложный" in result.message
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"

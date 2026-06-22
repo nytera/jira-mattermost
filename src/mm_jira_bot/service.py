@@ -625,8 +625,13 @@ class IncidentBotService:
             }.get(selected_option)
             if validity_label is None:
                 return ActionResult(message="Не выбрана «Валидность».")
+            # apply_validity_label is keyed by the ticket's mattermost_post_id. For
+            # a manual incident that equals the incident post id; for an
+            # alert-originated incident it is the alert post id, so resolve it.
+            ticket = self.repository.get_by_incident_post_id(incident_post_id)
+            post_key = ticket.mattermost_post_id if ticket is not None else incident_post_id
             result = await self.apply_validity_label(
-                incident_post_id, validity_label=validity_label, source="incident_action"
+                post_key, validity_label=validity_label, source="incident_action"
             )
             return ActionResult(message=_validity_action_message(result, validity_label))
 
@@ -1847,6 +1852,26 @@ class IncidentBotService:
             mattermost_post_id=ticket.mattermost_post_id,
             incident_post_id=incident_post.id,
         )
+        # Same management controls as a manual incident (validity menu, end,
+        # summary), minus "Создать задачу" since the Jira issue already exists.
+        if self.settings.service_public_url and ticket.jira_issue_key:
+            callback_url = alert_action_callback_url(self.settings.service_public_url)
+            await self._post_incident_thread_reply(
+                incident_post.id,
+                channel_id=self.settings.mattermost_incident_channel_id,
+                message="",
+                event="mattermost.incident_thread.controls_published",
+                props={
+                    "attachments": [
+                        build_incident_controls_attachment(
+                            incident_post_id=incident_post.id,
+                            callback_url=callback_url,
+                            issue_key=ticket.jira_issue_key,
+                            issue_url=ticket.jira_issue_url,
+                        )
+                    ]
+                },
+            )
 
     async def _alert_attachments(self, ticket: AlertTicket) -> list[dict]:
         try:

@@ -189,6 +189,14 @@ action response's `update` payload swaps the card for the controls (validity men
 `end_incident` → reuses `handle_incident_checkmark` (full PM); `summary` →
 `generate_thread_summary` (light). The checkmark flow stays available in parallel.
 
+Alert-originated incidents get the **same controls** card: when `confirm_incident`
+publishes the incident-channel post, `_publish_incident_message_if_needed` also
+posts the controls reply (no "Создать задачу" — the issue exists). Here the
+incident post id differs from the ticket's `mattermost_post_id` (the alert post),
+so the `validity` branch resolves the ticket via `get_by_incident_post_id` and
+calls `apply_validity_label` with the ticket's `mattermost_post_id`; the other
+actions already look up by incident post id.
+
 Validity and confirmation are **independent axes**: `_ensure_postmortem_jira_issue`
 only stamps `Валидный` as a default when `ticket.validity_label is None`, so an
 explicit `Ложный`/`Ожидаемый` survives the postmortem/end step (manual *and*
