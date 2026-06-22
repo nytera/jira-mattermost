@@ -457,6 +457,7 @@ class IncidentBotService:
         *,
         title: str | None = None,
         title_link: str | None = None,
+        confirmed: bool = False,
     ) -> list[dict] | None:
         """Alert thread attachments for a single reply, or ``None`` if disabled.
 
@@ -475,6 +476,7 @@ class IncidentBotService:
                 title_link=title_link,
                 alert_post_id=alert_post_id,
                 callback_url=callback_url,
+                confirmed=confirmed,
             ),
             build_alert_feedback_attachment(
                 alert_post_id=alert_post_id,
@@ -556,7 +558,26 @@ class IncidentBotService:
             result = await self.confirm_incident(
                 alert_post_id, confirmed_by_user_id=user_id, source="action"
             )
-            return ActionResult(message=_incident_action_message(result))
+            update_attachments = None
+            if result.status in (
+                ConfirmationStatus.CONFIRMED,
+                ConfirmationStatus.ALREADY_CONFIRMED,
+            ):
+                ticket = self.repository.get_by_post_id(alert_post_id)
+                if ticket is not None and ticket.jira_issue_key is not None:
+                    display = self._display_jira_issue(
+                        JiraIssue(key=ticket.jira_issue_key, url=ticket.jira_issue_url or "")
+                    )
+                    update_attachments = self._alert_action_attachments(
+                        alert_post_id,
+                        title=display.key,
+                        title_link=display.url or None,
+                        confirmed=True,
+                    )
+            return ActionResult(
+                message=_incident_action_message(result),
+                update_attachments=update_attachments,
+            )
 
         if action == ACTION_VALIDITY:
             if not selected_option:
@@ -580,6 +601,24 @@ class IncidentBotService:
             alert_post_id, validity_label=validity_label, source="action"
         )
         return ActionResult(message=_validity_action_message(result, validity_label))
+
+    def _incident_controls_attachment(
+        self, incident_post_id: str, *, completed: bool = False
+    ) -> dict:
+        """Build the incident controls card, picking the task header automatically:
+        shown for alert-originated incidents, omitted for manual ones."""
+        callback_url = alert_action_callback_url(self.settings.service_public_url)
+        ticket = self.repository.get_by_incident_post_id(incident_post_id)
+        issue_key = issue_url = None
+        if ticket is not None and ticket.incident_post_id != ticket.mattermost_post_id:
+            issue_key, issue_url = ticket.jira_issue_key, ticket.jira_issue_url
+        return build_incident_controls_attachment(
+            incident_post_id=incident_post_id,
+            callback_url=callback_url,
+            issue_key=issue_key,
+            issue_url=issue_url,
+            completed=completed,
+        )
 
     async def handle_incident_action(
         self,
@@ -620,7 +659,18 @@ class IncidentBotService:
                 ended_at=backend_now(),
                 source="incident_button",
             )
-            return ActionResult(message=_incident_end_message(result))
+            update_attachments = None
+            if (
+                result.status == ConfirmationStatus.INCIDENT_ENDED
+                and self.settings.service_public_url
+            ):
+                update_attachments = [
+                    self._incident_controls_attachment(incident_post_id, completed=True)
+                ]
+            return ActionResult(
+                message=_incident_end_message(result),
+                update_attachments=update_attachments,
+            )
 
         if action == ACTION_VALIDITY:
             validity_label = {

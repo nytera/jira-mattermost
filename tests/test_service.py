@@ -2495,6 +2495,34 @@ async def test_incident_button_confirms_incident(service):
 
 
 @pytest.mark.asyncio
+async def test_incident_button_swaps_to_confirmed(settings):
+    service = _build_service(replace(settings, service_public_url="https://bot.example.com"))
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_alert_action(
+        action="incident", alert_post_id=post.id, user_id="closer"
+    )
+
+    assert result.update_attachments is not None
+    controls = result.update_attachments[0]
+    names = [a.get("name") for a in controls["actions"]]
+    assert "✅ Подтверждён" in names
+    assert "🚨 Инцидент" not in names
+    assert "📝 Summary" in names
+    # Validity moves to the incident card, so the alert menu is gone after confirm.
+    assert not any(a["id"] == "validity" for a in controls["actions"])
+    # The alert thread gets the status notice with the incident-channel link.
+    status_replies = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == post.id and "Сообщение в канале инцидентов" in c["message"]
+    ]
+    assert len(status_replies) == 1
+
+
+@pytest.mark.asyncio
 async def test_summary_button_posts_thread_reply(service):
     service.llm = FakeLlmClient()
     post = make_alert()
@@ -3180,3 +3208,29 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
     # On completion only the circle turns green; the alert name stays.
     assert "##### 🟢 CPU usage is above 95%" in info_text()
     assert "##### 🔴 " not in info_text()
+
+
+@pytest.mark.asyncio
+async def test_end_button_swaps_to_completed(settings):
+    service = _incident_service(settings)
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+
+    result = await service.handle_incident_action(
+        action="end_incident", incident_post_id=ticket.incident_post_id, user_id="closer"
+    )
+
+    assert result.update_attachments is not None
+    actions = result.update_attachments[0]["actions"]
+    names = [a.get("name") for a in actions]
+    assert "✅ Завершено" in names
+    assert "🏁 Завершить" not in names
+    # Validity menu and summary remain after completion.
+    assert any(a["id"] == "validity" for a in actions)
+    assert "📝 Саммари" in names

@@ -106,9 +106,11 @@ def build_alert_controls_attachment(
     title_link: str | None,
     alert_post_id: str,
     callback_url: str,
+    confirmed: bool = False,
 ) -> dict:
     """Main block: "Создана задача" notice, the validity menu, and the
-    incident/summary buttons under it. Rendered with the blue accent."""
+    incident/summary buttons under it. Rendered with the blue accent. When
+    ``confirmed``, the "🚨 Инцидент" button is shown as "✅ Подтверждён"."""
     issue_text = f"[{title}]({title_link})" if title_link else title
     validity_select = {
         "id": ACTION_VALIDITY,
@@ -119,16 +121,25 @@ def build_alert_controls_attachment(
         ),
         "options": [{"text": option.text, "value": option.value} for option in VALIDITY_OPTIONS],
     }
+    primary_buttons = PRIMARY_ACTION_BUTTONS
+    if confirmed:
+        primary_buttons = tuple(
+            AlertActionButton(ACTION_INCIDENT, "✅ Подтверждён", style="default")
+            if button.id == ACTION_INCIDENT
+            else button
+            for button in PRIMARY_ACTION_BUTTONS
+        )
     buttons = [
         _button_action(button, alert_post_id=alert_post_id, callback_url=callback_url)
-        for button in PRIMARY_ACTION_BUTTONS
+        for button in primary_buttons
     ]
+    # Once confirmed, validity is chosen on the incident card, so drop the menu here.
+    actions = buttons if confirmed else [validity_select, *buttons]
     return {
         "fallback": title,
         "color": ACTION_ATTACHMENT_COLOR,
-        # Trailing blank line gives a little spacing before the row of controls.
         "text": f"**Создана задача: {issue_text}**",
-        "actions": [validity_select, *buttons],
+        "actions": actions,
     }
 
 
@@ -192,11 +203,13 @@ def build_incident_controls_attachment(
     callback_url: str,
     issue_key: str | None = None,
     issue_url: str | None = None,
+    completed: bool = False,
 ) -> dict:
     """Management controls: the validity menu and the "Завершить" / "Саммари"
     buttons. When ``issue_key`` is given, a "Создана задача: <link>" header is
     shown above the controls (alert-originated incidents, like the alert card);
-    manual incidents omit it since the task is created from this very card."""
+    manual incidents omit it since the task is created from this very card. When
+    ``completed``, the "🏁 Завершить" button is shown as "✅ Завершено"."""
     validity_select = {
         "id": ACTION_VALIDITY,
         "name": "Выбрать валидность ▼",
@@ -206,6 +219,14 @@ def build_incident_controls_attachment(
         ),
         "options": [{"text": option.text, "value": option.value} for option in VALIDITY_OPTIONS],
     }
+    action_buttons = INCIDENT_ACTION_BUTTONS
+    if completed:
+        action_buttons = tuple(
+            AlertActionButton(ACTION_END_INCIDENT, "✅ Завершено", style="default")
+            if button.id == ACTION_END_INCIDENT
+            else button
+            for button in INCIDENT_ACTION_BUTTONS
+        )
     buttons = [
         {
             "id": button.id,
@@ -216,7 +237,7 @@ def build_incident_controls_attachment(
                 button.id, incident_post_id=incident_post_id, callback_url=callback_url
             ),
         }
-        for button in INCIDENT_ACTION_BUTTONS
+        for button in action_buttons
     ]
     attachment = {
         "fallback": "Управление инцидентом",
