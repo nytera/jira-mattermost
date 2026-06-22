@@ -117,22 +117,10 @@ def format_thread_issue_created(*, jira_issue_key: str, jira_issue_url: str | No
     return f"Создана задача Jira: {_jira_link(jira_issue_key, jira_issue_url)}"
 
 
-def format_thread_status_changed(
-    *,
-    jira_issue_key: str | None,
-    jira_issue_url: str | None,
-    incident_message_url: str | None,
-    status_transitioned: bool,
-) -> str:
-    lines = [
-        "✅ Инцидент заведён и подтверждён как валидный. "
-        f"Задача Jira: {_jira_link(jira_issue_key, jira_issue_url)}.",
-        "Поле «Валидность» = Валидный."
-        + (" Статус задачи обновлён." if status_transitioned else ""),
-    ]
+def format_thread_status_changed(*, incident_message_url: str | None) -> str:
     if incident_message_url:
-        lines.append(f"Сообщение в канале инцидентов: {incident_message_url}")
-    return "\n".join(lines)
+        return f"✅ **Инцидент заведён.** Ссылка на сообщение: {incident_message_url}"
+    return "✅ **Инцидент заведён.**"
 
 
 def format_thread_validity_changed(

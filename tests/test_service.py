@@ -1151,9 +1151,8 @@ async def test_replies_in_alert_thread_on_status_change(service):
     assert len(thread_replies) == 2
     status_reply = thread_replies[1]
     assert status_reply["channel_id"] == "alerts-channel"
-    assert "OPS-1" in status_reply["message"]
-    assert "Валидный" in status_reply["message"]
-    assert "Сообщение в канале инцидентов" in status_reply["message"]
+    assert "Инцидент заведён" in status_reply["message"]
+    assert "Ссылка на сообщение" in status_reply["message"]
 
     incident_posts = [
         created
@@ -2547,7 +2546,7 @@ async def test_incident_button_swaps_to_confirmed(settings):
     status_replies = [
         c
         for c in service.mattermost.created_posts
-        if c["root_id"] == post.id and "Сообщение в канале инцидентов" in c["message"]
+        if c["root_id"] == post.id and "Ссылка на сообщение" in c["message"]
     ]
     assert len(status_replies) == 1
 

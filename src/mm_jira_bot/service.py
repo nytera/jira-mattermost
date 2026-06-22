@@ -1551,10 +1551,7 @@ class IncidentBotService:
             post_id,
             channel_id=ticket.mattermost_channel_id,
             message=format_thread_status_changed(
-                jira_issue_key=ticket.jira_issue_key,
-                jira_issue_url=ticket.jira_issue_url,
                 incident_message_url=ticket.incident_message_url,
-                status_transitioned=bool(self.settings.jira_confirmed_status_id),
             ),
             event="mattermost.alert_thread.status_notice_published",
             props={
