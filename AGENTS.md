@@ -82,14 +82,18 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 1. **Alert → Jira issue** (`handle_alert_post`): skip non-alert-channel and own-bot posts → `create_or_get_alert` inserts an `alert_tickets` row (unique `mattermost_post_id`) → `_ensure_jira_issue` creates the Jira issue, stores `jira_issue_key`, and replies in the alert thread with the issue link. The DB row is created *before* the Jira call so a crash mid-create is retried later.
 2. **Confirmation → valid incident** (`confirm_incident`, triggered by the `:incident:` reaction or `/incident <permalink>`): posts to the incidents channel, sets Jira `Valid Incident = Валидный`, adds a comment, optional transition, and replies in the alert thread about the status change. If the Jira issue does not exist yet, it is saved as `pending_confirmation` and completed by `pending_work_loop`.
 
-When `JIRA_CREATE_ENABLED=false`, `_create_jira_issue` does not call Jira
-`create_issue`; it returns a stub `JiraIssue` using `JIRA_STUB_ISSUE_KEY` plus a
+When `JIRA_CREATE_ENABLED=false` (test mode), the `JiraClient` makes **no Jira
+calls for issue-key operations**: `create_issue`/`create_postmortem_issue` return
+a stub `JiraIssue` (`stub_jira_issue` — `JIRA_STUB_ISSUE_KEY` plus a
 Mattermost-post-id suffix for DB uniqueness, or a generated
-`{JIRA_PROJECT_KEY}-12345`-style key. Mattermost issue-created replies display
-the clean configured `JIRA_STUB_ISSUE_KEY` when present. The rest of the flow
-still treats the stored key as a normal linked Jira issue, so later
-validity/comment/transition operations still call Jira unless separately avoided
-by the test setup.
+`{JIRA_PROJECT_KEY}-12345`-style key), and `get_valid_incident` / `set_validity`
+/ `set_valid_incident` / `set_end_time` / `set_description` / `add_comment` /
+`transition_issue` are no-ops. This matters because the stub key does not exist in
+Jira — without the no-op, those calls would 404 and abort `confirm_incident`
+(after the incident-channel post but before the alert-thread reply). Mattermost
+issue-created replies display the clean configured `JIRA_STUB_ISSUE_KEY` via
+`_display_jira_issue`. Field/option metadata reads (global, not issue-scoped) are
+not stubbed.
 
 There is also a **lightweight validity path** (`apply_validity_label`, triggered by the two configurable reactions `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` → `Ложный` and `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` → `Ожидаемый`). It sets Jira's `Валидность` field (`JiraClient.set_validity`), optionally sets `JIRA_END_FIELD` to the reaction time, and replies in the alert thread — no incidents-channel post, comment, or transition. Last reaction wins: each distinct label overwrites the field; the `validity_label` column guards against re-applying the same label (no duplicate replies). It does **not** touch the `valid_incident` confirmation state machine and is best-effort (no `pending_work_loop` retry) — if the Jira issue is not ready, the update is skipped.
 

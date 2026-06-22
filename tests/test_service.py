@@ -1634,6 +1634,36 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
 
 
 @pytest.mark.asyncio
+async def test_jira_client_makes_no_calls_in_test_mode(settings):
+    """JIRA_CREATE_ENABLED=false must not hit Jira for issue-key operations, so a
+    bogus stub key never aborts the confirm/validity/end flows."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"Unexpected Jira call in test mode: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        replace(settings, jira_create_enabled=False, jira_stub_issue_key="ADSDEV-12024"),
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    assert await client.get_valid_incident("OPS-1") is None
+    await client.set_valid_incident("OPS-1", True)
+    await client.set_validity("OPS-1", "Ложный")
+    await client.set_end_time("OPS-1", datetime(2026, 1, 1, tzinfo=UTC))
+    await client.set_description("OPS-1", "desc")
+    await client.add_comment("OPS-1", "body")
+    await client.transition_issue("OPS-1", "31")
+    issue = await client.create_postmortem_issue(
+        make_alert(), message_url="u", channel_name="c", summary="s", description="d"
+    )
+    assert issue.key.startswith("ADSDEV-12024-")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_creates_issue_with_default_valid_incident_and_option_ids(settings):
     requests: list[dict] = []
 

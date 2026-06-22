@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import secrets
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -50,6 +49,7 @@ from mm_jira_bot.jira import (
     VALID_INCIDENT_CONFIRMED_VALUE,
     VALID_INCIDENT_EXPECTED_VALUE,
     VALID_INCIDENT_FALSE_VALUE,
+    stub_jira_issue,
 )
 from mm_jira_bot.jira_payload import build_postmortem_description
 from mm_jira_bot.logging import get_logger
@@ -1835,21 +1835,14 @@ class IncidentBotService:
         )
 
     def _stub_jira_issue(self, ticket: AlertTicket) -> JiraIssue:
-        issue_key = self.settings.jira_stub_issue_key
-        if not issue_key:
-            issue_key = f"{self.settings.jira_project_key}-{10000 + secrets.randbelow(90000)}"
-        else:
-            suffix = ticket.mattermost_post_id[:12]
-            prefix = issue_key[: 63 - len(suffix)]
-            issue_key = f"{prefix}-{suffix}"
-        issue_url = f"{self.settings.jira_base_url}/browse/{issue_key}"
+        issue = stub_jira_issue(self.settings, ticket.mattermost_post_id)
         log.info(
             "jira.issue.create_stubbed",
             mattermost_post_id=ticket.mattermost_post_id,
-            jira_issue_key=issue_key,
-            jira_issue_url=issue_url,
+            jira_issue_key=issue.key,
+            jira_issue_url=issue.url,
         )
-        return JiraIssue(key=issue_key, url=issue_url)
+        return issue
 
     def _display_jira_issue(self, issue: JiraIssue) -> JiraIssue:
         if self.settings.jira_create_enabled or not self.settings.jira_stub_issue_key:

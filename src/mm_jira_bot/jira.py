@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +27,20 @@ VALID_INCIDENT_EMPTY_VALUE = "Не заполнено"
 VALID_INCIDENT_CONFIRMED_VALUE = "Валидный"
 VALID_INCIDENT_FALSE_VALUE = "Ложный"
 VALID_INCIDENT_EXPECTED_VALUE = "Ожидаемый"
+
+
+def stub_jira_issue(settings: Settings, mattermost_post_id: str) -> JiraIssue:
+    """Fake JiraIssue used in test mode (``JIRA_CREATE_ENABLED=false``): the
+    configured stub key with a post-id suffix for DB uniqueness, or a generated
+    ``PROJECT-NNNNN`` key. No Jira call is made."""
+    key = settings.jira_stub_issue_key
+    if not key:
+        key = f"{settings.jira_project_key}-{10000 + secrets.randbelow(90000)}"
+    else:
+        suffix = mattermost_post_id[:12]
+        prefix = key[: 63 - len(suffix)]
+        key = f"{prefix}-{suffix}"
+    return JiraIssue(key=key, url=f"{settings.jira_base_url}/browse/{key}")
 
 
 def _payload_option_summary(payload: dict[str, str] | None) -> dict[str, str] | None:
@@ -199,6 +214,8 @@ class JiraClient(AsyncApiClient):
         labels: list[str] | None = None,
         include_alert_fields: bool = True,
     ) -> JiraIssue:
+        if not self._settings.jira_create_enabled:
+            return stub_jira_issue(self._settings, post.id)
         valid_incident_field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         source_field_id = (
             await self._get_field_id(self._settings.jira_source_field)
@@ -281,6 +298,8 @@ class JiraClient(AsyncApiClient):
         )
 
     async def get_valid_incident(self, issue_key: str) -> bool | None:
+        if not self._settings.jira_create_enabled:
+            return None
         field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
 
         def parse(response: httpx.Response) -> bool | None:
@@ -314,6 +333,8 @@ class JiraClient(AsyncApiClient):
         )
 
     async def set_end_time(self, issue_key: str, ended_at: datetime) -> None:
+        if not self._settings.jira_create_enabled:
+            return
         if not self._settings.jira_end_field:
             log.info(
                 "jira.end_time.skipped_not_configured",
@@ -345,6 +366,8 @@ class JiraClient(AsyncApiClient):
         ended_at: datetime | None = None,
     ) -> None:
         """Set the "Валидность" field to an arbitrary option value."""
+        if not self._settings.jira_create_enabled:
+            return
         field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         option_payload = await self._get_option_payload(field_id, option_value)
         end_field_id = (
@@ -374,6 +397,8 @@ class JiraClient(AsyncApiClient):
         )
 
     async def set_description(self, issue_key: str, description: str) -> None:
+        if not self._settings.jira_create_enabled:
+            return
         payload = {"fields": {"description": description}}
         log.info(
             "jira.description.payload_prepared",
@@ -405,6 +430,8 @@ class JiraClient(AsyncApiClient):
         )
 
     async def add_comment(self, issue_key: str, body: str) -> None:
+        if not self._settings.jira_create_enabled:
+            return
         payload = {"body": body}
         await self._request(
             "POST",
@@ -416,6 +443,8 @@ class JiraClient(AsyncApiClient):
         )
 
     async def transition_issue(self, issue_key: str, transition_id: str) -> None:
+        if not self._settings.jira_create_enabled:
+            return
         await self._request(
             "POST",
             self._api_path(f"issue/{issue_key}/transitions"),
