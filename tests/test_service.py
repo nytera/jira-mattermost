@@ -1116,6 +1116,22 @@ async def test_unknown_reaction_is_ignored(service):
 
 
 @pytest.mark.asyncio
+async def test_checkmark_in_alert_channel_creates_no_issue(service):
+    # A checkmark belongs to the incident channel; in the alert channel it must be
+    # ignored and must NOT create a Jira issue as a side effect.
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="v", emoji_name="white_check_mark", create_at=1)
+    )
+
+    assert result.status == "ignored"
+    assert service.jira.created_payloads == []
+    assert service.repository.get_by_post_id(post.id) is None
+
+
+@pytest.mark.asyncio
 async def test_replies_in_alert_thread_when_issue_created(service):
     post = make_alert()
     service.mattermost.posts[post.id] = post
@@ -2825,6 +2841,17 @@ async def test_total_resolution_failure_is_fail_open(settings):
     await service.resolve_authorized_users()
 
     # Fail-open: gate disabled, everyone acts (network isolation is the boundary).
+    assert service._authorization_enforced is False
+    assert service._is_authorized("anyone") is True
+
+
+@pytest.mark.asyncio
+async def test_no_usernames_resolved_is_fail_open(settings):
+    # Every configured login is a typo -> Mattermost returns {} (no ApiError).
+    service = _authorized_service(settings, ("typo1", "typo2"), {})
+    await service.resolve_authorized_users()
+
+    # Must fail open (act on everyone), not lock the whole team out.
     assert service._authorization_enforced is False
     assert service._is_authorized("anyone") is True
 

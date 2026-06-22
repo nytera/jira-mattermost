@@ -216,6 +216,13 @@ class IncidentBotService:
                 error=str(exc),
             )
             return
+        if not resolved:
+            # No login resolved at all (every name typo'd, or an empty response):
+            # treat like total failure and fail open rather than locking everyone out.
+            self._authorized_user_ids = frozenset()
+            self._authorization_enforced = False
+            log.warning("authorized_users.none_resolved_fail_open", requested=usernames)
+            return
         unresolved = [name for name in usernames if name not in resolved]
         if unresolved:
             log.warning(
@@ -413,6 +420,13 @@ class IncidentBotService:
                 reacted_by_user_id=reaction.user_id,
                 ended_at=datetime_from_mattermost_ms(reaction.create_at) or backend_now(),
                 source="reaction",
+            )
+        if is_incident_end:
+            # A checkmark anywhere but an incident-thread root is not actionable; bail
+            # before the alert-channel path below would create a Jira issue for it.
+            return ConfirmationResult(
+                status=ConfirmationStatus.IGNORED,
+                message="Reaction ignored: checkmark only handled on incident thread roots.",
             )
 
         if post.channel_id != self.settings.mattermost_alert_channel_id:
@@ -959,7 +973,13 @@ class IncidentBotService:
             source=source,
             existing_ticket=ticket,
         )
-        if result.status == ConfirmationStatus.INCIDENT_ENDED:
+        # Turn the title green once the incident has ended, even if the postmortem
+        # itself failed — the end time is already set in Jira, so leaving it red
+        # would misrepresent a closed incident.
+        ended = result.status == ConfirmationStatus.INCIDENT_ENDED or (
+            end_result is not None and end_result.status == ConfirmationStatus.INCIDENT_ENDED
+        )
+        if ended:
             await self._mark_incident_post_completed(post.id)
         return result
 
@@ -983,6 +1003,8 @@ class IncidentBotService:
             if not isinstance(attachments, list) or not attachments:
                 return
             info_block = attachments[0]
+            if not isinstance(info_block, dict):
+                return
             new_text = mark_incident_message_completed(info_block.get("text", ""))
             if new_text == info_block.get("text", ""):
                 return
