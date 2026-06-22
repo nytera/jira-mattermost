@@ -285,7 +285,9 @@ class IncidentBotService:
         await self._post_incident_thread_reply(
             post.id,
             channel_id=post.channel_id,
-            message="",
+            # The duty mention goes in the message text (above the card) so the
+            # @group ping actually fires — attachment text does not notify.
+            message=self.settings.mattermost_duty_mention or "",
             event="mattermost.incident_thread.controls_published",
             props={
                 "attachments": [

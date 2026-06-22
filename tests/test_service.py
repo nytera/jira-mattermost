@@ -2915,6 +2915,26 @@ async def test_manual_incident_no_controls_without_public_url(settings):
 
 
 @pytest.mark.asyncio
+async def test_manual_incident_card_pings_duty(settings):
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            mattermost_duty_mention=":look: @sre-ads-duty",
+        )
+    )
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_manual_incident_post(post)
+
+    card = next(c for c in service.mattermost.created_posts if c["root_id"] == post.id)
+    # The mention lives in the message text (renders above the card) so the ping fires.
+    assert card["message"] == ":look: @sre-ads-duty"
+    assert card["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
+
+
+@pytest.mark.asyncio
 async def test_incident_create_task_creates_jira_and_updates_card(settings):
     service = _incident_service(settings)
     post = _manual_post()

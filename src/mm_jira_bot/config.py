@@ -104,6 +104,7 @@ class Settings:
     mattermost_false_incident_reaction_name: str = "man_gesturing_no"
     mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
     mattermost_authorized_usernames: tuple[str, ...] = ()
+    mattermost_duty_mention: str | None = None
     log_level: str = "INFO"
     log_format: str = "json"
     api_retry_attempts: int = 4
@@ -163,6 +164,7 @@ class Settings:
                 "MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME", "arrows_counterclockwise"
             ),
             mattermost_authorized_usernames=_csv_env("MATTERMOST_AUTHORIZED_USERNAMES"),
+            mattermost_duty_mention=_env("MATTERMOST_DUTY_MENTION"),
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),
