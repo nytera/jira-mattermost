@@ -172,6 +172,28 @@ an unmapped manual incident thread root post creates a Jira issue with a
 PM-template description, but it does not set the alert-only source/is-crit-alert
 fields. Checkmarks on incident thread replies are ignored.
 
+### Manual incidents: button card (incident channel)
+
+Alongside the checkmark, a button-driven flow handles incidents typed **directly**
+in `MATTERMOST_INCIDENT_CHANNEL_ID` (needs `SERVICE_PUBLIC_URL`). The WS posted
+handler routes incident-channel posts to `handle_manual_incident_post`: for every
+**root** post by a real user (not a bot — filtered by `_is_bot_post`, which checks
+`props.from_bot` / `props.from_webhook` and `MATTERMOST_BOT_USER_ID`) it pre-creates
+the ticket row via `create_or_get_incident_thread` (idempotent) and posts a
+"➕ Создать задачу" card. No Jira issue yet. The card's controls carry
+`context.source = "incident"` + `incident_post_id`, so `handle_alert_action` branches
+early to `handle_incident_action` (keyed by `incident_post_id`, skips the alert-channel
+checks). Actions: `create_task` → `create_postmortem_issue` (no alert fields) and the
+action response's `update` payload swaps the card for the controls (validity menu,
+"🏁 Завершение инцидента", "📝 Саммари"); `validity` → `apply_validity_label`;
+`end_incident` → reuses `handle_incident_checkmark` (full PM); `summary` →
+`generate_thread_summary` (light). The checkmark flow stays available in parallel.
+
+Validity and confirmation are **independent axes**: `_ensure_postmortem_jira_issue`
+only stamps `Валидный` as a default when `ticket.validity_label is None`, so an
+explicit `Ложный`/`Ожидаемый` survives the postmortem/end step (manual *and*
+confirmed paths).
+
 ### Persistence & timezone
 
 `init_db()` runs `Base.metadata.create_all` at startup and applies small

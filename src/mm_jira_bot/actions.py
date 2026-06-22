@@ -11,6 +11,13 @@ ACTION_EXPECTED = "expected"
 ACTION_INCIDENT = "incident"
 ACTION_SUMMARY = "summary"
 ACTION_FEEDBACK = "feedback"
+# Manual-incident controls (incident channel). create_task creates the Jira
+# issue on demand; end_incident runs the full postmortem/closure.
+ACTION_CREATE_TASK = "create_task"
+ACTION_END_INCIDENT = "end_incident"
+# Marks an action context as coming from the incident-channel card so dispatch
+# keys by the incident root post id instead of the alert post id.
+ACTION_SOURCE_INCIDENT = "incident"
 
 ACTION_CALLBACK_PATH = "/mattermost/actions/alert"
 FEEDBACK_DIALOG_CALLBACK_PATH = "/mattermost/dialogs/feedback"
@@ -18,6 +25,8 @@ FEEDBACK_DIALOG_CALLBACK_PATH = "/mattermost/dialogs/feedback"
 ACTION_ATTACHMENT_COLOR = "#3B82F6"
 # Muted gray accent for the feedback block below.
 FEEDBACK_ATTACHMENT_COLOR = "#4B5563"
+# Amber accent for the "create task?" prompt on a manual incident post.
+INCIDENT_CREATE_ATTACHMENT_COLOR = "#F59E0B"
 # A blank line (the zero-width space keeps Mattermost from trimming it) that
 # adds a little vertical spacing between the notice and the controls below.
 CONTROLS_SPACER = "\n​"
@@ -53,6 +62,11 @@ PRIMARY_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
 )
 FEEDBACK_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
     AlertActionButton(ACTION_FEEDBACK, "💬 Обратная связь по алерту", style="default"),
+)
+# Buttons under the validity menu on the manual-incident controls card.
+INCIDENT_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
+    AlertActionButton(ACTION_END_INCIDENT, "🏁 Завершение инцидента", style="primary"),
+    AlertActionButton(ACTION_SUMMARY, "📝 Саммари", style="default"),
 )
 
 
@@ -135,4 +149,80 @@ def build_alert_feedback_attachment(
         "fallback": "Обратная связь по алерту",
         "color": FEEDBACK_ATTACHMENT_COLOR,
         "actions": actions,
+    }
+
+
+def _incident_integration(action: str, *, incident_post_id: str, callback_url: str) -> dict:
+    """Callback envelope for the incident-channel card; keyed by the incident post."""
+    return {
+        "url": callback_url,
+        "context": {
+            "action": action,
+            "source": ACTION_SOURCE_INCIDENT,
+            "incident_post_id": incident_post_id,
+        },
+    }
+
+
+def build_incident_create_attachment(*, incident_post_id: str, callback_url: str) -> dict:
+    """First state of the manual-incident card: a single "Создать задачу" button.
+
+    No Jira issue exists yet; the issue and the full controls appear after the
+    click (handled by replacing this attachment in the action response)."""
+    return {
+        "fallback": "Завести инцидент",
+        "color": INCIDENT_CREATE_ATTACHMENT_COLOR,
+        "text": "**Завести инцидент по этому сообщению?**",
+        "actions": [
+            {
+                "id": ACTION_CREATE_TASK,
+                "name": "➕ Создать задачу",
+                "type": "button",
+                "style": "primary",
+                "integration": _incident_integration(
+                    ACTION_CREATE_TASK,
+                    incident_post_id=incident_post_id,
+                    callback_url=callback_url,
+                ),
+            }
+        ],
+    }
+
+
+def build_incident_controls_attachment(
+    *,
+    incident_post_id: str,
+    callback_url: str,
+    issue_key: str,
+    issue_url: str | None,
+) -> dict:
+    """Second state: link to the Jira issue, the validity menu, and the
+    "Завершение инцидента" / "Саммари" buttons."""
+    issue_text = f"[{issue_key}]({issue_url})" if issue_url else issue_key
+    validity_select = {
+        "id": ACTION_VALIDITY,
+        "name": "Выбрать валидность ▼",
+        "type": "select",
+        "integration": _incident_integration(
+            ACTION_VALIDITY, incident_post_id=incident_post_id, callback_url=callback_url
+        ),
+        "options": [{"text": option.text, "value": option.value} for option in VALIDITY_OPTIONS],
+    }
+    buttons = [
+        {
+            "id": button.id,
+            "name": button.name,
+            "type": "button",
+            **({"style": button.style} if button.style else {}),
+            "integration": _incident_integration(
+                button.id, incident_post_id=incident_post_id, callback_url=callback_url
+            ),
+        }
+        for button in INCIDENT_ACTION_BUTTONS
+    ]
+    return {
+        "fallback": "Управление инцидентом",
+        "color": ACTION_ATTACHMENT_COLOR,
+        "text": f"**Инцидент: задача {issue_text}**{CONTROLS_SPACER}",
+        "actions": [validity_select, *buttons],
     }

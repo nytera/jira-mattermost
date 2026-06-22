@@ -8,16 +8,21 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from mm_jira_bot.actions import (
+    ACTION_CREATE_TASK,
+    ACTION_END_INCIDENT,
     ACTION_EXPECTED,
     ACTION_FALSE,
     ACTION_FEEDBACK,
     ACTION_INCIDENT,
+    ACTION_SOURCE_INCIDENT,
     ACTION_SUMMARY,
     ACTION_VALID,
     ACTION_VALIDITY,
     alert_action_callback_url,
     build_alert_controls_attachment,
     build_alert_feedback_attachment,
+    build_incident_controls_attachment,
+    build_incident_create_attachment,
     feedback_dialog_callback_url,
 )
 from mm_jira_bot.config import Settings
@@ -90,9 +95,15 @@ class CommandResponse:
 
 @dataclass(frozen=True)
 class ActionResult:
-    """Ephemeral feedback shown to the user who clicked an alert button."""
+    """Ephemeral feedback shown to the user who clicked an alert button.
+
+    ``update_attachments``, when set, replaces the originating post's attachments
+    via the Mattermost interactive-action ``update`` response (used to swap the
+    "Создать задачу" prompt for the full controls card after task creation).
+    """
 
     message: str
+    update_attachments: list[dict] | None = None
 
 
 def _validity_action_message(result: ConfirmationResult, validity_label: str) -> str:
@@ -113,6 +124,14 @@ def _incident_action_message(result: ConfirmationResult) -> str:
         ConfirmationStatus.ERROR: ("Произошла ошибка при подтверждении, бот повторит позже."),
         ConfirmationStatus.NOT_FOUND: ("Не нашёл связку с Jira для этого сообщения."),
     }.get(result.status, result.message)
+
+
+def _incident_end_message(result: ConfirmationResult) -> str:
+    if result.status == ConfirmationStatus.INCIDENT_ENDED:
+        return "Инцидент завершён 🏁"
+    if result.status == ConfirmationStatus.ERROR:
+        return "Не удалось завершить инцидент, попробуйте ещё раз."
+    return result.message
 
 
 @dataclass(frozen=True)
@@ -215,12 +234,67 @@ class IncidentBotService:
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
         if posted:
-            await self.handle_alert_post(posted)
+            if posted.channel_id == self.settings.mattermost_incident_channel_id:
+                await self.handle_manual_incident_post(posted)
+            else:
+                await self.handle_alert_post(posted)
             return
 
         reaction = parse_reaction_event(event)
         if reaction:
             await self.handle_reaction(reaction)
+
+    def _is_bot_post(self, post: MattermostPost) -> bool:
+        """Posts authored by our bot or by any integration/webhook.
+
+        Mattermost marks bot-account posts with ``props.from_bot`` and incoming
+        webhook posts with ``props.from_webhook`` (both string ``"true"``); we
+        also exclude our own bot user id.
+        """
+        if post.user_id == self.settings.mattermost_bot_user_id:
+            return True
+        props = post.props or {}
+        return props.get("from_bot") == "true" or props.get("from_webhook") == "true"
+
+    async def handle_manual_incident_post(self, post: MattermostPost) -> None:
+        """A human's root post in the incident channel: offer a "Создать задачу" card.
+
+        Only root posts from real users (no bots/webhooks) qualify. The Jira
+        issue is not created here — it is created when someone clicks the button.
+        The controls need an absolute callback URL, so without SERVICE_PUBLIC_URL
+        we do nothing and leave the checkmark flow as the fallback. Idempotent:
+        the controls reply is posted once, guarded by the unique ticket row.
+        """
+        if post.channel_id != self.settings.mattermost_incident_channel_id:
+            return
+        if post.root_id:  # only channel root posts, not thread replies
+            return
+        if self._is_bot_post(post):
+            return
+        if not self.settings.service_public_url:
+            return
+        channel_name = post.channel_name or await self.mattermost.get_channel_name(post.channel_id)
+        _ticket, created = self.repository.create_or_get_incident_thread(
+            post,
+            message_url=self.mattermost.permalink(post.id),
+            channel_name=channel_name,
+        )
+        if not created:
+            return
+        callback_url = alert_action_callback_url(self.settings.service_public_url)
+        await self._post_incident_thread_reply(
+            post.id,
+            channel_id=post.channel_id,
+            message="",
+            event="mattermost.incident_thread.controls_published",
+            props={
+                "attachments": [
+                    build_incident_create_attachment(
+                        incident_post_id=post.id, callback_url=callback_url
+                    )
+                ]
+            },
+        )
 
     async def handle_alert_post(self, post: MattermostPost) -> AlertTicket | None:
         if post.channel_id != self.settings.mattermost_alert_channel_id:
@@ -411,26 +485,39 @@ class IncidentBotService:
         user_id: str,
         selected_option: str = "",
         trigger_id: str = "",
+        source: str = "alert",
+        incident_post_id: str = "",
     ) -> ActionResult:
+        acted_post_id = incident_post_id if source == ACTION_SOURCE_INCIDENT else alert_post_id
         log.info(
             "mattermost.action.received",
             action=action,
             selected_option=selected_option,
             trigger_id=trigger_id,
-            mattermost_post_id=alert_post_id,
+            mattermost_post_id=acted_post_id,
+            source=source,
             user_id=user_id,
         )
-        if not alert_post_id:
-            return ActionResult(message="Не указан алерт для действия.")
         # Feedback is open to everyone; all other actions require authorization.
         if action != ACTION_FEEDBACK and not self._is_authorized(user_id):
             log.info(
                 "mattermost.action.skipped_unauthorized",
                 action=action,
-                mattermost_post_id=alert_post_id,
+                source=source,
                 user_id=user_id,
             )
             return ActionResult(message="Недостаточно прав для этого действия.")
+        if source == ACTION_SOURCE_INCIDENT:
+            if not incident_post_id:
+                return ActionResult(message="Не указан инцидент для действия.")
+            return await self.handle_incident_action(
+                action=action,
+                incident_post_id=incident_post_id,
+                user_id=user_id,
+                selected_option=selected_option,
+            )
+        if not alert_post_id:
+            return ActionResult(message="Не указан алерт для действия.")
         try:
             post = await self.mattermost.get_post(alert_post_id)
         except ApiError as exc:
@@ -488,6 +575,124 @@ class IncidentBotService:
             alert_post_id, validity_label=validity_label, source="action"
         )
         return ActionResult(message=_validity_action_message(result, validity_label))
+
+    async def handle_incident_action(
+        self,
+        *,
+        action: str,
+        incident_post_id: str,
+        user_id: str,
+        selected_option: str = "",
+    ) -> ActionResult:
+        """Dispatch a click from the manual-incident card (incident channel).
+
+        Keyed by the incident root post id (the manual ticket's own
+        ``mattermost_post_id``), so it never touches the alert-channel paths.
+        """
+        if action == ACTION_CREATE_TASK:
+            return await self._incident_create_task(incident_post_id, user_id=user_id)
+
+        try:
+            post = await self.mattermost.get_post(incident_post_id)
+        except ApiError as exc:
+            log.error(
+                "mattermost.incident_action.post_lookup_failed",
+                mattermost_post_id=incident_post_id,
+                action=action,
+                error=str(exc),
+            )
+            return ActionResult(message="Не удалось прочитать сообщение инцидента.")
+
+        if action == ACTION_SUMMARY:
+            return await self.generate_thread_summary(
+                post, requested_by_user_id=user_id, source="incident_action"
+            )
+
+        if action == ACTION_END_INCIDENT:
+            result = await self.handle_incident_checkmark(
+                post,
+                reacted_by_user_id=user_id,
+                ended_at=backend_now(),
+                source="incident_button",
+            )
+            return ActionResult(message=_incident_end_message(result))
+
+        if action == ACTION_VALIDITY:
+            validity_label = {
+                ACTION_VALID: VALID_INCIDENT_CONFIRMED_VALUE,
+                ACTION_FALSE: VALID_INCIDENT_FALSE_VALUE,
+                ACTION_EXPECTED: VALID_INCIDENT_EXPECTED_VALUE,
+            }.get(selected_option)
+            if validity_label is None:
+                return ActionResult(message="Не выбрана «Валидность».")
+            result = await self.apply_validity_label(
+                incident_post_id, validity_label=validity_label, source="incident_action"
+            )
+            return ActionResult(message=_validity_action_message(result, validity_label))
+
+        log.info(
+            "mattermost.incident_action.unknown",
+            action=action,
+            mattermost_post_id=incident_post_id,
+        )
+        return ActionResult(message="Неизвестное действие.")
+
+    async def _incident_create_task(self, incident_post_id: str, *, user_id: str) -> ActionResult:
+        ticket = self.repository.get_by_incident_post_id(incident_post_id)
+        if ticket is None:
+            try:
+                post = await self.mattermost.get_post(incident_post_id)
+            except ApiError:
+                return ActionResult(message="Не удалось прочитать сообщение инцидента.")
+            channel_name = post.channel_name or await self.mattermost.get_channel_name(
+                post.channel_id
+            )
+            ticket, _ = self.repository.create_or_get_incident_thread(
+                post,
+                message_url=self.mattermost.permalink(post.id),
+                channel_name=channel_name,
+            )
+
+        if ticket.jira_issue_key is None:
+            summary = (
+                ticket.mattermost_alert_title
+                or extract_alert_title(ticket.mattermost_message_text or "")
+                or "Инцидент"
+            )
+            description = (
+                "Инцидент заведён вручную из Mattermost.\n\n"
+                f"Исходное сообщение: {ticket.mattermost_message_url}"
+            )
+            try:
+                issue = await self.jira.create_postmortem_issue(
+                    ticket_to_post(ticket),
+                    message_url=ticket.mattermost_message_url,
+                    channel_name=ticket.mattermost_channel_name,
+                    summary=summary,
+                    description=description,
+                )
+            except ApiError as exc:
+                self.repository.set_last_error(ticket.mattermost_post_id, str(exc))
+                log.error(
+                    "incident.create_task.failed",
+                    mattermost_post_id=incident_post_id,
+                    error=str(exc),
+                )
+                return ActionResult(message="Не удалось создать задачу, попробуйте ещё раз.")
+            self.repository.attach_jira_issue(ticket.mattermost_post_id, issue.key, issue.url)
+            ticket = self.repository.get_by_post_id(ticket.mattermost_post_id) or ticket
+
+        callback_url = alert_action_callback_url(self.settings.service_public_url)
+        attachment = build_incident_controls_attachment(
+            incident_post_id=incident_post_id,
+            callback_url=callback_url,
+            issue_key=ticket.jira_issue_key,
+            issue_url=ticket.jira_issue_url,
+        )
+        return ActionResult(
+            message=f"Создана задача {ticket.jira_issue_key}.",
+            update_attachments=[attachment],
+        )
 
     async def open_feedback_dialog(
         self,
@@ -832,7 +1037,11 @@ class IncidentBotService:
     ) -> AlertTicket:
         if ticket.jira_issue_key is not None:
             if not ticket.valid_incident:
-                await self.jira.set_valid_incident(ticket.jira_issue_key, True)
+                # Validity and confirmation are independent axes: only default to
+                # Валидный when nobody picked a validity. An explicit Ложный/
+                # Ожидаемый (validity_label) must survive the postmortem/end step.
+                if ticket.validity_label is None:
+                    await self.jira.set_valid_incident(ticket.jira_issue_key, True)
                 await self.jira.set_end_time(ticket.jira_issue_key, ended_at)
                 self.repository.mark_confirmed(
                     ticket.mattermost_post_id,
@@ -853,7 +1062,9 @@ class IncidentBotService:
             issue.key,
             issue.url,
         )
-        await self.jira.set_valid_incident(issue.key, True)
+        # Default to Валидный only when no explicit validity was chosen.
+        if ticket.validity_label is None:
+            await self.jira.set_valid_incident(issue.key, True)
         await self.jira.set_end_time(issue.key, ended_at)
         if self.settings.jira_confirmed_status_id:
             try:

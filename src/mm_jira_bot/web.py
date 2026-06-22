@@ -287,8 +287,15 @@ def create_app(
             user_id=payload.get("user_id", ""),
             selected_option=context.get("selected_option") or payload.get("selected_option", ""),
             trigger_id=payload.get("trigger_id", ""),
+            source=context.get("source", "alert"),
+            incident_post_id=context.get("incident_post_id", ""),
         )
-        return JSONResponse({"ephemeral_text": result.message})
+        body: dict = {"ephemeral_text": result.message}
+        if result.update_attachments is not None:
+            # Replace the originating post's controls (e.g. swap "Создать задачу"
+            # for the full card) via the Mattermost interactive-action update.
+            body["update"] = {"props": {"attachments": result.update_attachments}}
+        return JSONResponse(body)
 
     @app.post("/mattermost/dialogs/feedback")
     async def feedback_dialog(request: Request) -> JSONResponse:

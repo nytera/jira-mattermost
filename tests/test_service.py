@@ -2750,3 +2750,310 @@ async def test_total_resolution_failure_is_fail_open(settings):
     # Fail-open: gate disabled, everyone acts (network isolation is the boundary).
     assert service._authorization_enforced is False
     assert service._is_authorized("anyone") is True
+
+
+@pytest.mark.asyncio
+async def test_postmortem_checkmark_preserves_false_validity(service):
+    """A confirmed incident marked Ложный keeps that validity after the PM checkmark.
+
+    Validity (the Jira field value) and confirmation (valid_incident) are
+    independent axes: the checkmark sets end-time + generates the postmortem but
+    must not re-stamp Валидный over an explicit Ложный.
+    """
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    # Confirm as incident (posts to incident channel, stamps Валидный once).
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    # Turns out false: set validity to Ложный via the lightweight reaction.
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id, user_id="validator", emoji_name="man_gesturing_no", create_at=2
+        )
+    )
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+
+    ticket = service.repository.get_by_post_id(post.id)
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_200_000,
+        )
+    )
+
+    assert result.status == "incident_ended"
+    # Postmortem ran (end-time set, report commented) ...
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_200_000))]
+    assert len(service.llm.prompts) == 1
+    # ... but validity was NOT re-stamped Валидный: set_valid_incident stays the
+    # single confirm-time call, and the field value remains Ложный.
+    assert service.jira.valid_updates == [("OPS-1", True)]
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+
+
+def _manual_incident_ticket(service, *, issue_key="OPS-9", validity_label=None):
+    root = MattermostPost(
+        id="incidentroot00000000000001",
+        channel_id="incidents-channel",
+        user_id="human-user",
+        message="Лежим в проде, 500-ки на /pay",
+        create_at=1_700_000_000_000,
+        channel_name="incidents",
+    )
+    service.repository.create_or_get_incident_thread(
+        root, message_url=service.mattermost.permalink(root.id), channel_name="incidents"
+    )
+    service.repository.attach_jira_issue(
+        root.id, issue_key, f"https://jira.example.com/browse/{issue_key}"
+    )
+    if validity_label is not None:
+        service.repository.set_validity_label(root.id, validity_label)
+    return service.repository.get_by_post_id(root.id)
+
+
+@pytest.mark.asyncio
+async def test_postmortem_preserves_explicit_false_validity_on_manual_ticket(service):
+    """Manual incident (valid_incident stays False) marked Ложный keeps it after end/PM."""
+    ticket = _manual_incident_ticket(service, validity_label="Ложный")
+    assert ticket.valid_incident is False
+
+    await service._ensure_postmortem_jira_issue(
+        ticket,
+        summary="summary",
+        description="description",
+        ended_at=datetime_from_mattermost_ms(1_700_000_300_000),
+        reacted_by_user_id="closer",
+    )
+
+    # No Валидный stamp; end-time still set.
+    assert service.jira.valid_updates == []
+    assert service.jira.end_updates == [("OPS-9", datetime_from_mattermost_ms(1_700_000_300_000))]
+
+
+@pytest.mark.asyncio
+async def test_postmortem_defaults_to_valid_when_no_validity_chosen(service):
+    """Without an explicit validity, the end/PM step still defaults to Валидный."""
+    ticket = _manual_incident_ticket(service, validity_label=None)
+
+    await service._ensure_postmortem_jira_issue(
+        ticket,
+        summary="summary",
+        description="description",
+        ended_at=datetime_from_mattermost_ms(1_700_000_300_000),
+        reacted_by_user_id="closer",
+    )
+
+    assert service.jira.valid_updates == [("OPS-9", True)]
+
+
+def _incident_service(settings):
+    return _build_service(replace(settings, service_public_url="https://bot.example.com"))
+
+
+def _manual_post(
+    post_id="incidentroot00000000000002", *, user_id="human", props=None, root_id=None
+):
+    return MattermostPost(
+        id=post_id,
+        channel_id="incidents-channel",
+        user_id=user_id,
+        message="Лежим в проде, 500 на /pay",
+        create_at=1_700_000_000_000,
+        channel_name="incidents",
+        root_id=root_id,
+        props=props,
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_incident_post_offers_create_button(settings):
+    service = _incident_service(settings)
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_manual_incident_post(post)
+
+    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
+    assert len(replies) == 1
+    attachments = replies[0]["props"]["attachments"]
+    assert attachments[0]["actions"][0]["id"] == "create_task"
+
+    # Idempotent: a redelivered event does not post a second card.
+    await service.handle_manual_incident_post(post)
+    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
+    assert len(replies) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "post",
+    [
+        _manual_post(user_id="bot-user"),
+        _manual_post(props={"from_bot": "true"}),
+        _manual_post(props={"from_webhook": "true"}),
+        _manual_post(root_id="someroottttttttttttttttttt"),
+    ],
+)
+async def test_manual_incident_ignores_bots_and_replies(settings, post):
+    service = _incident_service(settings)
+    await service.handle_manual_incident_post(post)
+    assert service.mattermost.created_posts == []
+
+
+@pytest.mark.asyncio
+async def test_manual_incident_no_controls_without_public_url(settings):
+    service = _build_service(settings)
+    post = _manual_post()
+    await service.handle_manual_incident_post(post)
+    assert service.mattermost.created_posts == []
+
+
+@pytest.mark.asyncio
+async def test_incident_create_task_creates_jira_and_updates_card(settings):
+    service = _incident_service(settings)
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    await service.handle_manual_incident_post(post)
+
+    result = await service.handle_incident_action(
+        action="create_task", incident_post_id=post.id, user_id="opener"
+    )
+
+    ticket = service.repository.get_by_incident_post_id(post.id)
+    assert ticket.jira_issue_key == "OPS-1"
+    assert result.update_attachments is not None
+    ids = [a["id"] for a in result.update_attachments[0]["actions"]]
+    assert ids == ["validity", "end_incident", "summary"]
+
+
+@pytest.mark.asyncio
+async def test_manual_incident_false_then_end_preserves_validity(settings):
+    """Manual flow: create task → Ложный → Завершение keeps Ложный and runs the PM."""
+    service = _incident_service(settings)
+    service.llm = FakeLlmClient()
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    await service.handle_manual_incident_post(post)
+    await service.handle_incident_action(
+        action="create_task", incident_post_id=post.id, user_id="opener"
+    )
+
+    await service.handle_incident_action(
+        action="validity", incident_post_id=post.id, user_id="closer", selected_option="false"
+    )
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+
+    result = await service.handle_incident_action(
+        action="end_incident", incident_post_id=post.id, user_id="closer"
+    )
+
+    assert "завершён" in result.message.lower()
+    assert len(service.llm.prompts) == 1
+    # Postmortem set end-time but never re-stamped Валидный over the explicit Ложный.
+    assert service.jira.valid_updates == []
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+    assert [key for key, _ in service.jira.end_updates] == ["OPS-1"]
+
+
+@pytest.mark.asyncio
+async def test_incident_summary_button_posts_light_summary(settings):
+    service = _incident_service(settings)
+    service.llm = FakeLlmClient()
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    service.repository.create_or_get_incident_thread(
+        post, message_url=service.mattermost.permalink(post.id), channel_name="incidents"
+    )
+
+    result = await service.handle_incident_action(
+        action="summary", incident_post_id=post.id, user_id="closer"
+    )
+
+    assert len(service.llm.summary_prompts) == 1
+    assert "опубликовано" in result.message
+    # Light summary does not touch Jira (no PM comment).
+    assert service.jira.generic_comments == []
+
+
+def test_endpoint_routes_incident_create_task(settings):
+    service = _build_service(replace(settings, service_public_url="https://bot.example.com"))
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    service.repository.create_or_get_incident_thread(
+        post, message_url=service.mattermost.permalink(post.id), channel_name="incidents"
+    )
+
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/mattermost/actions/alert",
+            json={
+                "user_id": "opener",
+                "context": {
+                    "action": "create_task",
+                    "source": "incident",
+                    "incident_post_id": post.id,
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["update"]["props"]["attachments"][0]["actions"]
+    assert service.repository.get_by_incident_post_id(post.id).jira_issue_key == "OPS-1"
+
+
+@pytest.mark.asyncio
+async def test_pending_work_ignores_uncreated_manual_card(settings):
+    """The pre-created card row stays keyless: the background loop must not
+    auto-create a Jira issue for it (that would defeat the button gating)."""
+    service = _incident_service(settings)
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    await service.handle_manual_incident_post(post)
+
+    await service.process_pending_work()
+
+    ticket = service.repository.get_by_incident_post_id(post.id)
+    assert ticket.jira_issue_key is None
+    assert service.jira.created_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
+    service = _incident_service(settings)
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_websocket_event(
+        {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(
+                    {
+                        "id": post.id,
+                        "channel_id": "incidents-channel",
+                        "user_id": "human",
+                        "message": post.message,
+                        "create_at": post.create_at,
+                        "root_id": "",
+                    }
+                ),
+                "channel_name": "incidents",
+            },
+        }
+    )
+
+    cards = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == post.id and (c["props"] or {}).get("attachments")
+    ]
+    assert len(cards) == 1
+    assert cards[0]["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
