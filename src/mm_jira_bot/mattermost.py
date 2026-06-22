@@ -182,6 +182,35 @@ class MattermostClient(AsyncApiClient):
             mattermost_channel_id=channel_id,
         )
 
+    async def get_user_ids_by_usernames(self, usernames: list[str]) -> dict[str, str]:
+        """Resolve Mattermost usernames to user ids.
+
+        Mattermost returns only the users it finds and silently omits unknown
+        usernames, so the caller can diff the request against the returned keys
+        to detect typos. Returns ``{username: user_id}``.
+        """
+        if not usernames:
+            return {}
+
+        def parse(response: httpx.Response) -> dict[str, str]:
+            data = response.json()
+            if not isinstance(data, list):
+                return {}
+            resolved: dict[str, str] = {}
+            for item in data:
+                if isinstance(item, dict) and item.get("username") and item.get("id"):
+                    resolved[str(item["username"])] = str(item["id"])
+            return resolved
+
+        return await self._request(
+            "POST",
+            "/api/v4/users/usernames",
+            json=usernames,
+            error_message="Failed to resolve Mattermost usernames",
+            event="mattermost.users_by_usernames",
+            parse=parse,
+        )
+
     async def get_user_display_name(self, user_id: str) -> str:
         return await self._request(
             "GET",

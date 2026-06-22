@@ -162,6 +162,55 @@ class IncidentBotService:
         self.mattermost = mattermost_client
         self.jira = jira_client
         self.llm = llm_client
+        # Allowlist of user ids whose reactions/clicks the bot acts on. Empty +
+        # disabled => act on everyone (backward compatible). Resolved from
+        # MATTERMOST_AUTHORIZED_USERNAMES at startup via resolve_authorized_users.
+        self._authorized_user_ids: frozenset[str] = frozenset()
+        self._authorization_enforced: bool = False
+
+    async def resolve_authorized_users(self) -> None:
+        """Resolve configured usernames to ids and enable the allowlist gate.
+
+        No usernames configured -> the gate stays disabled (act on everyone).
+        Partial resolution (a typo'd login) is logged loudly so the operator
+        sees who was dropped instead of silently locking them out. Total
+        resolution failure is fail-open (loud warning): the action endpoint
+        already relies on network isolation as the real boundary, so bricking
+        incident tooling during a Mattermost hiccup is worse than briefly not
+        enforcing a 5-person filter.
+        """
+        usernames = list(self.settings.mattermost_authorized_usernames)
+        if not usernames:
+            log.info("authorized_users.disabled")
+            return
+        try:
+            resolved = await self.mattermost.get_user_ids_by_usernames(usernames)
+        except ApiError as exc:
+            self._authorized_user_ids = frozenset()
+            self._authorization_enforced = False
+            log.warning(
+                "authorized_users.resolve_failed_fail_open",
+                requested=usernames,
+                error=str(exc),
+            )
+            return
+        unresolved = [name for name in usernames if name not in resolved]
+        if unresolved:
+            log.warning(
+                "authorized_users.unresolved",
+                unresolved=unresolved,
+                resolved=sorted(resolved),
+            )
+        self._authorized_user_ids = frozenset(resolved.values())
+        self._authorization_enforced = True
+        log.info(
+            "authorized_users.enabled",
+            resolved_count=len(self._authorized_user_ids),
+            resolved=sorted(resolved),
+        )
+
+    def _is_authorized(self, user_id: str) -> bool:
+        return not self._authorization_enforced or user_id in self._authorized_user_ids
 
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
@@ -266,6 +315,18 @@ class IncidentBotService:
                 message="Reaction ignored: not configured incident reaction.",
             )
 
+        if not self._is_authorized(reaction.user_id):
+            log.info(
+                "mattermost.reaction.skipped_unauthorized",
+                mattermost_post_id=reaction.post_id,
+                user_id=reaction.user_id,
+                emoji_name=reaction.emoji_name,
+            )
+            return ConfirmationResult(
+                status=ConfirmationStatus.IGNORED,
+                message="Reaction ignored: user is not authorized.",
+            )
+
         post = await self.mattermost.get_post(reaction.post_id)
         if is_incident_end and post.channel_id == self.settings.mattermost_incident_channel_id:
             return await self.handle_incident_checkmark(
@@ -361,6 +422,15 @@ class IncidentBotService:
         )
         if not alert_post_id:
             return ActionResult(message="Не указан алерт для действия.")
+        # Feedback is open to everyone; all other actions require authorization.
+        if action != ACTION_FEEDBACK and not self._is_authorized(user_id):
+            log.info(
+                "mattermost.action.skipped_unauthorized",
+                action=action,
+                mattermost_post_id=alert_post_id,
+                user_id=user_id,
+            )
+            return ActionResult(message="Недостаточно прав для этого действия.")
         try:
             post = await self.mattermost.get_post(alert_post_id)
         except ApiError as exc:
@@ -1039,6 +1109,9 @@ class IncidentBotService:
             user_id=user_id,
             text=text,
         )
+        if not self._is_authorized(user_id):
+            log.info("mattermost.slash_command.skipped_unauthorized", user_id=user_id)
+            return CommandResponse(text="У вас нет прав на эту команду.")
         post_id = parse_post_id_from_text(text)
         if post_id is None:
             return CommandResponse(

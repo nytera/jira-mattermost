@@ -43,6 +43,8 @@ class FakeMattermostClient:
         self.created_posts: list[dict] = []
         self.opened_dialogs: list[dict] = []
         self.display_names: dict[str, str] = {}
+        self.username_to_id: dict[str, str] = {}
+        self.usernames_lookups: list[list[str]] = []
 
     def permalink(self, post_id: str) -> str:
         return f"https://mattermost.example.com/_redirect/pl/{post_id}"
@@ -62,6 +64,12 @@ class FakeMattermostClient:
         if user_id in self.display_names:
             return self.display_names[user_id]
         return f"@{user_id}"
+
+    async def get_user_ids_by_usernames(self, usernames: list[str]) -> dict[str, str]:
+        self.usernames_lookups.append(list(usernames))
+        return {
+            name: self.username_to_id[name] for name in usernames if name in self.username_to_id
+        }
 
     async def create_post(
         self,
@@ -2621,3 +2629,124 @@ def test_feedback_dialog_endpoint_stores_feedback(service, settings):
     feedback = service.repository.list_feedback(post.id)
     assert len(feedback) == 1
     assert feedback[0].message == "Хорошая форма"
+
+
+def _authorized_service(settings, usernames, resolvable):
+    service = _build_service(replace(settings, mattermost_authorized_usernames=usernames))
+    service.mattermost.username_to_id = dict(resolvable)
+    return service
+
+
+@pytest.mark.asyncio
+async def test_authorization_disabled_when_no_usernames_configured(service):
+    await service.resolve_authorized_users()
+
+    assert service._authorization_enforced is False
+    assert service.mattermost.usernames_lookups == []
+    # An arbitrary user can still act (backward compatible allow-all).
+    assert service._is_authorized("anyone") is True
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_reaction_is_honored(settings):
+    service = _authorized_service(settings, ("alice",), {"alice": "u-alice"})
+    await service.resolve_authorized_users()
+    assert service._authorization_enforced is True
+
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="u-alice", emoji_name="incident", create_at=1)
+    )
+
+    assert result.status != "ignored"
+    assert service.jira.valid_updates == [("OPS-1", True)]
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_user_reaction_is_ignored(settings):
+    service = _authorized_service(settings, ("alice",), {"alice": "u-alice"})
+    await service.resolve_authorized_users()
+
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="u-bob", emoji_name="incident", create_at=1)
+    )
+
+    assert result.status == "ignored"
+    assert service.jira.valid_updates == []
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_action_is_blocked(settings):
+    service = _authorized_service(settings, ("alice",), {"alice": "u-alice"})
+    await service.resolve_authorized_users()
+
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    service.jira.valid_updates.clear()
+
+    result = await service.handle_alert_action(
+        action="incident", alert_post_id=post.id, user_id="u-bob"
+    )
+
+    assert "Недостаточно прав" in result.message
+    assert service.jira.valid_updates == []
+
+
+@pytest.mark.asyncio
+async def test_feedback_action_allowed_for_unauthorized_user(settings):
+    service = _build_service(
+        replace(
+            settings,
+            mattermost_authorized_usernames=("alice",),
+            service_public_url="https://bot.example.com",
+        )
+    )
+    service.mattermost.username_to_id = {"alice": "u-alice"}
+    await service.resolve_authorized_users()
+
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.handle_alert_action(
+        action="feedback",
+        alert_post_id=post.id,
+        user_id="u-bob",
+        trigger_id="trigger-1",
+    )
+
+    assert "Открыта форма" in result.message
+    assert len(service.mattermost.opened_dialogs) == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_resolution_keeps_resolved_and_drops_typo(settings):
+    service = _authorized_service(settings, ("alice", "typo"), {"alice": "u-alice"})
+    await service.resolve_authorized_users()
+
+    assert service._authorization_enforced is True
+    assert service._authorized_user_ids == frozenset({"u-alice"})
+    assert service._is_authorized("u-alice") is True
+    assert service._is_authorized("u-typo") is False
+
+
+@pytest.mark.asyncio
+async def test_total_resolution_failure_is_fail_open(settings):
+    service = _authorized_service(settings, ("alice",), {"alice": "u-alice"})
+
+    async def boom(_usernames):
+        raise ApiError("mattermost down", retryable=True)
+
+    service.mattermost.get_user_ids_by_usernames = boom
+    await service.resolve_authorized_users()
+
+    # Fail-open: gate disabled, everyone acts (network isolation is the boundary).
+    assert service._authorization_enforced is False
+    assert service._is_authorized("anyone") is True

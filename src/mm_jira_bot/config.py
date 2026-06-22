@@ -64,6 +64,19 @@ def _first_env(*names: str) -> str | None:
     return None
 
 
+def _csv_env(name: str) -> tuple[str, ...]:
+    """Parse a comma-separated env var into a tuple of trimmed, non-empty items.
+
+    A leading ``@`` (e.g. ``@ivanov``) is stripped so operators can paste
+    Mattermost mentions directly. Empty/unset -> empty tuple.
+    """
+    value = _env(name)
+    if value is None:
+        return ()
+    items = [item.strip().lstrip("@") for item in value.split(",")]
+    return tuple(item for item in items if item)
+
+
 @dataclass(frozen=True)
 class Settings:
     mattermost_url: str
@@ -90,6 +103,7 @@ class Settings:
     service_public_url: str | None = None
     mattermost_false_incident_reaction_name: str = "man_gesturing_no"
     mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
+    mattermost_authorized_usernames: tuple[str, ...] = ()
     log_level: str = "INFO"
     log_format: str = "json"
     api_retry_attempts: int = 4
@@ -148,6 +162,7 @@ class Settings:
             mattermost_expected_incident_reaction_name=_env(
                 "MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME", "arrows_counterclockwise"
             ),
+            mattermost_authorized_usernames=_csv_env("MATTERMOST_AUTHORIZED_USERNAMES"),
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),

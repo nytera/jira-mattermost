@@ -225,6 +225,7 @@ def create_app(
         app.state.owns_clients = owns_clients
         app.state.background_tasks = []
         await run_startup_preflight(service)
+        await service.resolve_authorized_users()
         if settings.enable_backfill_on_startup:
             try:
                 await service.backfill_recent_alerts()

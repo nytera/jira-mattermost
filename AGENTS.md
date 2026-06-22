@@ -117,6 +117,21 @@ row in `alert_feedback` and posts `Получили обратную связь 
 alert thread. The action endpoint returns `ephemeral_text` feedback to the
 clicker.
 
+**Authorized-user allowlist** (optional). `MATTERMOST_AUTHORIZED_USERNAMES`
+(comma-separated logins) restricts which users' reactions/clicks the bot acts
+on. `resolve_authorized_users` (called in the lifespan after preflight) resolves
+the logins to ids via `MattermostClient.get_user_ids_by_usernames`
+(`POST /api/v4/users/usernames`) and enables `_is_authorized`, which gates
+`handle_reaction` (covers the checkmark/postmortem path too), `handle_alert_action`
+(except `feedback`, which stays open to all), and `handle_slash_command`. Empty
+list -> gate disabled (act on everyone). Partial resolution logs the unresolved
+logins; total resolution failure is **fail-open** (the endpoint already relies on
+network isolation, so a Mattermost hiccup must not brick incident tooling).
+
+For a per-channel/per-control behavior matrix (which reaction/button does what,
+where, and whether it is gated), see the "Сводка: что на что влияет" table in
+`README.md` — keep it as the single source of truth instead of duplicating it.
+
 Idempotency keys live in `AlertTicket`: `jira_issue_key`, `incident_post_id`,
 `jira_confirmation_comment_added`, plus `creation_status` /
 `confirmation_status` state machines. Re-delivered events are no-ops.
