@@ -15,9 +15,15 @@ httpx, SQLAlchemy 2.0.
 - `curl http://localhost:8080/healthz`: check the local FastAPI health endpoint.
 - `pytest`: full suite (`asyncio_mode=auto`, `pythonpath=src`).
 - `pytest tests/test_service.py::test_<name>`: run a single test.
+- `pytest --cov=mm_jira_bot --cov-report=term-missing`: suite with coverage report (baseline ~78%).
+- `ruff check src tests`: lint (rules `E,F,I,UP,B,SIM`; config in `pyproject.toml`).
+- `ruff format src tests`: apply formatting (`--check` to verify without writing).
 - `docker compose up --build`: build and run the bot with Postgres.
 
-No linter/formatter is configured.
+Lint/format via `ruff`, coverage via `pytest-cov` (both in the `[test]` extra). `ruff`
+config lives in `pyproject.toml`; `debug_admin.py`, `jira_payload.py`, and
+`postmortem.py` ignore `E501` because they hold long unbreakable literals
+(embedded SPA CSS/HTML/JS and Russian PM templates).
 
 ## Architecture
 
@@ -168,8 +174,9 @@ Match nearby style: four-space indentation, type hints,
 `from __future__ import annotations`, frozen dataclasses for value objects, and
 small modules with explicit responsibilities. Use snake_case for functions,
 variables, and module names; PascalCase for classes. Keep async boundaries clear
-for Mattermost, Jira, and service methods. No formatter or linter is configured,
-so keep diffs focused and consistent with nearby code.
+for Mattermost, Jira, and service methods. Formatting/linting is enforced by
+`ruff` (`ruff format` + `ruff check`, config in `pyproject.toml`, line length
+100); run both before committing and keep diffs focused.
 
 ## Testing Guidelines
 

@@ -16,6 +16,8 @@ dependencies = [
 test = [
   "pytest>=8,<9",
   "pytest-asyncio>=0.24,<2",
+  "pytest-cov>=5,<8",
+  "ruff>=0.6,<1",
 ]
 
 [build-system]
@@ -29,3 +31,21 @@ where = ["src"]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Эти модули содержат длинные неразбиваемые литералы: встроенный CSS/HTML/JS
+# debug-SPA и PM-шаблоны/хронологию инцидента на русском. Перенос строк сломал бы
+# рендеринг/текст, поэтому E501 здесь отключён (формат строк кода обеспечивает ruff format).
+"src/mm_jira_bot/debug_admin.py" = ["E501"]
+"src/mm_jira_bot/jira_payload.py" = ["E501"]
+"src/mm_jira_bot/postmortem.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mm_jira_bot"]
