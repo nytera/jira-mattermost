@@ -186,10 +186,17 @@ def build_incident_create_attachment(*, incident_post_id: str, callback_url: str
     }
 
 
-def build_incident_controls_attachment(*, incident_post_id: str, callback_url: str) -> dict:
+def build_incident_controls_attachment(
+    *,
+    incident_post_id: str,
+    callback_url: str,
+    issue_key: str | None = None,
+    issue_url: str | None = None,
+) -> dict:
     """Management controls: the validity menu and the "Завершить" / "Саммари"
-    buttons. The Jira issue link lives in the main incident message, so the card
-    itself carries no task text — just the controls."""
+    buttons. When ``issue_key`` is given, a "Создана задача: <link>" header is
+    shown above the controls (alert-originated incidents, like the alert card);
+    manual incidents omit it since the task is created from this very card."""
     validity_select = {
         "id": ACTION_VALIDITY,
         "name": "Выбрать валидность ▼",
@@ -211,8 +218,12 @@ def build_incident_controls_attachment(*, incident_post_id: str, callback_url: s
         }
         for button in INCIDENT_ACTION_BUTTONS
     ]
-    return {
+    attachment = {
         "fallback": "Управление инцидентом",
         "color": ACTION_ATTACHMENT_COLOR,
         "actions": [validity_select, *buttons],
     }
+    if issue_key:
+        issue_text = f"[{issue_key}]({issue_url})" if issue_url else issue_key
+        attachment["text"] = f"**Создана задача: {issue_text}**"
+    return attachment

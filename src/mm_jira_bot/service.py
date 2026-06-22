@@ -1898,6 +1898,8 @@ class IncidentBotService:
                         build_incident_controls_attachment(
                             incident_post_id=incident_post.id,
                             callback_url=callback_url,
+                            issue_key=ticket.jira_issue_key,
+                            issue_url=ticket.jira_issue_url,
                         )
                     ]
                 },

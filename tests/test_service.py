@@ -3109,8 +3109,11 @@ async def test_confirmed_alert_incident_gets_controls_card(settings):
         if c["root_id"] == ticket.incident_post_id and (c["props"] or {}).get("attachments")
     ]
     assert len(cards) == 1
-    ids = [a["id"] for a in cards[0]["props"]["attachments"][0]["actions"]]
+    card = cards[0]["props"]["attachments"][0]
+    ids = [a["id"] for a in card["actions"]]
     assert ids == ["validity", "end_incident", "summary"]
+    # Alert-originated card shows the "Создана задача" header like the alert card.
+    assert card["text"] == "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
 
 
 @pytest.mark.asyncio
