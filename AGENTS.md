@@ -189,12 +189,16 @@ action response's `update` payload swaps the card for the controls (validity men
 `end_incident` → reuses `handle_incident_checkmark` (full PM); `summary` →
 `generate_thread_summary` (light). The checkmark flow stays available in parallel.
 
-The incident-channel message title is `### 🔴 Инцидент открыт` while open; when the
-incident is ended (button or checkmark, `INCIDENT_ENDED`),
-`_mark_incident_post_completed` patches it to `### 🟢 Инцидент завершён` via the
-new `MattermostClient.update_post` (`PUT /api/v4/posts/{id}/patch`). Only the
-bot-authored message is edited — for a manual incident the "incident post" is the
-human's own message (`incident_post_id == mattermost_post_id`), so it is skipped.
+The incident details (title, Jira link, alert link, confirmer `@mention`, time)
+render in a **gray attachment block** (`FEEDBACK_ATTACHMENT_COLOR`) placed *above*
+the forwarded alert attachment(s); the post `message` itself is empty. The title
+is the **alert name** (`extract_alert_title`) prefixed with a status circle —
+`##### 🔴 ` while open; when the incident is ended (button or checkmark,
+`INCIDENT_ENDED`), `_mark_incident_post_completed` swaps just the prefix to
+`##### 🟢 ` in the first attachment's text (keeping the alert name) via
+`MattermostClient.update_post` (`PUT /api/v4/posts/{id}/patch`, props). Only the bot-authored message is edited —
+for a manual incident the "incident post" is the human's own message
+(`incident_post_id == mattermost_post_id`), so it is skipped.
 
 Alert-originated incidents get the **same controls** card: when `confirm_incident`
 publishes the incident-channel post, `_publish_incident_message_if_needed` also

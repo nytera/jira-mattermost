@@ -18,6 +18,7 @@ from mm_jira_bot.actions import (
     ACTION_SUMMARY,
     ACTION_VALID,
     ACTION_VALIDITY,
+    FEEDBACK_ATTACHMENT_COLOR,
     alert_action_callback_url,
     build_alert_controls_attachment,
     build_alert_feedback_attachment,
@@ -43,6 +44,7 @@ from mm_jira_bot.formatting import (
     format_thread_validity_changed,
     is_resolved_alert,
     mark_incident_message_completed,
+    mention_from_display,
 )
 from mm_jira_bot.jira import (
     VALID_INCIDENT_CONFIRMED_VALUE,
@@ -926,10 +928,16 @@ class IncidentBotService:
             return
         try:
             post = await self.mattermost.get_post(ticket.incident_post_id)
-            new_message = mark_incident_message_completed(post.message)
-            if new_message == post.message:
+            props = dict(post.props or {})
+            attachments = props.get("attachments")
+            if not isinstance(attachments, list) or not attachments:
                 return
-            await self.mattermost.update_post(ticket.incident_post_id, message=new_message)
+            info_block = attachments[0]
+            new_text = mark_incident_message_completed(info_block.get("text", ""))
+            if new_text == info_block.get("text", ""):
+                return
+            props["attachments"] = [{**info_block, "text": new_text}, *attachments[1:]]
+            await self.mattermost.update_post(ticket.incident_post_id, props=props)
         except ApiError as exc:
             log.warning(
                 "incident.message.complete_update_failed",
@@ -1856,23 +1864,27 @@ class IncidentBotService:
         if ticket.incident_post_id:
             return
         alert_attachments = await self._alert_attachments(ticket)
-        message = format_incident_message(
+        # Incident details go into a gray block above the forwarded alert block.
+        info_text = format_incident_message(
             ticket,
-            confirmed_by=confirmed_by_display,
+            confirmed_by=mention_from_display(confirmed_by_display),
             confirmed_at=confirmed_at,
             include_alert_text=not alert_attachments,
-            include_alert_link=not alert_attachments,
         )
+        info_block = {
+            "fallback": "Инцидент открыт",
+            "color": FEEDBACK_ATTACHMENT_COLOR,
+            "text": info_text,
+        }
         props = {
             "mattermost_alert_post_id": ticket.mattermost_post_id,
             "jira_issue_key": ticket.jira_issue_key,
             "confirmed_by_user_id": confirmed_by_user_id,
+            "attachments": [info_block, *alert_attachments],
         }
-        if alert_attachments:
-            props["attachments"] = alert_attachments
         incident_post = await self.mattermost.create_post(
             channel_id=self.settings.mattermost_incident_channel_id,
-            message=message,
+            message="",
             props=props,
         )
         incident_url = self.mattermost.permalink(incident_post.id)

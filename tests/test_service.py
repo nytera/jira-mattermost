@@ -101,10 +101,15 @@ class FakeMattermostClient:
         self.posts[post.id] = post
         return post
 
-    async def update_post(self, post_id: str, *, message: str) -> None:
-        self.updated_posts.append({"post_id": post_id, "message": message})
+    async def update_post(self, post_id: str, *, message=None, props=None) -> None:
+        self.updated_posts.append({"post_id": post_id, "message": message, "props": props})
         if post_id in self.posts:
-            self.posts[post_id] = replace(self.posts[post_id], message=message)
+            changes = {}
+            if message is not None:
+                changes["message"] = message
+            if props is not None:
+                changes["props"] = props
+            self.posts[post_id] = replace(self.posts[post_id], **changes)
 
     async def open_dialog(
         self,
@@ -717,11 +722,18 @@ async def test_confirmed_incident_embeds_grafana_attachment(service):
     ]
     assert len(incident_posts) == 1
     incident_post = incident_posts[0]
-    assert incident_post["props"]["attachments"] == attachments
-    assert incident_post["props"]["attachments"] is not attachments
-    assert "Исходный алерт" not in incident_post["message"]
-    assert "Деньги | Минус-слова vs Общее" not in incident_post["message"]
-    assert "Задача Jira: [OPS-1]" in incident_post["message"]
+    post_attachments = incident_post["props"]["attachments"]
+    # Gray info block first, then the forwarded alert attachment(s) (a copy).
+    info_block = post_attachments[0]
+    assert info_block["color"] == "#4B5563"
+    assert post_attachments[1:] == attachments
+    assert post_attachments[1] is not attachments[0]
+    info_text = info_block["text"]
+    # Title is the alert name with a red status circle.
+    assert info_text.startswith("##### 🔴 Деньги | Минус-слова vs Общее")
+    assert "Задача Jira: [OPS-1]" in info_text
+    assert "Исходный алерт" in info_text
+    assert incident_post["message"] == ""
 
 
 @pytest.mark.asyncio
@@ -1149,7 +1161,8 @@ async def test_replies_in_alert_thread_on_status_change(service):
         if created["channel_id"] == "incidents-channel"
     ]
     assert len(incident_posts) == 1
-    assert "Подтвердил: @validator" in incident_posts[0]["message"]
+    info_text = incident_posts[0]["props"]["attachments"][0]["text"]
+    assert "Подтвердил: @validator" in info_text
 
 
 def test_extracts_post_id_from_mattermost_permalink():
@@ -3153,12 +3166,17 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
     )
     ticket = service.repository.get_by_post_id(post.id)
     incident_post_id = ticket.incident_post_id
-    assert "🔴 Инцидент открыт" in service.mattermost.posts[incident_post_id].message
+
+    def info_text():
+        return service.mattermost.posts[incident_post_id].props["attachments"][0]["text"]
+
+    # Title is the alert name with a red status circle while open.
+    assert "##### 🔴 CPU usage is above 95%" in info_text()
 
     await service.handle_incident_action(
         action="end_incident", incident_post_id=incident_post_id, user_id="closer"
     )
 
-    updated = service.mattermost.posts[incident_post_id].message
-    assert "🟢 Инцидент завершён" in updated
-    assert "🔴 Инцидент открыт" not in updated
+    # On completion only the circle turns green; the alert name stays.
+    assert "##### 🟢 CPU usage is above 95%" in info_text()
+    assert "##### 🔴 " not in info_text()

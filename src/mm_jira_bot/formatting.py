@@ -147,15 +147,25 @@ def format_thread_validity_changed(
     )
 
 
-# Incident-message title: red while open, green once the incident is ended. The
-# completion update keys off the exact open-title line, so keep them in sync.
-INCIDENT_TITLE_OPEN = "### 🔴 Инцидент открыт"
-INCIDENT_TITLE_DONE = "### 🟢 Инцидент завершён"
+# Incident-message title: the alert name prefixed with a status circle — red
+# while open, green once ended. The completion update swaps just the prefix, so
+# the alert name is preserved.
+INCIDENT_TITLE_OPEN_PREFIX = "##### 🔴 "
+INCIDENT_TITLE_DONE_PREFIX = "##### 🟢 "
 
 
 def mark_incident_message_completed(message: str) -> str:
-    """Swap the open title for the completed one in an incident message."""
-    return message.replace(INCIDENT_TITLE_OPEN, INCIDENT_TITLE_DONE, 1)
+    """Swap the open status prefix for the completed one (keeps the alert name)."""
+    return message.replace(INCIDENT_TITLE_OPEN_PREFIX, INCIDENT_TITLE_DONE_PREFIX, 1)
+
+
+_MENTION = re.compile(r"@[^\s()]+")
+
+
+def mention_from_display(display: str) -> str:
+    """Extract just the `@username` tag from a "Name (@username)" display string."""
+    match = _MENTION.search(display)
+    return match.group(0) if match else display
 
 
 def format_incident_message(
@@ -164,7 +174,6 @@ def format_incident_message(
     confirmed_by: str,
     confirmed_at: datetime,
     include_alert_text: bool = True,
-    include_alert_link: bool = True,
 ) -> str:
     confirmed_at = backend_datetime(confirmed_at)
     jira_part = (
@@ -172,15 +181,15 @@ def format_incident_message(
         if ticket.jira_issue_key and ticket.jira_issue_url
         else "Jira issue пока недоступна"
     )
-    lines = [INCIDENT_TITLE_OPEN, ""]
+    lines = [INCIDENT_TITLE_OPEN_PREFIX + extract_alert_title(ticket.mattermost_message_text), ""]
     if include_alert_text and ticket.mattermost_message_text.strip():
         lines.extend([ticket.mattermost_message_text, ""])
-    if include_alert_link:
-        lines.append(f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})")
     lines.extend(
         [
             f"- Задача Jira: {jira_part}",
-            # No backticks so the @mention renders as a live, pinging mention.
+            # Alert lives in the alerts channel; always link it.
+            f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})",
+            # Just the @mention (no name, no backticks) so it renders as a live ping.
             f"- Подтвердил: {confirmed_by}",
             f"- Время подтверждения: {confirmed_at.strftime('%d.%m.%Y %H:%M')}",
         ]
