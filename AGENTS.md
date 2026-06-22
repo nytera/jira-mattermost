@@ -196,10 +196,9 @@ action response's `update` payload swaps the card for the controls (validity men
 The incident details (title, Jira link, alert link, confirmer `@mention`, time)
 render in a **gray attachment block** (`FEEDBACK_ATTACHMENT_COLOR`) placed *above*
 the forwarded alert attachment(s); the post `message` itself is empty. The title
-is the **alert name** (`extract_alert_title`) prefixed with a status circle —
-`##### 🔴 ` while open; when the incident is ended (button or checkmark,
-`INCIDENT_ENDED`), `_mark_incident_post_completed` swaps just the prefix to
-`##### 🟢 ` in the first attachment's text (keeping the alert name) via
+is `##### 🔴 Инцидент открыт` while open; when the incident is ended (button or
+checkmark, `INCIDENT_ENDED`), `_mark_incident_post_completed` swaps it to
+`##### 🟢 Инцидент закрыт` in the first attachment's text via
 `MattermostClient.update_post` (`PUT /api/v4/posts/{id}/patch`, props). Only the bot-authored message is edited —
 for a manual incident the "incident post" is the human's own message
 (`incident_post_id == mattermost_post_id`), so it is skipped.

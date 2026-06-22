@@ -729,10 +729,11 @@ async def test_confirmed_incident_embeds_grafana_attachment(service):
     assert post_attachments[1:] == attachments
     assert post_attachments[1] is not attachments[0]
     info_text = info_block["text"]
-    # Title is the alert name with a red status circle.
-    assert info_text.startswith("##### 🔴 Деньги | Минус-слова vs Общее")
+    assert info_text.startswith("##### 🔴 Инцидент открыт")
     assert "Задача Jira: [OPS-1]" in info_text
     assert "Исходный алерт" in info_text
+    # The alert text is in the forwarded block, not duplicated in the info block.
+    assert "Деньги | Минус-слова vs Общее" not in info_text
     assert incident_post["message"] == ""
 
 
@@ -3227,16 +3228,14 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
     def info_text():
         return service.mattermost.posts[incident_post_id].props["attachments"][0]["text"]
 
-    # Title is the alert name with a red status circle while open.
-    assert "##### 🔴 CPU usage is above 95%" in info_text()
+    assert "##### 🔴 Инцидент открыт" in info_text()
 
     await service.handle_incident_action(
         action="end_incident", incident_post_id=incident_post_id, user_id="closer"
     )
 
-    # On completion only the circle turns green; the alert name stays.
-    assert "##### 🟢 CPU usage is above 95%" in info_text()
-    assert "##### 🔴 " not in info_text()
+    assert "##### 🟢 Инцидент закрыт" in info_text()
+    assert "##### 🔴 Инцидент открыт" not in info_text()
 
 
 @pytest.mark.asyncio
