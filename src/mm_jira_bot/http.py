@@ -80,9 +80,7 @@ class AsyncApiClient:
     ) -> T | None:
         async def operation() -> T | None:
             try:
-                response = await self._client.request(
-                    method, path, json=json, params=params
-                )
+                response = await self._client.request(method, path, json=json, params=params)
             except httpx.HTTPError as exc:
                 raise wrap_transport_error(error_message, exc) from exc
             self._raise_for_status(response, error_message)

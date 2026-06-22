@@ -34,9 +34,7 @@ def _ticket_to_debug_dict(ticket: AlertTicket, *, full: bool = False) -> dict:
         "mattermost_channel_name": ticket.mattermost_channel_name,
         "mattermost_message_url": ticket.mattermost_message_url,
         "mattermost_author_id": ticket.mattermost_author_id,
-        "mattermost_message_created_at": _datetime_iso(
-            ticket.mattermost_message_created_at
-        ),
+        "mattermost_message_created_at": _datetime_iso(ticket.mattermost_message_created_at),
         "mattermost_alert_title": ticket.mattermost_alert_title,
         "mattermost_message_preview": _message_preview(ticket.mattermost_message_text),
         "jira_issue_key": ticket.jira_issue_key,
@@ -583,9 +581,7 @@ def register_debug_admin(app: FastAPI, service: IncidentBotService) -> None:
         return _ticket_to_debug_dict(ticket, full=True)
 
     @app.post("/debug/admin/api/alerts/{post_id}/jira/recreate")
-    async def debug_admin_recreate_jira(
-        post_id: str, force: bool = False
-    ) -> JSONResponse:
+    async def debug_admin_recreate_jira(post_id: str, force: bool = False) -> JSONResponse:
         result = await service.debug_recreate_jira_issue(post_id, force=force)
         status_code = 200
         if result.status == "not_found":

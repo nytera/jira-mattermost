@@ -87,7 +87,8 @@ def build_jira_issue_payload(
         "project": {"key": settings.jira_project_key},
         "issuetype": issue_type,
         "summary": summary or f"[INC] {alert_date} - {alert_title}",
-        "description": description or build_jira_description(
+        "description": description
+        or build_jira_description(
             post,
             message_url=message_url,
             channel_name=channel_name,
@@ -166,13 +167,10 @@ def build_postmortem_description(
         band_links += f" / [Исходный алерт|{alert_message_url}]"
     author_text = postmortem_author or "(здесь вписываем авторов ПМ)"
     participant_text = (
-        ", ".join(participants)
-        if participants
-        else "(вписываем людей, кто был на инциденте)"
+        ", ".join(participants) if participants else "(вписываем людей, кто был на инциденте)"
     )
     return (
-        _POSTMORTEM_TEMPLATE
-        .replace("__POSTMORTEM_AUTHORS__", author_text)
+        _POSTMORTEM_TEMPLATE.replace("__POSTMORTEM_AUTHORS__", author_text)
         .replace("__INCIDENT_PARTICIPANTS__", participant_text)
         .replace("__BAND_LINKS__", band_links)
     )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -57,9 +57,7 @@ class AlertTicket(Base):
     mattermost_message_text: Mapped[str] = mapped_column(Text)
     mattermost_alert_title: Mapped[str | None] = mapped_column(String(255))
     mattermost_author_id: Mapped[str] = mapped_column(String(64))
-    mattermost_message_created_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    mattermost_message_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     jira_issue_key: Mapped[str | None] = mapped_column(String(64), unique=True)
     jira_issue_url: Mapped[str | None] = mapped_column(Text)
     valid_incident: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -70,15 +68,11 @@ class AlertTicket(Base):
     creation_status: Mapped[str] = mapped_column(String(32), default="pending_jira")
     confirmation_status: Mapped[str] = mapped_column(String(32), default="none")
     pending_confirmation_by_user_id: Mapped[str | None] = mapped_column(String(64))
-    pending_confirmation_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    pending_confirmation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     jira_confirmation_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
     validity_label: Mapped[str | None] = mapped_column(String(64))
     last_error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=backend_now
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=backend_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=backend_now, onupdate=backend_now
     )
@@ -92,9 +86,7 @@ class AlertFeedback(Base):
     user_id: Mapped[str] = mapped_column(String(64))
     user_display_name: Mapped[str] = mapped_column(String(255))
     message: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=backend_now
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=backend_now)
 
 
 def init_db(engine: Engine) -> None:
@@ -110,10 +102,7 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
     if "mattermost_alert_title" not in columns:
         with engine.begin() as connection:
             connection.execute(
-                text(
-                    "ALTER TABLE alert_tickets "
-                    "ADD COLUMN mattermost_alert_title VARCHAR(255)"
-                )
+                text("ALTER TABLE alert_tickets ADD COLUMN mattermost_alert_title VARCHAR(255)")
             )
 
 
@@ -182,9 +171,7 @@ class AlertTicketRepository:
             )
             pending_jira = (
                 session.scalar(
-                    select(func.count(AlertTicket.id)).where(
-                        AlertTicket.jira_issue_key.is_(None)
-                    )
+                    select(func.count(AlertTicket.id)).where(AlertTicket.jira_issue_key.is_(None))
                 )
                 or 0
             )
@@ -201,9 +188,7 @@ class AlertTicketRepository:
             )
             confirmed = (
                 session.scalar(
-                    select(func.count(AlertTicket.id)).where(
-                        AlertTicket.valid_incident.is_(True)
-                    )
+                    select(func.count(AlertTicket.id)).where(AlertTicket.valid_incident.is_(True))
                 )
                 or 0
             )
@@ -248,9 +233,7 @@ class AlertTicketRepository:
                 mattermost_message_text=post.message,
                 mattermost_alert_title=extract_alert_title(post.message),
                 mattermost_author_id=post.user_id,
-                mattermost_message_created_at=datetime_from_mattermost_ms(
-                    post.create_at
-                ),
+                mattermost_message_created_at=datetime_from_mattermost_ms(post.create_at),
                 creation_status="pending_jira",
                 confirmation_status="none",
                 valid_incident=False,
@@ -290,9 +273,7 @@ class AlertTicketRepository:
                 mattermost_message_text=post.message,
                 mattermost_alert_title=extract_alert_title(post.message),
                 mattermost_author_id=post.user_id,
-                mattermost_message_created_at=datetime_from_mattermost_ms(
-                    post.create_at
-                ),
+                mattermost_message_created_at=datetime_from_mattermost_ms(post.create_at),
                 incident_post_id=post.id,
                 incident_message_url=message_url,
                 creation_status="pending_postmortem",
@@ -353,9 +334,7 @@ class AlertTicketRepository:
 
         self._mutate(post_id, apply)
 
-    def mark_pending_confirmation(
-        self, post_id: str, user_id: str, confirmed_at: datetime
-    ) -> None:
+    def mark_pending_confirmation(self, post_id: str, user_id: str, confirmed_at: datetime) -> None:
         def apply(ticket: AlertTicket) -> None:
             if ticket.valid_incident:
                 return
@@ -368,9 +347,7 @@ class AlertTicketRepository:
 
         self._mutate(post_id, apply)
 
-    def mark_confirmation_started(
-        self, post_id: str, user_id: str, confirmed_at: datetime
-    ) -> None:
+    def mark_confirmation_started(self, post_id: str, user_id: str, confirmed_at: datetime) -> None:
         def apply(ticket: AlertTicket) -> None:
             if not ticket.valid_incident:
                 ticket.confirmation_status = "confirming"
@@ -505,9 +482,7 @@ class AlertTicketRepository:
             raise KeyError(f"Alert ticket for post_id={post_id} not found")
         return ticket
 
-    def _mutate(
-        self, post_id: str, apply: Callable[[AlertTicket], None]
-    ) -> None:
+    def _mutate(self, post_id: str, apply: Callable[[AlertTicket], None]) -> None:
         with self._session_factory() as session:
             ticket = self._require_ticket(session, post_id)
             apply(ticket)
@@ -519,7 +494,7 @@ def ticket_to_post(ticket: AlertTicket) -> MattermostPost:
     if ticket.mattermost_message_created_at:
         dt = ticket.mattermost_message_created_at
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         create_at = int(dt.timestamp() * 1000)
     return MattermostPost(
         id=ticket.mattermost_post_id,

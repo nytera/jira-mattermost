@@ -159,10 +159,7 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         )
 
     results = await asyncio.gather(
-        *[
-            _run_dependency_check(dependency, check)
-            for dependency, check in checks
-        ]
+        *[_run_dependency_check(dependency, check) for dependency, check in checks]
     )
     failed_count = len([result for result in results if not result])
     log.info(
@@ -209,9 +206,7 @@ def create_app(
         repository = AlertTicketRepository(create_session_factory(engine))
         mattermost_client = MattermostClient(settings)
         jira_client = JiraClient(settings)
-        llm_client = (
-            PostmortemLlmClient(settings) if settings.llm_api_token else None
-        )
+        llm_client = PostmortemLlmClient(settings) if settings.llm_api_token else None
         service = IncidentBotService(
             settings=settings,
             repository=repository,
@@ -265,7 +260,8 @@ def create_app(
 
         slash_token = settings.mattermost_slash_token
         if slash_token and form.get("token") != slash_token:
-            log.warning("mattermost.slash_command.invalid_token",
+            log.warning(
+                "mattermost.slash_command.invalid_token",
                 user_id=form.get("user_id"),
             )
             return JSONResponse(
@@ -277,9 +273,7 @@ def create_app(
             user_id=form.get("user_id", ""),
             text=form.get("text", ""),
         )
-        return JSONResponse(
-            {"response_type": response.response_type, "text": response.text}
-        )
+        return JSONResponse({"response_type": response.response_type, "text": response.text})
 
     @app.post("/mattermost/actions/alert")
     async def alert_action(request: Request) -> JSONResponse:
@@ -290,8 +284,7 @@ def create_app(
             action=context.get("action", ""),
             alert_post_id=context.get("alert_post_id", ""),
             user_id=payload.get("user_id", ""),
-            selected_option=context.get("selected_option")
-            or payload.get("selected_option", ""),
+            selected_option=context.get("selected_option") or payload.get("selected_option", ""),
             trigger_id=payload.get("trigger_id", ""),
         )
         return JSONResponse({"ephemeral_text": result.message})

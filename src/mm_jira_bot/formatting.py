@@ -74,9 +74,7 @@ def _extract_grafana_markdown_link_title(line: str, *, limit: int) -> str | None
         bracket_open_index = _find_markdown_link_open(line, paren_index - 1)
         if bracket_open_index is None:
             continue
-        title = truncate_for_summary(
-            line[bracket_open_index + 1 : paren_index - 1], limit=limit
-        )
+        title = truncate_for_summary(line[bracket_open_index + 1 : paren_index - 1], limit=limit)
         if title != "Band alert":
             return title
     return None
@@ -115,9 +113,7 @@ def _jira_link(jira_issue_key: str | None, jira_issue_url: str | None) -> str:
     return jira_issue_key or "Jira issue"
 
 
-def format_thread_issue_created(
-    *, jira_issue_key: str, jira_issue_url: str | None
-) -> str:
+def format_thread_issue_created(*, jira_issue_key: str, jira_issue_url: str | None) -> str:
     return f"Создана задача Jira: {_jira_link(jira_issue_key, jira_issue_url)}"
 
 
@@ -169,9 +165,7 @@ def format_incident_message(
     if include_alert_text and ticket.mattermost_message_text.strip():
         lines.extend([ticket.mattermost_message_text, ""])
     if include_alert_link:
-        lines.append(
-            f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})"
-        )
+        lines.append(f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})")
     lines.extend(
         [
             f"- Задача Jira: {jira_part}",

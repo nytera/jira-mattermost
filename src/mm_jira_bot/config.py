@@ -43,9 +43,7 @@ def _first_required(*names: str) -> str:
         value = _env(name)
         if value is not None:
             return value
-    raise RuntimeError(
-        "Missing required environment variable: " + " or ".join(names)
-    )
+    raise RuntimeError("Missing required environment variable: " + " or ".join(names))
 
 
 def _int_env(name: str, default: int) -> int:
@@ -113,16 +111,14 @@ class Settings:
         configure_runtime_timezone(self.incident_timezone)
 
     @classmethod
-    def from_env(cls, dotenv_path: str | Path = ".env") -> "Settings":
+    def from_env(cls, dotenv_path: str | Path = ".env") -> Settings:
         load_dotenv_file(dotenv_path)
         return cls(
             mattermost_url=_required("MATTERMOST_URL").rstrip("/"),
             mattermost_token=_required("MATTERMOST_TOKEN"),
             mattermost_alert_channel_id=_required("MATTERMOST_ALERT_CHANNEL_ID"),
             mattermost_incident_channel_id=_required("MATTERMOST_INCIDENT_CHANNEL_ID"),
-            mattermost_incident_reaction_name=_env(
-                "MATTERMOST_INCIDENT_REACTION_NAME", "incident"
-            ),
+            mattermost_incident_reaction_name=_env("MATTERMOST_INCIDENT_REACTION_NAME", "incident"),
             mattermost_bot_user_id=_required("MATTERMOST_BOT_USER_ID"),
             jira_base_url=_required("JIRA_BASE_URL").rstrip("/"),
             jira_api_token=_required("JIRA_API_TOKEN"),
@@ -144,9 +140,7 @@ class Settings:
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
             mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
             service_public_url=(
-                _env("SERVICE_PUBLIC_URL").rstrip("/")
-                if _env("SERVICE_PUBLIC_URL")
-                else None
+                _env("SERVICE_PUBLIC_URL").rstrip("/") if _env("SERVICE_PUBLIC_URL") else None
             ),
             mattermost_false_incident_reaction_name=_env(
                 "MATTERMOST_FALSE_INCIDENT_REACTION_NAME", "man_gesturing_no"
@@ -157,21 +151,14 @@ class Settings:
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),
-            api_retry_base_delay_seconds=_float_env(
-                "API_RETRY_BASE_DELAY_SECONDS", 0.5
-            ),
+            api_retry_base_delay_seconds=_float_env("API_RETRY_BASE_DELAY_SECONDS", 0.5),
             pending_work_interval_seconds=_int_env("PENDING_WORK_INTERVAL_SECONDS", 30),
             backfill_recent_posts_limit=_int_env("BACKFILL_RECENT_POSTS_LIMIT", 0),
             enable_websocket=_env("ENABLE_WEBSOCKET", "true") != "false",
-            enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false")
-            == "true",
+            enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false") == "true",
             debug_admin_enabled=_env("DEBUG_ADMIN_ENABLED", "false") == "true",
-            llm_base_url=_env(
-                "LLM_BASE_URL", "https://corellm.wb.ru/deepseek/v1"
-            ).rstrip("/"),
-            llm_api_token=_first_env(
-                "LLM_API_TOKEN", "CORELLM_API_TOKEN", "OPENAI_API_KEY"
-            ),
+            llm_base_url=_env("LLM_BASE_URL", "https://corellm.wb.ru/deepseek/v1").rstrip("/"),
+            llm_api_token=_first_env("LLM_API_TOKEN", "CORELLM_API_TOKEN", "OPENAI_API_KEY"),
             llm_model=_env("LLM_MODEL", "deepseek-chat"),
             llm_max_tokens=_int_env("LLM_MAX_TOKENS", 4000),
             llm_thread_max_chars=_int_env("LLM_THREAD_MAX_CHARS", 24000),

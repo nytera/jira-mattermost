@@ -106,10 +106,7 @@ def build_alert_controls_attachment(
         "integration": _integration(
             ACTION_VALIDITY, alert_post_id=alert_post_id, callback_url=callback_url
         ),
-        "options": [
-            {"text": option.text, "value": option.value}
-            for option in VALIDITY_OPTIONS
-        ],
+        "options": [{"text": option.text, "value": option.value} for option in VALIDITY_OPTIONS],
     }
     buttons = [
         _button_action(button, alert_post_id=alert_post_id, callback_url=callback_url)

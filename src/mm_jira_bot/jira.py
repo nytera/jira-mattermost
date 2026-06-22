@@ -135,13 +135,9 @@ class JiraClient(AsyncApiClient):
         )
 
     async def preflight_check(self) -> dict[str, object]:
-        valid_incident_field_id = await self._get_field_id(
-            self._settings.jira_valid_incident_field
-        )
+        valid_incident_field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         source_field_id = await self._get_field_id(self._settings.jira_source_field)
-        is_crit_alert_field_id = await self._get_field_id(
-            self._settings.jira_is_crit_alert_field
-        )
+        is_crit_alert_field_id = await self._get_field_id(self._settings.jira_is_crit_alert_field)
         start_field_id = (
             await self._get_field_id(self._settings.jira_start_field)
             if self._settings.jira_start_field
@@ -203,9 +199,7 @@ class JiraClient(AsyncApiClient):
         labels: list[str] | None = None,
         include_alert_fields: bool = True,
     ) -> JiraIssue:
-        valid_incident_field_id = await self._get_field_id(
-            self._settings.jira_valid_incident_field
-        )
+        valid_incident_field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         source_field_id = (
             await self._get_field_id(self._settings.jira_source_field)
             if include_alert_fields
@@ -227,9 +221,7 @@ class JiraClient(AsyncApiClient):
             else None
         )
         is_crit_alert_option = (
-            await self._get_option_payload(
-                is_crit_alert_field_id, JIRA_IS_CRIT_ALERT_VALUE
-            )
+            await self._get_option_payload(is_crit_alert_field_id, JIRA_IS_CRIT_ALERT_VALUE)
             if is_crit_alert_field_id is not None
             else None
         )
@@ -576,9 +568,7 @@ class JiraClient(AsyncApiClient):
                     ),
                     params={"startAt": start_at, "maxResults": 50},
                 )
-                self._raise_for_status(
-                    response, "Failed to fetch Jira issue type create metadata"
-                )
+                self._raise_for_status(response, "Failed to fetch Jira issue type create metadata")
                 data = response.json()
                 fields = data.get("fields")
                 if isinstance(fields, dict):

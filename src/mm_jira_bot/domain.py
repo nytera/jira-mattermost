@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
-
 
 _runtime_timezone = ZoneInfo("UTC")
 
@@ -20,7 +19,7 @@ def runtime_timezone() -> ZoneInfo:
 
 def backend_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+        value = value.replace(tzinfo=UTC)
     return value.astimezone(_runtime_timezone)
 
 
@@ -92,7 +91,7 @@ class MattermostPost:
     props: dict | None = None
 
     @classmethod
-    def from_api(cls, data: dict, channel_name: str | None = None) -> "MattermostPost":
+    def from_api(cls, data: dict, channel_name: str | None = None) -> MattermostPost:
         props = data.get("props")
         return cls(
             id=data["id"],

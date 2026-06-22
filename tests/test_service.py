@@ -4,14 +4,14 @@ import json
 import logging
 import os
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
-import mm_jira_bot.jira as jira_module
-import mm_jira_bot.jira_payload as jira_payload_module
 from fastapi.testclient import TestClient
 
+import mm_jira_bot.jira as jira_module
+import mm_jira_bot.jira_payload as jira_payload_module
 from mm_jira_bot.config import Settings, load_dotenv_file
 from mm_jira_bot.domain import (
     JiraIssue,
@@ -21,6 +21,7 @@ from mm_jira_bot.domain import (
 )
 from mm_jira_bot.formatting import format_incident_message
 from mm_jira_bot.jira_payload import build_jira_issue_payload
+from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.mattermost import MattermostClient
 from mm_jira_bot.postmortem import extract_postmortem_summary
 from mm_jira_bot.repository import (
@@ -29,11 +30,9 @@ from mm_jira_bot.repository import (
     create_session_factory,
     init_db,
 )
-from mm_jira_bot.service import IncidentBotService, parse_post_id_from_text
-from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.retry import ApiError
+from mm_jira_bot.service import IncidentBotService, parse_post_id_from_text
 from mm_jira_bot.web import create_app, run_startup_preflight
-
 
 POST_ID = "abcdefghijklmnopqrstuvwx01"
 
@@ -56,11 +55,7 @@ class FakeMattermostClient:
 
     async def get_thread_posts(self, post_id: str):
         root = self.posts[post_id]
-        replies = [
-            post
-            for post in self.posts.values()
-            if post.root_id == post_id
-        ]
+        replies = [post for post in self.posts.values() if post.root_id == post_id]
         return sorted([root, *replies], key=lambda post: (post.create_at, post.id))
 
     async def get_user_display_name(self, user_id: str) -> str:
@@ -104,9 +99,7 @@ class FakeMattermostClient:
         url: str,
         dialog: dict,
     ) -> None:
-        self.opened_dialogs.append(
-            {"trigger_id": trigger_id, "url": url, "dialog": dialog}
-        )
+        self.opened_dialogs.append({"trigger_id": trigger_id, "url": url, "dialog": dialog})
 
     async def fetch_recent_channel_posts(self, channel_id: str, *, limit: int):
         return []
@@ -416,10 +409,7 @@ def test_init_db_adds_alert_title_column_to_existing_schema(tmp_path):
     init_db(engine)
 
     with engine.connect() as connection:
-        columns = {
-            row[1]
-            for row in connection.exec_driver_sql("PRAGMA table_info(alert_tickets)")
-        }
+        columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(alert_tickets)")}
     assert "mattermost_alert_title" in columns
 
 
@@ -482,9 +472,7 @@ async def test_stores_grafana_alert_title(service):
     ticket = await service.handle_alert_post(post)
 
     assert ticket is not None
-    assert ticket.mattermost_alert_title == (
-        "Деньги | Минус-слова vs Общее | выше на 70% [Crit]"
-    )
+    assert ticket.mattermost_alert_title == ("Деньги | Минус-слова vs Общее | выше на 70% [Crit]")
 
 
 @pytest.mark.asyncio
@@ -504,9 +492,7 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
 
     assert ticket is not None
     assert ticket.jira_issue_key == f"ADSDEV-12024-{post.id[:12]}"
-    assert ticket.jira_issue_url == (
-        f"https://jira.example.com/browse/ADSDEV-12024-{post.id[:12]}"
-    )
+    assert ticket.jira_issue_url == (f"https://jira.example.com/browse/ADSDEV-12024-{post.id[:12]}")
     assert len(service.jira.created_payloads) == 0
     reply = _issue_reply(service, post.id, issue_key=ticket.jira_issue_key)
     assert reply["message"] == ""
@@ -540,12 +526,8 @@ async def test_reuses_display_stub_jira_issue_without_db_conflict(settings):
     assert second_ticket is not None
     assert first_ticket.jira_issue_key != second_ticket.jira_issue_key
     assert len(service.jira.created_payloads) == 0
-    first_reply = _issue_reply(
-        service, first_post.id, issue_key=first_ticket.jira_issue_key
-    )
-    second_reply = _issue_reply(
-        service, second_post.id, issue_key=second_ticket.jira_issue_key
-    )
+    first_reply = _issue_reply(service, first_post.id, issue_key=first_ticket.jira_issue_key)
+    second_reply = _issue_reply(service, second_post.id, issue_key=second_ticket.jira_issue_key)
     assert "Создана задача Jira: [ADSDEV-12024]" in first_reply["message"]
     assert "Создана задача Jira: [ADSDEV-12024]" in second_reply["message"]
 
@@ -755,9 +737,7 @@ async def test_checkmark_on_incident_post_sets_end_time(service):
     )
 
     assert result.status == "incident_ended"
-    assert service.jira.end_updates == [
-        ("OPS-1", datetime_from_mattermost_ms(1_700_000_200_000))
-    ]
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_200_000))]
     assert service.jira.validity_end_updates == []
 
 
@@ -844,9 +824,7 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
     )
 
     assert result.status == "incident_ended"
-    assert service.jira.end_updates == [
-        ("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))
-    ]
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))]
     assert len(service.jira.created_payloads) == 1
     assert len(service.llm.prompts) == 1
     prompt = service.llm.prompts[0]
@@ -946,16 +924,13 @@ async def test_checkmark_on_manual_incident_thread_creates_postmortem_issue(serv
     assert "Иван Иванов (@ivanov.ivan)" in payload["description"]
     assert "API начал отвечать 500." not in payload["description"]
     assert service.jira.valid_updates == [("OPS-1", True)]
-    assert service.jira.end_updates == [
-        ("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))
-    ]
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))]
     assert service.jira.generic_comments
     assert "API начал отвечать 500." in service.jira.generic_comments[-1][1]
     thread_replies = [
         created
         for created in service.mattermost.created_posts
-        if created["root_id"] == root.id
-        and "Инцидентный отчет готов" in created["message"]
+        if created["root_id"] == root.id and "Инцидентный отчет готов" in created["message"]
     ]
     assert len(thread_replies) == 1
     assert "Полный постмортем" in thread_replies[0]["message"]
@@ -976,8 +951,7 @@ def test_postmortem_summary_limits_llm_title_words_and_chars():
     assert len(title) <= 80
     assert len(title.split()) <= 10
     assert summary == (
-        "[INC] 15.11.2023 - "
-        "Очень длинное название инцидента про падение checkout api после релиза"
+        "[INC] 15.11.2023 - Очень длинное название инцидента про падение checkout api после релиза"
     )
 
 
@@ -1018,9 +992,7 @@ async def test_false_reaction_sets_validity_without_incident_post(service):
     ticket = service.repository.get_by_post_id(post.id)
     assert result.status == "validity_set"
     assert service.jira.validity_updates == [("OPS-1", "Ложный")]
-    assert service.jira.validity_end_updates == [
-        ("OPS-1", datetime_from_mattermost_ms(1))
-    ]
+    assert service.jira.validity_end_updates == [("OPS-1", datetime_from_mattermost_ms(1))]
     assert ticket.validity_label == "Ложный"
     # Lightweight path: not a confirmed incident, nothing posted to incidents channel.
     assert ticket.valid_incident is False
@@ -1032,9 +1004,7 @@ async def test_false_reaction_sets_validity_without_incident_post(service):
     ]
     assert incident_posts == []
     thread_replies = [
-        created
-        for created in service.mattermost.created_posts
-        if created["root_id"] == post.id
+        created for created in service.mattermost.created_posts if created["root_id"] == post.id
     ]
     # One reply for issue creation, one for the validity change.
     assert len(thread_replies) == 2
@@ -1058,9 +1028,7 @@ async def test_expected_reaction_sets_validity(service):
 
     assert result.status == "validity_set"
     assert service.jira.validity_updates == [("OPS-1", "Ожидаемый")]
-    assert service.jira.validity_end_updates == [
-        ("OPS-1", datetime_from_mattermost_ms(1))
-    ]
+    assert service.jira.validity_end_updates == [("OPS-1", datetime_from_mattermost_ms(1))]
 
 
 @pytest.mark.asyncio
@@ -1073,9 +1041,7 @@ async def test_last_validity_reaction_wins(service):
         ReactionEvent(post_id=post.id, user_id="v", emoji_name="incident", create_at=1)
     )
     await service.handle_reaction(
-        ReactionEvent(
-            post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=2
-        )
+        ReactionEvent(post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=2)
     )
 
     ticket = service.repository.get_by_post_id(post.id)
@@ -1092,14 +1058,10 @@ async def test_repeated_validity_reaction_is_idempotent(service):
     await service.handle_alert_post(post)
 
     await service.handle_reaction(
-        ReactionEvent(
-            post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=1
-        )
+        ReactionEvent(post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=1)
     )
     result = await service.handle_reaction(
-        ReactionEvent(
-            post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=2
-        )
+        ReactionEvent(post_id=post.id, user_id="v", emoji_name="man_gesturing_no", create_at=2)
     )
 
     assert result.status == "validity_set"
@@ -1134,9 +1096,7 @@ async def test_replies_in_alert_thread_when_issue_created(service):
     await service.handle_alert_post(post)
 
     thread_replies = [
-        created
-        for created in service.mattermost.created_posts
-        if created["root_id"] == post.id
+        created for created in service.mattermost.created_posts if created["root_id"] == post.id
     ]
     assert len(thread_replies) == 1
     reply = thread_replies[0]
@@ -1159,9 +1119,7 @@ async def test_replies_in_alert_thread_on_status_change(service):
     )
 
     thread_replies = [
-        created
-        for created in service.mattermost.created_posts
-        if created["root_id"] == post.id
+        created for created in service.mattermost.created_posts if created["root_id"] == post.id
     ]
     # One reply for issue creation, one for status change; no duplicates on retry.
     assert len(thread_replies) == 2
@@ -1181,13 +1139,9 @@ async def test_replies_in_alert_thread_on_status_change(service):
 
 
 def test_extracts_post_id_from_mattermost_permalink():
+    assert parse_post_id_from_text(f"https://mattermost.example.com/team/pl/{POST_ID}") == POST_ID
     assert (
-        parse_post_id_from_text(f"https://mattermost.example.com/team/pl/{POST_ID}")
-        == POST_ID
-    )
-    assert (
-        parse_post_id_from_text(f"https://mattermost.example.com/_redirect/pl/{POST_ID}")
-        == POST_ID
+        parse_post_id_from_text(f"https://mattermost.example.com/_redirect/pl/{POST_ID}") == POST_ID
     )
 
 
@@ -1269,9 +1223,7 @@ def test_debug_admin_lists_alerts_when_enabled(service, settings):
     assert summary_response.json()["total"] == 1
     assert list_response.status_code == 200
     assert list_response.json()["alerts"][0]["mattermost_post_id"] == post.id
-    assert list_response.json()["alerts"][0]["mattermost_alert_title"] == (
-        "CPU usage is above 95%"
-    )
+    assert list_response.json()["alerts"][0]["mattermost_alert_title"] == ("CPU usage is above 95%")
     assert "second line" in list_response.json()["alerts"][0]["mattermost_message_preview"]
     assert detail_response.status_code == 200
     assert detail_response.json()["mattermost_alert_title"] == "CPU usage is above 95%"
@@ -1332,9 +1284,7 @@ def test_debug_admin_retries_jira_creation_for_ticket_without_issue(service, set
 
 
 @pytest.mark.asyncio
-async def test_debug_admin_recreate_without_force_conflicts_existing_issue(
-    service, settings
-):
+async def test_debug_admin_recreate_without_force_conflicts_existing_issue(service, settings):
     post = make_alert()
     service.mattermost.posts[post.id] = post
     await service.handle_alert_post(post)
@@ -1365,9 +1315,7 @@ async def test_debug_admin_force_recreates_confirmed_issue_without_duplicate_inc
 
     app = create_app(replace(settings, debug_admin_enabled=True), service=service)
     with TestClient(app) as client:
-        response = client.post(
-            f"/debug/admin/api/alerts/{post.id}/jira/recreate?force=true"
-        )
+        response = client.post(f"/debug/admin/api/alerts/{post.id}/jira/recreate?force=true")
 
     ticket = service.repository.get_by_post_id(post.id)
     incident_posts = [
@@ -1468,11 +1416,7 @@ def test_builds_manual_incident_payload_without_alert_only_fields(settings):
 
 
 def test_summary_uses_first_non_empty_line_without_leading_emoji(settings):
-    message = (
-        "\n"
-        "🔴 Доля рекламных кликов :: Платформа :: Ниже на 10% :: crit\n"
-        "@sre-ads-duty\n"
-    )
+    message = "\n🔴 Доля рекламных кликов :: Платформа :: Ниже на 10% :: crit\n@sre-ads-duty\n"
     post = replace(make_alert(), message=message)
     payload = build_jira_issue_payload(
         settings,
@@ -1490,11 +1434,7 @@ def test_summary_uses_first_non_empty_line_without_leading_emoji(settings):
 
 
 def test_summary_uses_alert_title_after_emoji_only_line(settings):
-    message = (
-        "🔴\n"
-        "Деньги | Минус-слова vs Общее | выше на 70% [Crit]\n"
-        "@sre-ads-duty\n"
-    )
+    message = "🔴\nДеньги | Минус-слова vs Общее | выше на 70% [Crit]\n@sre-ads-duty\n"
     post = replace(make_alert(), message=message)
     payload = build_jira_issue_payload(
         settings,
@@ -1587,9 +1527,7 @@ def test_summary_uses_grafana_attachment_title_when_message_is_empty(settings):
                 "attachments": [
                     {
                         "title": "ads_stat-consumer_antifraud_remove_messages 20% [Crit]",
-                        "title_link": (
-                            "http://grafana.wb.ru/alerting/grafana/abc123/view"
-                        ),
+                        "title_link": ("http://grafana.wb.ru/alerting/grafana/abc123/view"),
                         "text": (
                             "Message: Кол-во сообщений на удаление в датабас "
                             "антифрода снизилось на 20%"
@@ -1610,8 +1548,7 @@ def test_summary_uses_grafana_attachment_title_when_message_is_empty(settings):
     )
 
     assert payload["fields"]["summary"] == (
-        "[INC] 15.11.2023 - "
-        "ads_stat-consumer_antifraud_remove_messages 20% [Crit]"
+        "[INC] 15.11.2023 - ads_stat-consumer_antifraud_remove_messages 20% [Crit]"
     )
     assert "Message: Кол-во сообщений" not in payload["fields"]["description"]
 
@@ -1652,7 +1589,7 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
     monkeypatch.setattr(
         jira_payload_module,
         "backend_now",
-        lambda: datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
+        lambda: datetime(2026, 5, 29, 22, 30, tzinfo=UTC),
     )
     post = replace(make_alert(), create_at=0)
     payload = build_jira_issue_payload(
@@ -1696,9 +1633,7 @@ async def test_creates_issue_with_default_valid_incident_and_option_ids(settings
                         "customfield_23456": {
                             "allowedValues": [{"id": "201", "value": "Crit alert"}]
                         },
-                        "customfield_34567": {
-                            "allowedValues": [{"id": "301", "value": "Да"}]
-                        },
+                        "customfield_34567": {"allowedValues": [{"id": "301", "value": "Да"}]},
                     }
                 },
             )
@@ -1758,9 +1693,7 @@ async def test_jira_preflight_resolves_fields_and_options(settings):
                         "customfield_23456": {
                             "allowedValues": [{"id": "201", "value": "Crit alert"}]
                         },
-                        "customfield_34567": {
-                            "allowedValues": [{"id": "301", "value": "Да"}]
-                        },
+                        "customfield_34567": {"allowedValues": [{"id": "301", "value": "Да"}]},
                     }
                 },
             )
@@ -1936,7 +1869,9 @@ async def test_create_issue_sends_start_field_when_configured(settings):
                 200,
                 json={
                     "fields": {
-                        "customfield_23456": {"allowedValues": [{"id": "201", "value": "Crit alert"}]},
+                        "customfield_23456": {
+                            "allowedValues": [{"id": "201", "value": "Crit alert"}]
+                        },
                         "customfield_34567": {"allowedValues": [{"id": "301", "value": "Да"}]},
                     }
                 },
@@ -2060,9 +1995,7 @@ async def test_updates_valid_incident_as_jira_option(settings):
                 200,
                 json={
                     "fields": {
-                        "customfield_12345": {
-                            "allowedValues": [{"id": "201", "value": "Валидный"}]
-                        }
+                        "customfield_12345": {"allowedValues": [{"id": "201", "value": "Валидный"}]}
                     }
                 },
             )
@@ -2097,7 +2030,7 @@ async def test_updates_valid_incident_as_jira_option(settings):
             "method": "PUT",
             "path": "/rest/api/2/issue/OPS-1",
             "body": {"fields": {"customfield_12345": {"id": "201"}}},
-        }
+        },
     ]
 
 
@@ -2123,9 +2056,7 @@ async def test_updates_validity_with_end_field_when_configured(settings):
                 200,
                 json={
                     "fields": {
-                        "customfield_12345": {
-                            "allowedValues": [{"id": "202", "value": "Ложный"}]
-                        }
+                        "customfield_12345": {"allowedValues": [{"id": "202", "value": "Ложный"}]}
                     }
                 },
             )
@@ -2144,7 +2075,7 @@ async def test_updates_validity_with_end_field_when_configured(settings):
         await client.set_validity(
             "OPS-1",
             "Ложный",
-            ended_at=datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
+            ended_at=datetime(2026, 5, 29, 22, 30, tzinfo=UTC),
         )
     finally:
         await client.aclose()
@@ -2187,7 +2118,7 @@ async def test_updates_end_field_without_validity(settings):
     try:
         await client.set_end_time(
             "OPS-1",
-            datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
+            datetime(2026, 5, 29, 22, 30, tzinfo=UTC),
         )
     finally:
         await client.aclose()
@@ -2219,11 +2150,7 @@ async def test_llm_client_uses_openai_compatible_chat_completions(settings):
         )
         return httpx.Response(
             200,
-            json={
-                "choices": [
-                    {"message": {"content": "[INC] 15.11.2023 - Отчет"}}
-                ]
-            },
+            json={"choices": [{"message": {"content": "[INC] 15.11.2023 - Отчет"}}]},
         )
 
     client = PostmortemLlmClient(
@@ -2365,7 +2292,7 @@ def test_builds_incident_channel_message(service):
     message = format_incident_message(
         ticket,
         confirmed_by="@validator",
-        confirmed_at=datetime(2026, 5, 29, 22, 30, tzinfo=timezone.utc),
+        confirmed_at=datetime(2026, 5, 29, 22, 30, tzinfo=UTC),
     )
 
     assert "CPU usage is above 95%" in message
@@ -2404,9 +2331,7 @@ def _issue_reply(service, post_id, *, issue_key="OPS-1"):
 
 @pytest.mark.asyncio
 async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
-    service = _build_service(
-        replace(settings, service_public_url="https://bot.example.com/")
-    )
+    service = _build_service(replace(settings, service_public_url="https://bot.example.com/"))
     post = make_alert()
     service.mattermost.posts[post.id] = post
 
@@ -2435,9 +2360,7 @@ async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
         "summary",
     ]
     validity = controls_actions[0]
-    assert validity["integration"]["url"] == (
-        "https://bot.example.com/mattermost/actions/alert"
-    )
+    assert validity["integration"]["url"] == ("https://bot.example.com/mattermost/actions/alert")
     assert validity["integration"]["context"] == {
         "action": "validity",
         "alert_post_id": post.id,
@@ -2586,9 +2509,7 @@ async def test_summary_button_without_llm_is_noop(service):
 
 @pytest.mark.asyncio
 async def test_feedback_button_opens_dialog(settings):
-    service = _build_service(
-        replace(settings, service_public_url="https://bot.example.com/")
-    )
+    service = _build_service(replace(settings, service_public_url="https://bot.example.com/"))
     post = make_alert()
     service.mattermost.posts[post.id] = post
 

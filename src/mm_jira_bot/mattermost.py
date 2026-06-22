@@ -123,9 +123,7 @@ class MattermostClient(AsyncApiClient):
                 actual_bot_user_id=me.get("bot_user_id"),
                 actual_bot_username=me.get("bot_username"),
             )
-        alert_channel_name = await self.get_channel_name(
-            self._settings.mattermost_alert_channel_id
-        )
+        alert_channel_name = await self.get_channel_name(self._settings.mattermost_alert_channel_id)
         incident_channel_name = await self.get_channel_name(
             self._settings.mattermost_incident_channel_id
         )

@@ -5,8 +5,8 @@ import logging
 
 from mm_jira_bot.logging import (
     JsonFormatter,
-    TextInfoFilter,
     TextFormatter,
+    TextInfoFilter,
     _build_formatter,
     get_logger,
 )
