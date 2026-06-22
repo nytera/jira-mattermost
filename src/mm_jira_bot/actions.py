@@ -35,12 +35,18 @@ class AlertActionButton:
     # ``name`` is what Mattermost renders; it accepts ``:shortcode:`` emoji.
     name: str
     style: str | None = None
+    # Optional Mattermost confirmation dialog shown before the action fires.
+    confirm: dict | None = None
 
 
 @dataclass(frozen=True)
 class AlertActionOption:
     text: str
     value: str
+
+
+def _confirm(*, title: str, text: str, ok_text: str) -> dict:
+    return {"title": title, "text": text, "ok_text": ok_text, "dismiss_text": "Отмена"}
 
 
 # Order matters: this is the top-to-bottom order in the "Валидность" menu.
@@ -54,7 +60,16 @@ VALIDITY_OPTIONS: tuple[AlertActionOption, ...] = (
 # Order matters: this is the left-to-right order within each controls block.
 # Incident/Summary live in their own block; feedback gets a separate block below.
 PRIMARY_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
-    AlertActionButton(ACTION_INCIDENT, "🚨 Инцидент", style="primary"),
+    AlertActionButton(
+        ACTION_INCIDENT,
+        "🚨 Инцидент",
+        style="primary",
+        confirm=_confirm(
+            title="Заведение инцидента",
+            text="Завести инцидент по этому алерту?",
+            ok_text="Завести",
+        ),
+    ),
     AlertActionButton(ACTION_SUMMARY, "📝 Summary", style="default"),
 )
 FEEDBACK_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
@@ -62,7 +77,16 @@ FEEDBACK_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
 )
 # Buttons under the validity menu on the manual-incident controls card.
 INCIDENT_ACTION_BUTTONS: tuple[AlertActionButton, ...] = (
-    AlertActionButton(ACTION_END_INCIDENT, "🏁 Завершить", style="primary"),
+    AlertActionButton(
+        ACTION_END_INCIDENT,
+        "🏁 Завершить",
+        style="primary",
+        confirm=_confirm(
+            title="Завершение инцидента",
+            text="Завершить инцидент? Будет сгенерирован постмортем.",
+            ok_text="Завершить",
+        ),
+    ),
     AlertActionButton(ACTION_SUMMARY, "📝 Саммари", style="default"),
 )
 
@@ -97,6 +121,8 @@ def _button_action(button: AlertActionButton, *, alert_post_id: str, callback_ur
     }
     if button.style:
         action["style"] = button.style
+    if button.confirm:
+        action["confirm"] = button.confirm
     return action
 
 
@@ -233,6 +259,7 @@ def build_incident_controls_attachment(
             "name": button.name,
             "type": "button",
             **({"style": button.style} if button.style else {}),
+            **({"confirm": button.confirm} if button.confirm else {}),
             "integration": _incident_integration(
                 button.id, incident_post_id=incident_post_id, callback_url=callback_url
             ),

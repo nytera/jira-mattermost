@@ -3263,3 +3263,23 @@ async def test_end_button_swaps_to_completed(settings):
     # Validity menu and summary remain after completion.
     assert any(a["id"] == "validity" for a in actions)
     assert "📝 Саммари" in names
+
+
+def test_incident_and_end_buttons_require_confirmation():
+    from mm_jira_bot.actions import (
+        build_alert_controls_attachment,
+        build_incident_controls_attachment,
+    )
+
+    alert = build_alert_controls_attachment(
+        title="OPS-1", title_link="u", alert_post_id="p", callback_url="http://x/cb"
+    )
+    incident_btn = next(a for a in alert["actions"] if a.get("id") == "incident")
+    assert incident_btn["confirm"]["ok_text"] == "Завести"
+
+    inc = build_incident_controls_attachment(incident_post_id="p", callback_url="http://x/cb")
+    end_btn = next(a for a in inc["actions"] if a.get("id") == "end_incident")
+    assert end_btn["confirm"]["ok_text"] == "Завершить"
+    # Summary stays a plain one-click button.
+    summary_btn = next(a for a in inc["actions"] if a.get("id") == "summary")
+    assert "confirm" not in summary_btn
