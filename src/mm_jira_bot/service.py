@@ -42,6 +42,7 @@ from mm_jira_bot.formatting import (
     format_thread_status_changed,
     format_thread_validity_changed,
     is_resolved_alert,
+    mark_incident_message_completed,
 )
 from mm_jira_bot.jira import (
     VALID_INCIDENT_CONFIRMED_VALUE,
@@ -886,6 +887,8 @@ class IncidentBotService:
 
         if self.llm is None:
             if end_result is not None:
+                if end_result.status == ConfirmationStatus.INCIDENT_ENDED:
+                    await self._mark_incident_post_completed(post.id)
                 return end_result
             log.info(
                 "postmortem.skipped_llm_not_configured",
@@ -897,13 +900,42 @@ class IncidentBotService:
                 message="Reaction ignored: LLM postmortem generation is not configured.",
             )
 
-        return await self.generate_incident_postmortem(
+        result = await self.generate_incident_postmortem(
             post,
             reacted_by_user_id=reacted_by_user_id,
             ended_at=ended_at,
             source=source,
             existing_ticket=ticket,
         )
+        if result.status == ConfirmationStatus.INCIDENT_ENDED:
+            await self._mark_incident_post_completed(post.id)
+        return result
+
+    async def _mark_incident_post_completed(self, incident_post_id: str) -> None:
+        """Edit the incident-channel message title to the green "завершён" state.
+
+        Only the bot-authored incident message (alert-originated path) carries
+        the title; for a manual incident the "incident post" is the human's own
+        message (`incident_post_id == mattermost_post_id`), so it is left alone.
+        Best-effort: a failed edit never breaks the end/postmortem flow.
+        """
+        ticket = self.repository.get_by_incident_post_id(incident_post_id)
+        if ticket is None or ticket.incident_post_id is None:
+            return
+        if ticket.incident_post_id == ticket.mattermost_post_id:
+            return
+        try:
+            post = await self.mattermost.get_post(ticket.incident_post_id)
+            new_message = mark_incident_message_completed(post.message)
+            if new_message == post.message:
+                return
+            await self.mattermost.update_post(ticket.incident_post_id, message=new_message)
+        except ApiError as exc:
+            log.warning(
+                "incident.message.complete_update_failed",
+                incident_post_id=ticket.incident_post_id,
+                error=str(exc),
+            )
 
     async def generate_incident_postmortem(
         self,

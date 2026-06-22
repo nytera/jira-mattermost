@@ -42,6 +42,7 @@ class FakeMattermostClient:
         self.posts: dict[str, MattermostPost] = {}
         self.created_posts: list[dict] = []
         self.opened_dialogs: list[dict] = []
+        self.updated_posts: list[dict] = []
         self.display_names: dict[str, str] = {}
         self.username_to_id: dict[str, str] = {}
         self.usernames_lookups: list[list[str]] = []
@@ -99,6 +100,11 @@ class FakeMattermostClient:
         )
         self.posts[post.id] = post
         return post
+
+    async def update_post(self, post_id: str, *, message: str) -> None:
+        self.updated_posts.append({"post_id": post_id, "message": message})
+        if post_id in self.posts:
+            self.posts[post_id] = replace(self.posts[post_id], message=message)
 
     async def open_dialog(
         self,
@@ -1143,7 +1149,7 @@ async def test_replies_in_alert_thread_on_status_change(service):
         if created["channel_id"] == "incidents-channel"
     ]
     assert len(incident_posts) == 1
-    assert "Подтвердил: `@validator`" in incident_posts[0]["message"]
+    assert "Подтвердил: @validator" in incident_posts[0]["message"]
 
 
 def test_extracts_post_id_from_mattermost_permalink():
@@ -2307,7 +2313,7 @@ def test_builds_incident_channel_message(service):
     assert "Исходный алерт" in message
     assert "OPS-1" in message
     assert "@validator" in message
-    assert "Время подтверждения: `2026-05-30T01:30:00+03:00`" in message
+    assert "Время подтверждения: 30.05.2026 01:30" in message
 
 
 def _build_service(settings):
@@ -3130,3 +3136,26 @@ async def test_incident_card_validity_on_alert_incident(settings):
 
     assert "Ложный" in result.message
     assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+
+
+@pytest.mark.asyncio
+async def test_completing_alert_incident_updates_title_to_done(settings):
+    service = _incident_service(settings)
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    incident_post_id = ticket.incident_post_id
+    assert "🔴 Инцидент открыт" in service.mattermost.posts[incident_post_id].message
+
+    await service.handle_incident_action(
+        action="end_incident", incident_post_id=incident_post_id, user_id="closer"
+    )
+
+    updated = service.mattermost.posts[incident_post_id].message
+    assert "🟢 Инцидент завершён" in updated
+    assert "🔴 Инцидент открыт" not in updated

@@ -147,6 +147,17 @@ def format_thread_validity_changed(
     )
 
 
+# Incident-message title: red while open, green once the incident is ended. The
+# completion update keys off the exact open-title line, so keep them in sync.
+INCIDENT_TITLE_OPEN = "### 🔴 Инцидент открыт"
+INCIDENT_TITLE_DONE = "### 🟢 Инцидент завершён"
+
+
+def mark_incident_message_completed(message: str) -> str:
+    """Swap the open title for the completed one in an incident message."""
+    return message.replace(INCIDENT_TITLE_OPEN, INCIDENT_TITLE_DONE, 1)
+
+
 def format_incident_message(
     ticket: TicketView,
     *,
@@ -161,7 +172,7 @@ def format_incident_message(
         if ticket.jira_issue_key and ticket.jira_issue_url
         else "Jira issue пока недоступна"
     )
-    lines = ["### Подтверждённый инцидент", ""]
+    lines = [INCIDENT_TITLE_OPEN, ""]
     if include_alert_text and ticket.mattermost_message_text.strip():
         lines.extend([ticket.mattermost_message_text, ""])
     if include_alert_link:
@@ -169,8 +180,9 @@ def format_incident_message(
     lines.extend(
         [
             f"- Задача Jira: {jira_part}",
-            f"- Подтвердил: `{confirmed_by}`",
-            f"- Время подтверждения: `{confirmed_at.isoformat()}`",
+            # No backticks so the @mention renders as a live, pinging mention.
+            f"- Подтвердил: {confirmed_by}",
+            f"- Время подтверждения: {confirmed_at.strftime('%d.%m.%Y %H:%M')}",
         ]
     )
     return "\n".join(lines)

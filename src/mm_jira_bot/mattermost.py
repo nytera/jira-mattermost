@@ -244,6 +244,17 @@ class MattermostClient(AsyncApiClient):
             mattermost_channel_id=channel_id,
         )
 
+    async def update_post(self, post_id: str, *, message: str) -> None:
+        """Patch an existing post's message (Mattermost `PUT .../patch`)."""
+        await self._request(
+            "PUT",
+            f"/api/v4/posts/{post_id}/patch",
+            json={"message": message},
+            error_message="Failed to update Mattermost post",
+            event="mattermost.update_post",
+            mattermost_post_id=post_id,
+        )
+
     async def open_dialog(
         self,
         *,
