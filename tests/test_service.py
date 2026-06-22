@@ -2477,6 +2477,45 @@ async def test_issue_reply_has_no_buttons_without_public_url(service):
 
 
 @pytest.mark.asyncio
+async def test_issue_reply_has_no_buttons_when_interactive_buttons_disabled(settings):
+    # Emoji-only mode: SERVICE_PUBLIC_URL is set but the toggle is off, so the
+    # issue-created reply degrades to the plain text fallback (no cards).
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=False,
+        )
+    )
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(post)
+
+    reply = _issue_reply(service, post.id)
+    assert "Создана задача Jira" in reply["message"]
+    assert "attachments" not in reply["props"]
+
+
+@pytest.mark.asyncio
+async def test_manual_incident_no_card_when_interactive_buttons_disabled(settings):
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=False,
+        )
+    )
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_manual_incident_post(post)
+
+    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
+    assert replies == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "selected_option,expected_label",
     [

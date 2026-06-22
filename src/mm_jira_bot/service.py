@@ -241,6 +241,16 @@ class IncidentBotService:
     def _is_authorized(self, user_id: str) -> bool:
         return not self._authorization_enforced or user_id in self._authorized_user_ids
 
+    def _interactive_controls_enabled(self) -> bool:
+        """Whether to attach interactive button/menu cards (vs. emoji-only mode).
+
+        Controls need an absolute callback URL (``SERVICE_PUBLIC_URL``); even with
+        one configured, ``INTERACTIVE_BUTTONS_ENABLED=false`` forces emoji-only
+        mode, dropping every card and leaving the emoji-reaction flow as the only
+        entry point.
+        """
+        return bool(self.settings.service_public_url) and self.settings.interactive_buttons_enabled
+
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
         if posted:
@@ -271,9 +281,10 @@ class IncidentBotService:
 
         Only root posts from real users (no bots/webhooks) qualify. The Jira
         issue is not created here — it is created when someone clicks the button.
-        The controls need an absolute callback URL, so without SERVICE_PUBLIC_URL
-        we do nothing and leave the checkmark flow as the fallback. Idempotent:
-        the controls reply is posted once, guarded by the unique ticket row.
+        Without interactive controls (no SERVICE_PUBLIC_URL or
+        INTERACTIVE_BUTTONS_ENABLED=false) we do nothing and leave the checkmark
+        flow as the fallback. Idempotent: the controls reply is posted once,
+        guarded by the unique ticket row.
         """
         if post.channel_id != self.settings.mattermost_incident_channel_id:
             return
@@ -281,7 +292,7 @@ class IncidentBotService:
             return
         if self._is_bot_post(post):
             return
-        if not self.settings.service_public_url:
+        if not self._interactive_controls_enabled():
             return
         channel_name = post.channel_name or await self.mattermost.get_channel_name(post.channel_id)
         _ticket, created = self.repository.create_or_get_incident_thread(
@@ -478,10 +489,12 @@ class IncidentBotService:
         Returns two stacked blocks in one reply: a blue main block with the
         "Создана задача" notice, the validity menu, and the incident/summary
         buttons under it, then a gray feedback block below. Interactive controls
-        need an absolute callback URL, so they are attached when
-        ``SERVICE_PUBLIC_URL`` is configured. Emoji reactions remain the fallback.
+        need an absolute callback URL and may be turned off entirely, so they are
+        attached only when ``SERVICE_PUBLIC_URL`` is configured and
+        ``INTERACTIVE_BUTTONS_ENABLED`` is not ``false``. Emoji reactions remain
+        the fallback.
         """
-        if not self.settings.service_public_url:
+        if not self._interactive_controls_enabled():
             return None
         callback_url = alert_action_callback_url(self.settings.service_public_url)
         return [
@@ -676,7 +689,7 @@ class IncidentBotService:
             update_attachments = None
             if (
                 result.status == ConfirmationStatus.INCIDENT_ENDED
-                and self.settings.service_public_url
+                and self._interactive_controls_enabled()
             ):
                 update_attachments = [
                     self._incident_controls_attachment(incident_post_id, completed=True)
@@ -756,14 +769,18 @@ class IncidentBotService:
             self.repository.attach_jira_issue(ticket.mattermost_post_id, issue.key, issue.url)
             ticket = self.repository.get_by_post_id(ticket.mattermost_post_id) or ticket
 
-        callback_url = alert_action_callback_url(self.settings.service_public_url)
-        attachment = build_incident_controls_attachment(
-            incident_post_id=incident_post_id,
-            callback_url=callback_url,
-        )
+        update_attachments = None
+        if self._interactive_controls_enabled():
+            callback_url = alert_action_callback_url(self.settings.service_public_url)
+            update_attachments = [
+                build_incident_controls_attachment(
+                    incident_post_id=incident_post_id,
+                    callback_url=callback_url,
+                )
+            ]
         return ActionResult(
             message=f"Создана задача {ticket.jira_issue_key}.",
-            update_attachments=[attachment],
+            update_attachments=update_attachments,
         )
 
     async def open_feedback_dialog(
@@ -1960,7 +1977,7 @@ class IncidentBotService:
         )
         # Same management controls as a manual incident (validity menu, end,
         # summary), minus "Создать задачу" since the Jira issue already exists.
-        if self.settings.service_public_url and ticket.jira_issue_key:
+        if self._interactive_controls_enabled() and ticket.jira_issue_key:
             callback_url = alert_action_callback_url(self.settings.service_public_url)
             await self._post_incident_thread_reply(
                 incident_post.id,

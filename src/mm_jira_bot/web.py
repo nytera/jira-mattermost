@@ -104,6 +104,9 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         mattermost_bot_user_id=settings.mattermost_bot_user_id,
         enable_websocket=settings.enable_websocket,
         enable_backfill_on_startup=settings.enable_backfill_on_startup,
+        interactive_buttons_enabled=(
+            settings.interactive_buttons_enabled and bool(settings.service_public_url)
+        ),
         jira_base_url=settings.jira_base_url,
         jira_project_key=settings.jira_project_key,
         jira_issue_type=settings.jira_issue_type,

@@ -101,6 +101,7 @@ class Settings:
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     service_public_url: str | None = None
+    interactive_buttons_enabled: bool = True
     mattermost_false_incident_reaction_name: str = "man_gesturing_no"
     mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
     mattermost_authorized_usernames: tuple[str, ...] = ()
@@ -157,6 +158,7 @@ class Settings:
             service_public_url=(
                 _env("SERVICE_PUBLIC_URL").rstrip("/") if _env("SERVICE_PUBLIC_URL") else None
             ),
+            interactive_buttons_enabled=_env("INTERACTIVE_BUTTONS_ENABLED", "true") != "false",
             mattermost_false_incident_reaction_name=_env(
                 "MATTERMOST_FALSE_INCIDENT_REACTION_NAME", "man_gesturing_no"
             ),

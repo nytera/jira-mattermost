@@ -105,8 +105,10 @@ swallow `ApiError` so a failed notification never breaks the main flow.
 **Interactive buttons/menu** (`handle_alert_action`) are an alternative entry
 point to the same two flows plus a thread summary. The bot can't attach controls
 to the alert (a Grafana/user post), so it hangs them on its own issue-created
-reply via `_alert_action_attachments` (only when `SERVICE_PUBLIC_URL` is set;
-emoji reactions stay as the fallback). Current UI is a single thread reply with
+reply via `_alert_action_attachments` (only when `_interactive_controls_enabled()`
+— `SERVICE_PUBLIC_URL` set and `INTERACTIVE_BUTTONS_ENABLED` not `false`; emoji
+reactions stay as the fallback, and `INTERACTIVE_BUTTONS_ENABLED=false` forces that
+emoji-only mode for every card). Current UI is a single thread reply with
 two stacked attachment blocks: a blue (`#3B82F6`) main card with bold
 `Создана задача`, the `Выбрать валидность ▼` menu, and the `🚨 Инцидент` /
 `📝 Summary` buttons under it, then a separate gray (`#4B5563`) card below with
