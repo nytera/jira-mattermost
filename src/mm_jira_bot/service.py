@@ -2086,6 +2086,12 @@ class IncidentBotService:
         )
 
     async def _ensure_jira_issue(self, ticket: AlertTicket) -> None:
+        """Create the Jira issue for a firing alert and post the "Создана задача"
+        reply once (guarded by the existing key). Resolved alerts never reach
+        here — they are skipped in ``handle_alert_post`` before a ticket exists —
+        so the on-call ``MATTERMOST_DUTY_MENTION`` ping fires only for firing
+        alerts, above the boxed notice.
+        """
         if ticket.jira_issue_key:
             return
         try:
@@ -2106,6 +2112,7 @@ class IncidentBotService:
                 title=display_issue.key,
                 title_link=display_issue.url,
             )
+            duty_mention = self.settings.mattermost_duty_mention
             if action_attachments is not None:
                 await self._post_alert_thread_reply(
                     ticket.mattermost_post_id,
@@ -2116,6 +2123,7 @@ class IncidentBotService:
                         "jira_issue_key": issue.key,
                         "attachments": action_attachments,
                     },
+                    mention=duty_mention,
                 )
             else:
                 await self._post_alert_thread_reply(
@@ -2124,6 +2132,7 @@ class IncidentBotService:
                     message=issue_message,
                     event="mattermost.alert_thread.issue_notice_published",
                     props={"jira_issue_key": issue.key},
+                    mention=duty_mention,
                 )
         except ApiError as exc:
             self.repository.mark_jira_create_failed(ticket.mattermost_post_id, str(exc))
@@ -2182,9 +2191,17 @@ class IncidentBotService:
         event: str,
         props: dict | None = None,
         color: str = NOTICE_ATTACHMENT_COLOR,
+        mention: str | None = None,
     ) -> None:
-        """Reply in the alert thread; best-effort, never fails the caller."""
+        """Reply in the alert thread; best-effort, never fails the caller.
+
+        ``mention`` (e.g. an on-call ``@group``) is placed as bare text above
+        the boxed notice so the ping actually fires — attachment text does not
+        notify.
+        """
         message, props = self._box_thread_reply(message, props, color)
+        if mention:
+            message = f"{mention}\n{message}" if message else mention
         thread_props = {"mattermost_alert_post_id": post_id, **(props or {})}
         try:
             reply = await self.mattermost.create_post(

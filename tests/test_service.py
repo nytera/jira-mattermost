@@ -2527,6 +2527,55 @@ async def test_issue_reply_has_no_buttons_when_interactive_buttons_disabled(sett
 
 
 @pytest.mark.asyncio
+async def test_firing_alert_pings_duty_above_box_with_buttons(settings):
+    # Interactive mode: the duty @mention is a bare message above the box so the
+    # ping fires; the "Создана задача" notice stays inside the attachment.
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com/",
+            mattermost_duty_mention=":look: @sre-ads-duty",
+        )
+    )
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(post)
+
+    reply = _issue_reply(service, post.id)
+    assert reply["message"] == ":look: @sre-ads-duty"
+    assert reply["props"]["attachments"][0]["text"] == (
+        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
+    )
+
+
+@pytest.mark.asyncio
+async def test_firing_alert_pings_duty_above_box_emoji_only(settings):
+    # Emoji-only mode: notice is boxed, duty @mention stays bare above it.
+    service = _build_service(replace(settings, mattermost_duty_mention=":look: @sre-ads-duty"))
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(post)
+
+    reply = _issue_reply(service, post.id)
+    assert reply["message"] == ":look: @sre-ads-duty"
+    assert "Создана задача Jira" in reply["props"]["attachments"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_firing_alert_no_duty_ping_when_unset(service):
+    # No MATTERMOST_DUTY_MENTION → message stays empty (no regression).
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(post)
+
+    reply = _issue_reply(service, post.id)
+    assert reply["message"] == ""
+
+
+@pytest.mark.asyncio
 async def test_manual_incident_no_card_when_interactive_buttons_disabled(settings):
     service = _build_service(
         replace(

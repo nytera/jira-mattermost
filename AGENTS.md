@@ -79,7 +79,7 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 
 ### Two flows, both idempotent
 
-1. **Alert → Jira issue** (`handle_alert_post`): skip non-alert-channel and own-bot posts → `create_or_get_alert` inserts an `alert_tickets` row (unique `mattermost_post_id`) → `_ensure_jira_issue` creates the Jira issue, stores `jira_issue_key`, and replies in the alert thread with the issue link. The DB row is created *before* the Jira call so a crash mid-create is retried later.
+1. **Alert → Jira issue** (`handle_alert_post`): skip non-alert-channel, own-bot, and resolved-alert posts (`is_resolved_alert`) → `create_or_get_alert` inserts an `alert_tickets` row (unique `mattermost_post_id`) → `_ensure_jira_issue` creates the Jira issue, stores `jira_issue_key`, and replies in the alert thread with the issue link. When `MATTERMOST_DUTY_MENTION` is set, that reply carries the on-call mention as bare text above the boxed "Создана задача" notice so the ping fires (resolved alerts are skipped before this point, so only firing alerts ping). The DB row is created *before* the Jira call so a crash mid-create is retried later.
 2. **Confirmation → valid incident** (`confirm_incident`, triggered by the `:incident:` reaction or `/incident <permalink>`): posts to the incidents channel, sets Jira `Valid Incident = Валидный`, adds a comment, optional transition, and replies in the alert thread about the status change. If the Jira issue does not exist yet, it is saved as `pending_confirmation` and completed by `pending_work_loop`.
 
 When `JIRA_CREATE_ENABLED=false` (test mode), the `JiraClient` makes **no Jira
