@@ -888,18 +888,24 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
     assert "Постмортем сгенерирован" in comment
     assert "API начал отвечать 500." in comment
     assert "##Хронология" in comment
-    thread_replies = [
+    # The incident thread gets the fact-based summary (own LLM prompt), posted as
+    # a "Генерация саммари…" placeholder that is then edited into the final reply.
+    placeholders = [
         created
         for created in service.mattermost.created_posts
         if created["root_id"] == ticket.incident_post_id
-        and "Инцидентный отчет готов" in _reply_text(created)
+        and "Генерация саммари" in _reply_text(created)
     ]
-    assert len(thread_replies) == 1
-    assert "**Что случилось:**" in _reply_text(thread_replies[0])
-    assert "**Как решили:**" in _reply_text(thread_replies[0])
-    assert "**Action items:**" in _reply_text(thread_replies[0])
-    assert "##Сводка" not in _reply_text(thread_replies[0])
-    assert "##Хронология" not in _reply_text(thread_replies[0])
+    assert len(placeholders) == 1
+    final = [
+        u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
+    ]
+    assert len(final) == 1
+    assert "Саммари треда" in _reply_text(final[0])
+    assert "всё сломалось" in _reply_text(final[0])
+    # The completion summary still links back to the Jira postmortem.
+    assert "Полный постмортем отправлен в Jira" in _reply_text(final[0])
+    assert "OPS-1" in _reply_text(final[0])
 
 
 @pytest.mark.asyncio
@@ -955,14 +961,19 @@ async def test_checkmark_on_manual_incident_thread_creates_postmortem_issue(serv
     assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))]
     assert service.jira.generic_comments
     assert "API начал отвечать 500." in service.jira.generic_comments[-1][1]
-    thread_replies = [
+    placeholders = [
         created
         for created in service.mattermost.created_posts
-        if created["root_id"] == root.id and "Инцидентный отчет готов" in _reply_text(created)
+        if created["root_id"] == root.id and "Генерация саммари" in _reply_text(created)
     ]
-    assert len(thread_replies) == 1
-    assert "Полный постмортем" in _reply_text(thread_replies[0])
-    assert "##Сводка" not in _reply_text(thread_replies[0])
+    assert len(placeholders) == 1
+    final = [
+        u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
+    ]
+    assert len(final) == 1
+    assert "Саммари треда" in _reply_text(final[0])
+    assert "Полный постмортем отправлен в Jira" in _reply_text(final[0])
+    assert "OPS-1" in _reply_text(final[0])
 
 
 def test_postmortem_summary_limits_llm_title_words_and_chars():
@@ -1174,8 +1185,8 @@ async def test_replies_in_alert_thread_on_status_change(service):
     assert status_reply["message"] == ""
     box = status_reply["props"]["attachments"][0]
     assert box["color"] == NOTICE_ATTACHMENT_COLOR
-    assert "Инцидент заведён" in box["text"]
-    assert "Ссылка на сообщение" in box["text"]
+    assert "Инцидент заведен" in box["text"]
+    assert "Ссылка на инцидент" in box["text"]
     assert box["fallback"]
 
     incident_posts = [
@@ -2534,6 +2545,33 @@ async def test_manual_incident_no_card_when_interactive_buttons_disabled(setting
 
 
 @pytest.mark.asyncio
+async def test_manual_incident_pings_duty_in_emoji_only_mode(settings):
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=False,
+            mattermost_duty_mention=":look: @sre-ads-duty",
+        )
+    )
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_manual_incident_post(post)
+
+    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
+    assert len(replies) == 1
+    # Bare @mention in the message text (not a boxed attachment) so the ping fires.
+    assert replies[0]["message"] == ":look: @sre-ads-duty"
+    assert not (replies[0]["props"] or {}).get("attachments")
+
+    # Idempotent: a redelivered event does not post a second ping.
+    await service.handle_manual_incident_post(post)
+    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
+    assert len(replies) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "selected_option,expected_label",
     [
@@ -2620,7 +2658,7 @@ async def test_incident_button_swaps_to_confirmed(settings):
     status_replies = [
         c
         for c in service.mattermost.created_posts
-        if c["root_id"] == post.id and "Ссылка на сообщение" in _reply_text(c)
+        if c["root_id"] == post.id and "Ссылка на инцидент" in _reply_text(c)
     ]
     assert len(status_replies) == 1
 
@@ -2637,13 +2675,19 @@ async def test_summary_button_posts_thread_reply(service):
     )
 
     assert len(service.llm.summary_prompts) == 1
-    summary_replies = [
+    # The bot first posts a "Генерация саммари…" placeholder, then edits it in place.
+    placeholders = [
         created
         for created in service.mattermost.created_posts
-        if created["root_id"] == post.id and "Саммари треда" in _reply_text(created)
+        if created["root_id"] == post.id and "Генерация саммари" in _reply_text(created)
     ]
-    assert len(summary_replies) == 1
-    assert "всё сломалось" in _reply_text(summary_replies[0])
+    assert len(placeholders) == 1
+    updates = [
+        u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
+    ]
+    assert len(updates) == 1
+    assert "Саммари треда" in _reply_text(updates[0])
+    assert "всё сломалось" in _reply_text(updates[0])
     assert "опубликовано" in result.message
 
 

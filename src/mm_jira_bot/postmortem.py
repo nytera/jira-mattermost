@@ -180,81 +180,17 @@ def build_postmortem_comment(
     )
 
 
-def _report_title(report: str) -> str:
-    for line in report.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
-    return "Инцидентный отчет"
-
-
-def _section_key(line: str) -> str | None:
-    stripped = line.strip()
-    if not stripped.startswith("##"):
-        return None
-    return stripped.lstrip("#").strip().casefold()
-
-
-def _report_sections(report: str) -> dict[str, list[str]]:
-    sections: dict[str, list[str]] = {}
-    current_key: str | None = None
-    for line in report.splitlines():
-        section_key = _section_key(line)
-        if section_key is not None:
-            current_key = section_key
-            sections.setdefault(current_key, [])
-            continue
-        if current_key is not None:
-            sections[current_key].append(line)
-    return sections
-
-
-def _section_preview(
-    sections: dict[str, list[str]],
-    key: str,
-    *,
-    limit: int,
-) -> str | None:
-    lines = [
-        line.strip()
-        for line in sections.get(key.casefold(), [])
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    if not lines:
-        return None
-    text = "\n".join(lines)
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
-
-
-def format_postmortem_thread_reply(
+def format_postmortem_jira_footer(
     *,
     jira_issue_key: str | None,
     jira_issue_url: str | None,
-    report: str,
 ) -> str:
+    """Trailing line that points the incident thread at the Jira postmortem."""
     if jira_issue_key and jira_issue_url:
         jira_text = f"[{jira_issue_key}]({jira_issue_url})"
     else:
         jira_text = jira_issue_key or "Jira issue"
-    sections = _report_sections(report)
-    title = _report_title(report)
-    summary = _section_preview(sections, "сводка", limit=700)
-    solution = _section_preview(sections, "решение", limit=500)
-    action_items = _section_preview(sections, "action items", limit=500)
-    lines = [
-        f"✅ Инцидентный отчет готов: {jira_text}",
-        f"**Итог:** {title}",
-    ]
-    if summary:
-        lines.extend(["", f"**Что случилось:**\n{summary}"])
-    if solution:
-        lines.extend(["", f"**Как решили:**\n{solution}"])
-    if action_items:
-        lines.extend(["", f"**Action items:**\n{action_items}"])
-    lines.extend(["", "Полный постмортем с хронологией и извлеченными уроками отправлен в Jira."])
-    return "\n".join(lines)
+    return f"Полный постмортем отправлен в Jira: {jira_text}"
 
 
 def extract_postmortem_summary(report: str, *, fallback: str) -> str:

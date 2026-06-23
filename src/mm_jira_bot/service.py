@@ -60,7 +60,7 @@ from mm_jira_bot.postmortem import (
     build_postmortem_comment,
     build_postmortem_prompt,
     extract_postmortem_summary,
-    format_postmortem_thread_reply,
+    format_postmortem_jira_footer,
     format_thread_transcript,
 )
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
@@ -79,6 +79,8 @@ INCIDENT_END_REACTION_NAMES = {
     "heavy_check_mark",
     "ballot_box_with_check",
 }
+SUMMARY_PENDING_TEXT = "⏳ Генерация саммари…"
+SUMMARY_FAILED_TEXT = "Не удалось сгенерировать саммари, попробуйте позже."
 
 
 def _copy_post_attachments(post: MattermostPost) -> list[dict]:
@@ -278,14 +280,17 @@ class IncidentBotService:
         return props.get("from_bot") == "true" or props.get("from_webhook") == "true"
 
     async def handle_manual_incident_post(self, post: MattermostPost) -> None:
-        """A human's root post in the incident channel: offer a "Создать задачу" card.
+        """A human's root post in the incident channel: ping on-call and (when
+        interactive controls are on) offer a "Создать задачу" card.
 
         Only root posts from real users (no bots/webhooks) qualify. The Jira
-        issue is not created here — it is created when someone clicks the button.
-        Without interactive controls (no SERVICE_PUBLIC_URL or
-        INTERACTIVE_BUTTONS_ENABLED=false) we do nothing and leave the checkmark
-        flow as the fallback. Idempotent: the controls reply is posted once,
-        guarded by the unique ticket row.
+        issue is not created here — it is created on the button click or the
+        checkmark. With interactive controls (SERVICE_PUBLIC_URL +
+        INTERACTIVE_BUTTONS_ENABLED≠false) we post the card with the duty mention
+        above it; in emoji-only mode we still post the duty mention alone so the
+        manual incident gets noticed, leaving the checkmark flow as the action
+        path. When no duty mention is configured, emoji-only mode posts nothing.
+        Idempotent: the reply is posted once, guarded by the unique ticket row.
         """
         if post.channel_id != self.settings.mattermost_incident_channel_id:
             return
@@ -293,7 +298,11 @@ class IncidentBotService:
             return
         if self._is_bot_post(post):
             return
-        if not self._interactive_controls_enabled():
+        interactive = self._interactive_controls_enabled()
+        duty_mention = self.settings.mattermost_duty_mention
+        # Emoji-only mode with nothing to ping → leave the checkmark flow as the
+        # sole fallback, exactly as before.
+        if not interactive and not duty_mention:
             return
         channel_name = post.channel_name or await self.mattermost.get_channel_name(post.channel_id)
         _ticket, created = self.repository.create_or_get_incident_thread(
@@ -303,13 +312,23 @@ class IncidentBotService:
         )
         if not created:
             return
+        if not interactive:
+            # No controls: just ping on-call so the manual incident is noticed.
+            # Kept as a bare message (not a boxed notice) so the @mention notifies.
+            await self._post_incident_thread_mention(
+                post.id,
+                channel_id=post.channel_id,
+                message=duty_mention,
+                event="mattermost.incident_thread.duty_pinged",
+            )
+            return
         callback_url = alert_action_callback_url(self.settings.service_public_url)
         await self._post_incident_thread_reply(
             post.id,
             channel_id=post.channel_id,
             # The duty mention goes in the message text (above the card) so the
             # @group ping actually fires — attachment text does not notify.
-            message=self.settings.mattermost_duty_mention or "",
+            message=duty_mention or "",
             event="mattermost.incident_thread.controls_published",
             props={
                 "attachments": [
@@ -319,6 +338,37 @@ class IncidentBotService:
                 ]
             },
         )
+
+    async def _post_incident_thread_mention(
+        self,
+        post_id: str,
+        *,
+        channel_id: str,
+        message: str,
+        event: str,
+    ) -> None:
+        """Post a bare @mention reply in an incident thread.
+
+        Unlike ``_post_incident_thread_reply`` this keeps the text in the post
+        ``message`` (no boxed attachment) so the mention actually fires a ping.
+        Best-effort: a failed post never breaks the caller.
+        """
+        try:
+            reply = await self.mattermost.create_post(
+                channel_id=channel_id,
+                message=message,
+                root_id=post_id,
+                props={"mattermost_incident_post_id": post_id},
+            )
+        except ApiError as exc:
+            log.warning(
+                "mattermost.incident_thread.reply_failed",
+                mattermost_post_id=post_id,
+                event_kind=event,
+                error=str(exc),
+            )
+            return
+        log.info(event, mattermost_post_id=post_id, reply_post_id=reply.id)
 
     async def handle_alert_post(self, post: MattermostPost) -> AlertTicket | None:
         if post.channel_id != self.settings.mattermost_alert_channel_id:
@@ -905,14 +955,6 @@ class IncidentBotService:
                 root_post,
                 reacted_by_user_id=requested_by_user_id,
             )
-            transcript = format_thread_transcript(thread_messages)
-            prompt = build_thread_summary_prompt(
-                thread_url=self.mattermost.permalink(root_post.id),
-                participants=participants,
-                transcript=transcript,
-                max_chars=self.settings.llm_thread_max_chars,
-            )
-            summary = await self.llm.generate_summary(prompt)
         except ApiError as exc:
             log.error(
                 "summary.failed",
@@ -920,15 +962,20 @@ class IncidentBotService:
                 source=source,
                 error=str(exc),
             )
-            return ActionResult(message="Не удалось сгенерировать саммари, попробуйте позже.")
+            return ActionResult(message=SUMMARY_FAILED_TEXT)
 
-        await self._post_alert_thread_reply(
-            root_post.id,
+        ok = await self._publish_thread_summary(
+            root_post_id=root_post.id,
             channel_id=root_post.channel_id,
-            message=format_thread_summary_reply(summary),
+            thread_url=self.mattermost.permalink(root_post.id),
+            participants=participants,
+            transcript=format_thread_transcript(thread_messages),
+            requested_by_user_id=requested_by_user_id,
+            thread_id_key="mattermost_alert_post_id",
             event="mattermost.alert_thread.summary_published",
-            props={"summary_requested_by_user_id": requested_by_user_id},
         )
+        if not ok:
+            return ActionResult(message=SUMMARY_FAILED_TEXT)
         log.info(
             "summary.completed",
             mattermost_post_id=root_post.id,
@@ -1046,6 +1093,11 @@ class IncidentBotService:
     ) -> ConfirmationResult:
         incident_thread_url = self.mattermost.permalink(root_post.id)
         ticket = existing_ticket
+        summary_base_props = self._summary_base_props(
+            "mattermost_incident_post_id", root_post.id, reacted_by_user_id
+        )
+        summary_event = "mattermost.incident_thread.postmortem_published"
+        placeholder_id: str | None = None
         try:
             (
                 thread_messages,
@@ -1056,6 +1108,15 @@ class IncidentBotService:
                 reacted_by_user_id=reacted_by_user_id,
             )
             transcript = format_thread_transcript(thread_messages)
+            # Placeholder up front so the whole wait (postmortem LLM + Jira calls +
+            # summary LLM) shows "Генерация саммари…"; it is edited into the final
+            # reply below, or into the error notice if the Jira step fails.
+            placeholder_id = await self._post_summary_placeholder(
+                root_post_id=root_post.id,
+                channel_id=root_post.channel_id,
+                base_props=summary_base_props,
+                event=summary_event,
+            )
             prompt = build_postmortem_prompt(
                 incident_thread_url=incident_thread_url,
                 participants=participants,
@@ -1115,34 +1176,40 @@ class IncidentBotService:
                 source=source,
                 error=str(exc),
             )
-            await self._post_incident_thread_reply(
+            # Edit the placeholder into the failure notice so it never stays stuck
+            # on "Генерация саммари…".
+            await self._finalize_thread_summary_reply(
+                placeholder_id,
                 root_post.id,
                 channel_id=root_post.channel_id,
                 message=(
                     "Не удалось сгенерировать или отправить постмортем в Jira. "
                     "Можно повторить реакцию позже."
                 ),
+                base_props=summary_base_props,
                 event="mattermost.incident_thread.postmortem_failed_notice",
-                props={"postmortem_error": str(exc)},
             )
             return ConfirmationResult(
                 status=ConfirmationStatus.ERROR,
                 message="Postmortem generation failed; please retry.",
             )
 
-        await self._post_incident_thread_reply(
-            root_post.id,
+        # The thread gets the fact-based incident summary (own LLM prompt); the
+        # Jira postmortem above is generated separately and stays untouched. The
+        # footer keeps the link to that postmortem in the thread.
+        await self._generate_and_finalize_summary(
+            placeholder_id=placeholder_id,
+            root_post_id=root_post.id,
             channel_id=root_post.channel_id,
-            message=format_postmortem_thread_reply(
+            base_props=summary_base_props,
+            thread_url=incident_thread_url,
+            participants=participants,
+            transcript=transcript,
+            event=summary_event,
+            jira_ref=format_postmortem_jira_footer(
                 jira_issue_key=ticket.jira_issue_key,
                 jira_issue_url=ticket.jira_issue_url,
-                report=report,
             ),
-            event="mattermost.incident_thread.postmortem_published",
-            props={
-                "jira_issue_key": ticket.jira_issue_key,
-                "postmortem_author_user_id": reacted_by_user_id,
-            },
         )
         log.info(
             "postmortem.completed",
@@ -1281,6 +1348,196 @@ class IncidentBotService:
             "attachments": [{"fallback": message, "color": color, "text": message}],
         }
         return "", boxed
+
+    async def _create_thread_summary_reply(
+        self,
+        post_id: str,
+        *,
+        channel_id: str,
+        message: str,
+        base_props: dict,
+        event: str,
+    ) -> str | None:
+        """Create a boxed thread reply and return its id (None if the post fails)."""
+        boxed_message, props = self._box_thread_reply(
+            message, dict(base_props), NOTICE_ATTACHMENT_COLOR
+        )
+        try:
+            reply = await self.mattermost.create_post(
+                channel_id=channel_id,
+                message=boxed_message,
+                root_id=post_id,
+                props=props,
+            )
+        except ApiError as exc:
+            log.warning(
+                "mattermost.thread.summary_reply_failed",
+                mattermost_post_id=post_id,
+                event_kind=event,
+                error=str(exc),
+            )
+            return None
+        log.info(event, mattermost_post_id=post_id, reply_post_id=reply.id)
+        return reply.id
+
+    async def _finalize_thread_summary_reply(
+        self,
+        reply_id: str | None,
+        post_id: str,
+        *,
+        channel_id: str,
+        message: str,
+        base_props: dict,
+        event: str,
+    ) -> None:
+        """Swap the "Генерация саммари…" placeholder for the final reply.
+
+        If the placeholder was never created (post failed), fall back to a fresh
+        reply so the summary still lands in the thread.
+        """
+        if reply_id is None:
+            await self._create_thread_summary_reply(
+                post_id,
+                channel_id=channel_id,
+                message=message,
+                base_props=base_props,
+                event=event,
+            )
+            return
+        # update_post replaces props wholesale, so re-box from base_props to keep
+        # the thread-routing keys on the post.
+        boxed_message, props = self._box_thread_reply(
+            message, dict(base_props), NOTICE_ATTACHMENT_COLOR
+        )
+        try:
+            await self.mattermost.update_post(reply_id, message=boxed_message, props=props)
+        except ApiError as exc:
+            log.warning(
+                "mattermost.thread.summary_reply_update_failed",
+                reply_post_id=reply_id,
+                event_kind=event,
+                error=str(exc),
+            )
+            return
+        log.info(event, mattermost_post_id=post_id, reply_post_id=reply_id)
+
+    @staticmethod
+    def _summary_base_props(
+        thread_id_key: str, root_post_id: str, requested_by_user_id: str
+    ) -> dict:
+        return {
+            thread_id_key: root_post_id,
+            "summary_requested_by_user_id": requested_by_user_id,
+        }
+
+    async def _post_summary_placeholder(
+        self,
+        *,
+        root_post_id: str,
+        channel_id: str,
+        base_props: dict,
+        event: str,
+    ) -> str | None:
+        """Post the "Генерация саммари…" placeholder up front so the wait has
+        feedback; the id is later handed to ``_finalize_summary_reply``."""
+        return await self._create_thread_summary_reply(
+            root_post_id,
+            channel_id=channel_id,
+            message=SUMMARY_PENDING_TEXT,
+            base_props=base_props,
+            event=f"{event}.pending",
+        )
+
+    async def _generate_and_finalize_summary(
+        self,
+        *,
+        placeholder_id: str | None,
+        root_post_id: str,
+        channel_id: str,
+        base_props: dict,
+        thread_url: str,
+        participants: list[str],
+        transcript: str,
+        event: str,
+        jira_ref: str | None = None,
+    ) -> bool:
+        """Generate the incident-report summary and edit the placeholder into the
+        final reply (or an error notice). Returns True on success.
+
+        ``jira_ref``, when set, is appended to the finished summary so the thread
+        still links to the Jira postmortem (the completion flow uses it; the
+        Summary button has no issue to point at). Callers must ensure ``self.llm``
+        is configured.
+        """
+        prompt = build_thread_summary_prompt(
+            thread_url=thread_url,
+            participants=participants,
+            transcript=transcript,
+            max_chars=self.settings.llm_thread_max_chars,
+        )
+        try:
+            summary = await self.llm.generate_summary(prompt)
+        except ApiError as exc:
+            log.error("summary.failed", mattermost_post_id=root_post_id, error=str(exc))
+            await self._finalize_thread_summary_reply(
+                placeholder_id,
+                root_post_id,
+                channel_id=channel_id,
+                message=SUMMARY_FAILED_TEXT,
+                base_props=base_props,
+                event=f"{event}.failed",
+            )
+            return False
+        final_message = format_thread_summary_reply(summary)
+        if jira_ref:
+            final_message = f"{final_message}\n\n{jira_ref}"
+        await self._finalize_thread_summary_reply(
+            placeholder_id,
+            root_post_id,
+            channel_id=channel_id,
+            message=final_message,
+            base_props=base_props,
+            event=event,
+        )
+        return True
+
+    async def _publish_thread_summary(
+        self,
+        *,
+        root_post_id: str,
+        channel_id: str,
+        thread_url: str,
+        participants: list[str],
+        transcript: str,
+        requested_by_user_id: str,
+        thread_id_key: str,
+        event: str,
+        jira_ref: str | None = None,
+    ) -> bool:
+        """Post a pending placeholder, generate the incident-report summary, then
+        edit the placeholder into the final reply. Returns True on success.
+
+        Used by the on-demand Summary button, where there is no preceding work to
+        cover; the completion flow posts the placeholder earlier itself.
+        """
+        base_props = self._summary_base_props(thread_id_key, root_post_id, requested_by_user_id)
+        placeholder_id = await self._post_summary_placeholder(
+            root_post_id=root_post_id,
+            channel_id=channel_id,
+            base_props=base_props,
+            event=event,
+        )
+        return await self._generate_and_finalize_summary(
+            placeholder_id=placeholder_id,
+            root_post_id=root_post_id,
+            channel_id=channel_id,
+            base_props=base_props,
+            thread_url=thread_url,
+            participants=participants,
+            transcript=transcript,
+            event=event,
+            jira_ref=jira_ref,
+        )
 
     async def _post_incident_thread_reply(
         self,

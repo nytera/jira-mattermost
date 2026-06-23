@@ -179,7 +179,10 @@ When `LLM_API_TOKEN` is configured, the same checkmark also generates a
 postmortem from the full incident thread through the OpenAI-compatible
 `LLM_BASE_URL`, keeps Jira description as a PM template with the incident root
 link, postmortem author, and participants, adds the generated report as a Jira
-comment, and posts a short summary back to the incident thread. A checkmark on
+comment, and posts a fact-based incident-report summary back to the incident
+thread (a separate `build_thread_summary_prompt` call — not derived from the Jira
+postmortem — published as a "Генерация саммари…" placeholder that is then edited
+into the final reply). A checkmark on
 an unmapped manual incident thread root post creates a Jira issue with a
 PM-template description, but it does not set the alert-only source/is-crit-alert
 fields. Checkmarks on incident thread replies are ignored.
@@ -192,14 +195,21 @@ handler routes incident-channel posts to `handle_manual_incident_post`: for ever
 **root** post by a real user (not a bot — filtered by `_is_bot_post`, which checks
 `props.from_bot` / `props.from_webhook` and `MATTERMOST_BOT_USER_ID`) it pre-creates
 the ticket row via `create_or_get_incident_thread` (idempotent) and posts a
-"➕ Создать задачу" card. No Jira issue yet. The card's controls carry
+"➕ Создать задачу" card with the `MATTERMOST_DUTY_MENTION` text above it. In
+emoji-only mode (no `SERVICE_PUBLIC_URL` or `INTERACTIVE_BUTTONS_ENABLED=false`)
+there is no card, but if `MATTERMOST_DUTY_MENTION` is set the handler still
+pre-creates the ticket row and posts that mention as a bare reply (via
+`_post_incident_thread_mention`, kept unboxed so the ping fires); with no duty
+mention it posts nothing and leaves the checkmark flow as the only path. No Jira
+issue yet. The card's controls carry
 `context.source = "incident"` + `incident_post_id`, so `handle_alert_action` branches
 early to `handle_incident_action` (keyed by `incident_post_id`, skips the alert-channel
 checks). Actions: `create_task` → `create_postmortem_issue` (no alert fields) and the
 action response's `update` payload swaps the card for the controls (validity menu,
 "🏁 Завершить", "📝 Саммари"); `validity` → `apply_validity_label`;
 `end_incident` → reuses `handle_incident_checkmark` (full PM); `summary` →
-`generate_thread_summary` (light). The checkmark flow stays available in parallel.
+`generate_thread_summary` (thread-only, no Jira; placeholder → edited reply). The
+checkmark flow stays available in parallel.
 
 The incident details (title, Jira link, alert link, confirmer `@mention`, time)
 render in a **gray attachment block** (`FEEDBACK_ATTACHMENT_COLOR`) placed *above*

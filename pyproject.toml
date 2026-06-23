@@ -46,6 +46,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 "src/mm_jira_bot/debug_admin.py" = ["E501"]
 "src/mm_jira_bot/jira_payload.py" = ["E501"]
 "src/mm_jira_bot/postmortem.py" = ["E501"]
+"src/mm_jira_bot/summary.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["mm_jira_bot"]
