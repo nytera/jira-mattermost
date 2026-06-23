@@ -123,16 +123,10 @@ def format_thread_status_changed(*, incident_message_url: str | None) -> str:
     return "✅ **Инцидент заведён.**"
 
 
-def format_thread_validity_changed(
-    *,
-    validity_label: str,
-    jira_issue_key: str | None,
-    jira_issue_url: str | None,
-) -> str:
-    return (
-        f"Поле «Валидность» обновлено: {validity_label}. "
-        f"Задача Jira: {_jira_link(jira_issue_key, jira_issue_url)}."
-    )
+def format_thread_validity_changed(*, validity_label: str) -> str:
+    # The Jira link is already in the "Создана задача" reply at the top of this
+    # same alert thread, so the follow-up notice doesn't repeat it.
+    return f"Поле «Валидность» обновлено: {validity_label}."
 
 
 # Incident-message title: red while open, green once closed. The completion

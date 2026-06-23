@@ -97,10 +97,16 @@ not stubbed.
 
 There is also a **lightweight validity path** (`apply_validity_label`, triggered by the two configurable reactions `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` → `Ложный` and `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` → `Ожидаемый`). It sets Jira's `Валидность` field (`JiraClient.set_validity`), optionally sets `JIRA_END_FIELD` to the reaction time, and replies in the alert thread — no incidents-channel post, comment, or transition. Last reaction wins: each distinct label overwrites the field; the `validity_label` column guards against re-applying the same label (no duplicate replies). It does **not** touch the `valid_incident` confirmation state machine and is best-effort (no `pending_work_loop` retry) — if the Jira issue is not ready, the update is skipped.
 
-Alert-thread replies (`_post_alert_thread_reply`) are best-effort: they reuse
-the alert `post_id` as `root_id`, are guarded once-only by the same early
-returns that protect issue creation / confirmation (no extra DB flag), and
-swallow `ApiError` so a failed notification never breaks the main flow.
+Alert-thread replies (`_post_alert_thread_reply`) and incident-thread replies
+(`_post_incident_thread_reply`) are best-effort: they reuse the root `post_id`
+as `root_id`, are guarded once-only by the same early returns that protect issue
+creation / confirmation (no extra DB flag), and swallow `ApiError` so a failed
+notification never breaks the main flow. Both helpers box a plain bot notice into
+a single colored attachment (`_box_thread_reply`, `NOTICE_ATTACHMENT_COLOR`) so
+every bot comment renders as an attachment block, not a bare message. The wrap is
+skipped when the caller already supplies `attachments` (interactive cards keep
+their own layout, and a `message` carrying an `@mention` stays plain text so the
+ping fires); `fallback` carries the notice text into push/preview.
 
 **Interactive buttons/menu** (`handle_alert_action`) are an alternative entry
 point to the same two flows plus a thread summary. The bot can't attach controls

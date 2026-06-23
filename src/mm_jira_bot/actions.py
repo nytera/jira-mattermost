@@ -27,6 +27,10 @@ ACTION_ATTACHMENT_COLOR = "#3B82F6"
 FEEDBACK_ATTACHMENT_COLOR = "#4B5563"
 # Amber accent for the "create task?" prompt on a manual incident post.
 INCIDENT_CREATE_ATTACHMENT_COLOR = "#F59E0B"
+# Neutral slate accent for plain bot thread notices (status/validity/summary/
+# postmortem/feedback), so every bot comment renders as a boxed attachment
+# instead of a bare message.
+NOTICE_ATTACHMENT_COLOR = "#64748B"
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import mm_jira_bot.jira as jira_module
 import mm_jira_bot.jira_payload as jira_payload_module
+from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
 from mm_jira_bot.config import Settings, load_dotenv_file
 from mm_jira_bot.domain import (
     JiraIssue,
@@ -547,8 +548,8 @@ async def test_reuses_display_stub_jira_issue_without_db_conflict(settings):
     assert len(service.jira.created_payloads) == 0
     first_reply = _issue_reply(service, first_post.id, issue_key=first_ticket.jira_issue_key)
     second_reply = _issue_reply(service, second_post.id, issue_key=second_ticket.jira_issue_key)
-    assert "Создана задача Jira: [ADSDEV-12024]" in first_reply["message"]
-    assert "Создана задача Jira: [ADSDEV-12024]" in second_reply["message"]
+    assert "Создана задача Jira: [ADSDEV-12024]" in _reply_text(first_reply)
+    assert "Создана задача Jira: [ADSDEV-12024]" in _reply_text(second_reply)
 
 
 @pytest.mark.asyncio
@@ -891,14 +892,14 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
         created
         for created in service.mattermost.created_posts
         if created["root_id"] == ticket.incident_post_id
-        and "Инцидентный отчет готов" in created["message"]
+        and "Инцидентный отчет готов" in _reply_text(created)
     ]
     assert len(thread_replies) == 1
-    assert "**Что случилось:**" in thread_replies[0]["message"]
-    assert "**Как решили:**" in thread_replies[0]["message"]
-    assert "**Action items:**" in thread_replies[0]["message"]
-    assert "##Сводка" not in thread_replies[0]["message"]
-    assert "##Хронология" not in thread_replies[0]["message"]
+    assert "**Что случилось:**" in _reply_text(thread_replies[0])
+    assert "**Как решили:**" in _reply_text(thread_replies[0])
+    assert "**Action items:**" in _reply_text(thread_replies[0])
+    assert "##Сводка" not in _reply_text(thread_replies[0])
+    assert "##Хронология" not in _reply_text(thread_replies[0])
 
 
 @pytest.mark.asyncio
@@ -957,11 +958,11 @@ async def test_checkmark_on_manual_incident_thread_creates_postmortem_issue(serv
     thread_replies = [
         created
         for created in service.mattermost.created_posts
-        if created["root_id"] == root.id and "Инцидентный отчет готов" in created["message"]
+        if created["root_id"] == root.id and "Инцидентный отчет готов" in _reply_text(created)
     ]
     assert len(thread_replies) == 1
-    assert "Полный постмортем" in thread_replies[0]["message"]
-    assert "##Сводка" not in thread_replies[0]["message"]
+    assert "Полный постмортем" in _reply_text(thread_replies[0])
+    assert "##Сводка" not in _reply_text(thread_replies[0])
 
 
 def test_postmortem_summary_limits_llm_title_words_and_chars():
@@ -1035,7 +1036,7 @@ async def test_false_reaction_sets_validity_without_incident_post(service):
     ]
     # One reply for issue creation, one for the validity change.
     assert len(thread_replies) == 2
-    assert "Ложный" in thread_replies[1]["message"]
+    assert "Ложный" in _reply_text(thread_replies[1])
 
 
 @pytest.mark.asyncio
@@ -1096,7 +1097,7 @@ async def test_repeated_validity_reaction_is_idempotent(service):
     validity_replies = [
         created
         for created in service.mattermost.created_posts
-        if created["root_id"] == post.id and "Валидность" in created["message"]
+        if created["root_id"] == post.id and "Валидность" in _reply_text(created)
     ]
     assert len(validity_replies) == 1
 
@@ -1144,8 +1145,8 @@ async def test_replies_in_alert_thread_when_issue_created(service):
     assert len(thread_replies) == 1
     reply = thread_replies[0]
     assert reply["channel_id"] == "alerts-channel"
-    assert "OPS-1" in reply["message"]
-    assert "https://jira.example.com/browse/OPS-1" in reply["message"]
+    assert "OPS-1" in _reply_text(reply)
+    assert "https://jira.example.com/browse/OPS-1" in _reply_text(reply)
 
 
 @pytest.mark.asyncio
@@ -1168,8 +1169,14 @@ async def test_replies_in_alert_thread_on_status_change(service):
     assert len(thread_replies) == 2
     status_reply = thread_replies[1]
     assert status_reply["channel_id"] == "alerts-channel"
-    assert "Инцидент заведён" in status_reply["message"]
-    assert "Ссылка на сообщение" in status_reply["message"]
+    # The notice renders as a boxed attachment, not a bare message: text moves
+    # into a single NOTICE-colored block with fallback set for push/preview.
+    assert status_reply["message"] == ""
+    box = status_reply["props"]["attachments"][0]
+    assert box["color"] == NOTICE_ATTACHMENT_COLOR
+    assert "Инцидент заведён" in box["text"]
+    assert "Ссылка на сообщение" in box["text"]
+    assert box["fallback"]
 
     incident_posts = [
         created
@@ -2402,6 +2409,15 @@ def _issue_reply(service, post_id, *, issue_key="OPS-1"):
     return replies[0]
 
 
+def _reply_text(reply):
+    """Visible text of a bot thread reply, whether it is a bare message or a
+    boxed attachment notice (plain notices render as a single colored block)."""
+    if reply.get("message"):
+        return reply["message"]
+    attachments = (reply.get("props") or {}).get("attachments") or []
+    return attachments[0].get("text", "") if attachments else ""
+
+
 @pytest.mark.asyncio
 async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
     service = _build_service(replace(settings, service_public_url="https://bot.example.com/"))
@@ -2472,8 +2488,9 @@ async def test_issue_reply_has_no_buttons_without_public_url(service):
     await service.handle_alert_post(post)
 
     reply = _issue_reply(service, post.id)
-    assert "Создана задача Jira" in reply["message"]
-    assert "attachments" not in reply["props"]
+    # Boxed notice (no SERVICE_PUBLIC_URL), but no interactive button/menu controls.
+    assert "Создана задача Jira" in _reply_text(reply)
+    assert all("actions" not in a for a in reply["props"].get("attachments", []))
 
 
 @pytest.mark.asyncio
@@ -2493,8 +2510,9 @@ async def test_issue_reply_has_no_buttons_when_interactive_buttons_disabled(sett
     await service.handle_alert_post(post)
 
     reply = _issue_reply(service, post.id)
-    assert "Создана задача Jira" in reply["message"]
-    assert "attachments" not in reply["props"]
+    # Emoji-only mode still boxes the notice, just without interactive controls.
+    assert "Создана задача Jira" in _reply_text(reply)
+    assert all("actions" not in a for a in reply["props"].get("attachments", []))
 
 
 @pytest.mark.asyncio
@@ -2602,7 +2620,7 @@ async def test_incident_button_swaps_to_confirmed(settings):
     status_replies = [
         c
         for c in service.mattermost.created_posts
-        if c["root_id"] == post.id and "Ссылка на сообщение" in c["message"]
+        if c["root_id"] == post.id and "Ссылка на сообщение" in _reply_text(c)
     ]
     assert len(status_replies) == 1
 
@@ -2622,10 +2640,10 @@ async def test_summary_button_posts_thread_reply(service):
     summary_replies = [
         created
         for created in service.mattermost.created_posts
-        if created["root_id"] == post.id and "Саммари треда" in created["message"]
+        if created["root_id"] == post.id and "Саммари треда" in _reply_text(created)
     ]
     assert len(summary_replies) == 1
-    assert "всё сломалось" in summary_replies[0]["message"]
+    assert "всё сломалось" in _reply_text(summary_replies[0])
     assert "опубликовано" in result.message
 
 
@@ -2641,7 +2659,7 @@ async def test_summary_button_without_llm_is_noop(service):
     summary_replies = [
         created
         for created in service.mattermost.created_posts
-        if "Саммари треда" in created["message"]
+        if "Саммари треда" in _reply_text(created)
     ]
     assert summary_replies == []
     assert "LLM не настроен" in result.message
@@ -2709,7 +2727,7 @@ async def test_feedback_dialog_submission_stores_feedback_and_posts_notice(servi
         created
         for created in service.mattermost.created_posts
         if created["root_id"] == post.id
-        and "Получили обратную связь от @clicker" in created["message"]
+        and "Получили обратную связь от @clicker" in _reply_text(created)
     ]
     assert len(notices) == 1
 

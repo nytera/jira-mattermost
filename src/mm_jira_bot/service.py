@@ -18,6 +18,7 @@ from mm_jira_bot.actions import (
     ACTION_VALID,
     ACTION_VALIDITY,
     FEEDBACK_ATTACHMENT_COLOR,
+    NOTICE_ATTACHMENT_COLOR,
     alert_action_callback_url,
     build_alert_controls_attachment,
     build_alert_feedback_attachment,
@@ -1264,6 +1265,23 @@ class IncidentBotService:
         postmortem_author = display_by_user_id.get(reacted_by_user_id, reacted_by_user_id)
         return thread_messages, participants, postmortem_author
 
+    @staticmethod
+    def _box_thread_reply(message: str, props: dict | None, color: str) -> tuple[str, dict | None]:
+        """Render a plain bot notice as a boxed attachment instead of a bare message.
+
+        Skipped when the caller already supplies ``attachments`` (interactive
+        cards keep their own layout, and any ``@mention`` in ``message`` must
+        stay in the message text to actually notify). ``fallback`` carries the
+        text into push notifications / channel previews.
+        """
+        if not message or (props or {}).get("attachments"):
+            return message, props
+        boxed = {
+            **(props or {}),
+            "attachments": [{"fallback": message, "color": color, "text": message}],
+        }
+        return "", boxed
+
     async def _post_incident_thread_reply(
         self,
         post_id: str,
@@ -1272,7 +1290,9 @@ class IncidentBotService:
         message: str,
         event: str,
         props: dict | None = None,
+        color: str = NOTICE_ATTACHMENT_COLOR,
     ) -> None:
+        message, props = self._box_thread_reply(message, props, color)
         thread_props = {"mattermost_incident_post_id": post_id, **(props or {})}
         try:
             reply = await self.mattermost.create_post(
@@ -1431,11 +1451,7 @@ class IncidentBotService:
         await self._post_alert_thread_reply(
             post_id,
             channel_id=ticket.mattermost_channel_id,
-            message=format_thread_validity_changed(
-                validity_label=validity_label,
-                jira_issue_key=ticket.jira_issue_key,
-                jira_issue_url=ticket.jira_issue_url,
-            ),
+            message=format_thread_validity_changed(validity_label=validity_label),
             event="mattermost.alert_thread.validity_notice_published",
             props={
                 "jira_issue_key": ticket.jira_issue_key,
@@ -1908,8 +1924,10 @@ class IncidentBotService:
         message: str,
         event: str,
         props: dict | None = None,
+        color: str = NOTICE_ATTACHMENT_COLOR,
     ) -> None:
         """Reply in the alert thread; best-effort, never fails the caller."""
+        message, props = self._box_thread_reply(message, props, color)
         thread_props = {"mattermost_alert_post_id": post_id, **(props or {})}
         try:
             reply = await self.mattermost.create_post(
