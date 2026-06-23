@@ -358,6 +358,34 @@ class JiraClient(AsyncApiClient):
             jira_issue_key=issue_key,
         )
 
+    async def set_time_to_fix(self, issue_key: str, minutes: int) -> None:
+        """Set the numeric "Time to fix" field (minutes) on the issue."""
+        if not self._settings.jira_create_enabled:
+            return
+        if not self._settings.jira_time_to_fix_field:
+            log.info(
+                "jira.time_to_fix.skipped_not_configured",
+                jira_issue_key=issue_key,
+            )
+            return
+
+        field_id = await self._get_field_id(self._settings.jira_time_to_fix_field)
+        payload = {"fields": {field_id: minutes}}
+        log.info(
+            "jira.time_to_fix.payload_prepared",
+            jira_issue_key=issue_key,
+            field_id=field_id,
+            minutes=minutes,
+        )
+        await self._request(
+            "PUT",
+            self._api_path(f"issue/{issue_key}"),
+            json=payload,
+            error_message="Failed to update Jira issue time to fix",
+            event="jira.update_time_to_fix",
+            jira_issue_key=issue_key,
+        )
+
     async def set_validity(
         self,
         issue_key: str,

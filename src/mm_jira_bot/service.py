@@ -35,9 +35,12 @@ from mm_jira_bot.domain import (
     ReactionEvent,
     backend_now,
     datetime_from_mattermost_ms,
+    runtime_timezone,
 )
 from mm_jira_bot.formatting import (
     extract_alert_title,
+    format_alert_duty_help,
+    format_incident_duty_help,
     format_incident_message,
     format_thread_issue_created,
     format_thread_status_changed,
@@ -300,9 +303,9 @@ class IncidentBotService:
             return
         interactive = self._interactive_controls_enabled()
         duty_mention = self.settings.mattermost_duty_mention
-        # Emoji-only mode with nothing to ping → leave the checkmark flow as the
-        # sole fallback, exactly as before.
-        if not interactive and not duty_mention:
+        # Nothing to post (no card, no ping, no help) → leave the checkmark flow
+        # as the sole fallback, exactly as before.
+        if not interactive and not duty_mention and not self.settings.duty_help_enabled:
             return
         channel_name = post.channel_name or await self.mattermost.get_channel_name(post.channel_id)
         _ticket, created = self.repository.create_or_get_incident_thread(
@@ -312,7 +315,24 @@ class IncidentBotService:
         )
         if not created:
             return
-        if not interactive:
+        if interactive:
+            callback_url = alert_action_callback_url(self.settings.service_public_url)
+            await self._post_incident_thread_reply(
+                post.id,
+                channel_id=post.channel_id,
+                # The duty mention goes in the message text (above the card) so the
+                # @group ping actually fires — attachment text does not notify.
+                message=duty_mention or "",
+                event="mattermost.incident_thread.controls_published",
+                props={
+                    "attachments": [
+                        build_incident_create_attachment(
+                            incident_post_id=post.id, callback_url=callback_url
+                        )
+                    ]
+                },
+            )
+        elif duty_mention:
             # No controls: just ping on-call so the manual incident is noticed.
             # Kept as a bare message (not a boxed notice) so the @mention notifies.
             await self._post_incident_thread_mention(
@@ -321,23 +341,14 @@ class IncidentBotService:
                 message=duty_mention,
                 event="mattermost.incident_thread.duty_pinged",
             )
-            return
-        callback_url = alert_action_callback_url(self.settings.service_public_url)
-        await self._post_incident_thread_reply(
-            post.id,
-            channel_id=post.channel_id,
-            # The duty mention goes in the message text (above the card) so the
-            # @group ping actually fires — attachment text does not notify.
-            message=duty_mention or "",
-            event="mattermost.incident_thread.controls_published",
-            props={
-                "attachments": [
-                    build_incident_create_attachment(
-                        incident_post_id=post.id, callback_url=callback_url
-                    )
-                ]
-            },
-        )
+        # One duty cheat-sheet after the create guard, common to every branch.
+        if self.settings.duty_help_enabled:
+            await self._post_incident_thread_reply(
+                post.id,
+                channel_id=post.channel_id,
+                message=format_incident_duty_help(),
+                event="mattermost.incident_thread.duty_help_published",
+            )
 
     async def _post_incident_thread_mention(
         self,
@@ -1228,6 +1239,49 @@ class IncidentBotService:
             incident_message_url=incident_thread_url,
         )
 
+    async def _set_time_to_fix(
+        self, issue_key: str, ticket: AlertTicket, ended_at: datetime
+    ) -> None:
+        """Best-effort: write the incident duration (minutes) to the Jira field.
+
+        Time to fix is a secondary derived field, so it must never break incident
+        closure: a misconfigured field id raises a non-retryable ``ApiError`` that
+        is logged, not propagated (unlike ``set_end_time``). The persisted start
+        may come back naive (SQLite drops the tz); since it was written as a
+        runtime-tz instant, a naive value is localized to the runtime timezone —
+        not assumed UTC — so the duration matches wall-clock reality.
+        """
+        if not self.settings.jira_time_to_fix_field:
+            return
+        start = ticket.mattermost_message_created_at
+        if start is None:
+            log.warning(
+                "jira.time_to_fix.skipped_no_start",
+                mattermost_post_id=ticket.mattermost_post_id,
+                jira_issue_key=issue_key,
+            )
+            return
+        tz = runtime_timezone()
+        start = start if start.tzinfo else start.replace(tzinfo=tz)
+        ended = ended_at if ended_at.tzinfo else ended_at.replace(tzinfo=tz)
+        if ended <= start:
+            log.warning(
+                "jira.time_to_fix.skipped_non_positive",
+                mattermost_post_id=ticket.mattermost_post_id,
+                jira_issue_key=issue_key,
+            )
+            return
+        minutes = round((ended - start).total_seconds() / 60)
+        try:
+            await self.jira.set_time_to_fix(issue_key, minutes)
+        except ApiError as exc:
+            log.warning(
+                "jira.time_to_fix.failed",
+                mattermost_post_id=ticket.mattermost_post_id,
+                jira_issue_key=issue_key,
+                error=str(exc),
+            )
+
     async def _ensure_postmortem_jira_issue(
         self,
         ticket: AlertTicket,
@@ -1245,6 +1299,7 @@ class IncidentBotService:
                 if ticket.validity_label is None:
                     await self.jira.set_valid_incident(ticket.jira_issue_key, True)
                 await self.jira.set_end_time(ticket.jira_issue_key, ended_at)
+                await self._set_time_to_fix(ticket.jira_issue_key, ticket, ended_at)
                 self.repository.mark_confirmed(
                     ticket.mattermost_post_id,
                     user_id=reacted_by_user_id,
@@ -1268,6 +1323,7 @@ class IncidentBotService:
         if ticket.validity_label is None:
             await self.jira.set_valid_incident(issue.key, True)
         await self.jira.set_end_time(issue.key, ended_at)
+        await self._set_time_to_fix(issue.key, ticket, ended_at)
         if self.settings.jira_confirmed_status_id:
             try:
                 await self.jira.transition_issue(issue.key, self.settings.jira_confirmed_status_id)
@@ -1619,6 +1675,7 @@ class IncidentBotService:
                 jira_issue_url=ticket.jira_issue_url,
                 incident_message_url=ticket.incident_message_url,
             )
+        await self._set_time_to_fix(ticket.jira_issue_key, ticket, ended_at)
 
         log.info(
             "incident.end_time.updated",
@@ -2133,6 +2190,17 @@ class IncidentBotService:
                     event="mattermost.alert_thread.issue_notice_published",
                     props={"jira_issue_key": issue.key},
                     mention=duty_mention,
+                )
+            if self.settings.duty_help_enabled:
+                await self._post_alert_thread_reply(
+                    ticket.mattermost_post_id,
+                    channel_id=ticket.mattermost_channel_id,
+                    message=format_alert_duty_help(
+                        incident_emoji=self.settings.mattermost_incident_reaction_name,
+                        false_emoji=self.settings.mattermost_false_incident_reaction_name,
+                        expected_emoji=self.settings.mattermost_expected_incident_reaction_name,
+                    ),
+                    event="mattermost.alert_thread.duty_help_published",
                 )
         except ApiError as exc:
             self.repository.mark_jira_create_failed(ticket.mattermost_post_id, str(exc))

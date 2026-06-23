@@ -20,11 +20,19 @@ from mm_jira_bot.domain import (
     ReactionEvent,
     datetime_from_mattermost_ms,
 )
-from mm_jira_bot.formatting import format_incident_message
+from mm_jira_bot.formatting import (
+    format_alert_duty_help,
+    format_incident_duty_help,
+    format_incident_message,
+)
 from mm_jira_bot.jira_payload import build_jira_issue_payload
 from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.mattermost import MattermostClient
-from mm_jira_bot.postmortem import extract_postmortem_summary
+from mm_jira_bot.postmortem import (
+    build_postmortem_comment,
+    extract_postmortem_summary,
+    markdown_to_jira_wiki,
+)
 from mm_jira_bot.repository import (
     AlertTicketRepository,
     create_database_engine,
@@ -138,6 +146,7 @@ class FakeJiraClient:
         self.validity_updates: list[tuple[str, str]] = []
         self.validity_end_updates: list[tuple[str, datetime]] = []
         self.end_updates: list[tuple[str, datetime]] = []
+        self.time_to_fix_updates: list[tuple[str, int]] = []
         self.validity_by_issue: dict[str, str] = {}
         self.descriptions: list[tuple[str, str]] = []
         self.postmortem_payloads: list[dict] = []
@@ -207,6 +216,9 @@ class FakeJiraClient:
 
     async def set_end_time(self, issue_key: str, ended_at: datetime):
         self.end_updates.append((issue_key, ended_at))
+
+    async def set_time_to_fix(self, issue_key: str, minutes: int):
+        self.time_to_fix_updates.append((issue_key, minutes))
 
     async def set_description(self, issue_key: str, description: str):
         self.descriptions.append((issue_key, description))
@@ -503,6 +515,7 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
             jira_create_enabled=False,
             jira_stub_issue_key="ADSDEV-12024",
             service_public_url="https://bot.example.com/",
+            interactive_buttons_enabled=True,
         )
     )
     post = make_alert()
@@ -887,7 +900,9 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
     assert comment_issue_key == "OPS-1"
     assert "Постмортем сгенерирован" in comment
     assert "API начал отвечать 500." in comment
-    assert "##Хронология" in comment
+    # The comment is converted to Jira wiki markup (Markdown headings → h2.).
+    assert "h2. Хронология" in comment
+    assert "##Хронология" not in comment
     # The incident thread gets the fact-based summary (own LLM prompt), posted as
     # a "Генерация саммари…" placeholder that is then edited into the final reply.
     placeholders = [
@@ -1042,12 +1057,12 @@ async def test_false_reaction_sets_validity_without_incident_post(service):
         if created["channel_id"] == "incidents-channel"
     ]
     assert incident_posts == []
-    thread_replies = [
-        created for created in service.mattermost.created_posts if created["root_id"] == post.id
+    validity_replies = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post.id and "Ложный" in _reply_text(created)
     ]
-    # One reply for issue creation, one for the validity change.
-    assert len(thread_replies) == 2
-    assert "Ложный" in _reply_text(thread_replies[1])
+    assert len(validity_replies) == 1
 
 
 @pytest.mark.asyncio
@@ -1150,11 +1165,7 @@ async def test_replies_in_alert_thread_when_issue_created(service):
 
     await service.handle_alert_post(post)
 
-    thread_replies = [
-        created for created in service.mattermost.created_posts if created["root_id"] == post.id
-    ]
-    assert len(thread_replies) == 1
-    reply = thread_replies[0]
+    reply = _issue_reply(service, post.id)
     assert reply["channel_id"] == "alerts-channel"
     assert "OPS-1" in _reply_text(reply)
     assert "https://jira.example.com/browse/OPS-1" in _reply_text(reply)
@@ -1176,9 +1187,11 @@ async def test_replies_in_alert_thread_on_status_change(service):
     thread_replies = [
         created for created in service.mattermost.created_posts if created["root_id"] == post.id
     ]
-    # One reply for issue creation, one for status change; no duplicates on retry.
-    assert len(thread_replies) == 2
-    status_reply = thread_replies[1]
+    # Issue-created reply + duty cheat-sheet + one status-change reply; no
+    # duplicate status reply on retry.
+    status_replies = [r for r in thread_replies if "Инцидент заведен" in _reply_text(r)]
+    assert len(status_replies) == 1
+    status_reply = status_replies[0]
     assert status_reply["channel_id"] == "alerts-channel"
     # The notice renders as a boxed attachment, not a bare message: text moves
     # into a single NOTICE-colored block with fallback set for push/preview.
@@ -2431,7 +2444,13 @@ def _reply_text(reply):
 
 @pytest.mark.asyncio
 async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
-    service = _build_service(replace(settings, service_public_url="https://bot.example.com/"))
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com/",
+            interactive_buttons_enabled=True,
+        )
+    )
     post = make_alert()
     service.mattermost.posts[post.id] = post
 
@@ -2534,6 +2553,7 @@ async def test_firing_alert_pings_duty_above_box_with_buttons(settings):
         replace(
             settings,
             service_public_url="https://bot.example.com/",
+            interactive_buttons_enabled=True,
             mattermost_duty_mention=":look: @sre-ads-duty",
         )
     )
@@ -2590,7 +2610,10 @@ async def test_manual_incident_no_card_when_interactive_buttons_disabled(setting
     await service.handle_manual_incident_post(post)
 
     replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    assert replies == []
+    # Emoji-only mode: only the duty cheat-sheet notice, no interactive create-task card.
+    assert len(replies) == 1
+    assert "Памятка дежурному" in _reply_text(replies[0])
+    assert all("actions" not in a for a in (replies[0]["props"] or {}).get("attachments", []))
 
 
 @pytest.mark.asyncio
@@ -2609,15 +2632,16 @@ async def test_manual_incident_pings_duty_in_emoji_only_mode(settings):
     await service.handle_manual_incident_post(post)
 
     replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    assert len(replies) == 1
-    # Bare @mention in the message text (not a boxed attachment) so the ping fires.
+    # Bare duty @mention first, then the duty cheat-sheet notice.
+    assert len(replies) == 2
     assert replies[0]["message"] == ":look: @sre-ads-duty"
     assert not (replies[0]["props"] or {}).get("attachments")
+    assert "Памятка дежурному" in _reply_text(replies[1])
 
-    # Idempotent: a redelivered event does not post a second ping.
+    # Idempotent: a redelivered event does not post a second ping or cheat-sheet.
     await service.handle_manual_incident_post(post)
     replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    assert len(replies) == 1
+    assert len(replies) == 2
 
 
 @pytest.mark.asyncio
@@ -2686,7 +2710,13 @@ async def test_incident_button_confirms_incident(service):
 
 @pytest.mark.asyncio
 async def test_incident_button_swaps_to_confirmed(settings):
-    service = _build_service(replace(settings, service_public_url="https://bot.example.com"))
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=True,
+        )
+    )
     post = make_alert()
     service.mattermost.posts[post.id] = post
     await service.handle_alert_post(post)
@@ -3107,7 +3137,13 @@ async def test_postmortem_defaults_to_valid_when_no_validity_chosen(service):
 
 
 def _incident_service(settings):
-    return _build_service(replace(settings, service_public_url="https://bot.example.com"))
+    return _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=True,
+        )
+    )
 
 
 def _manual_post(
@@ -3134,14 +3170,15 @@ async def test_manual_incident_post_offers_create_button(settings):
     await service.handle_manual_incident_post(post)
 
     replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    assert len(replies) == 1
-    attachments = replies[0]["props"]["attachments"]
-    assert attachments[0]["actions"][0]["id"] == "create_task"
+    # The create-task card plus the duty cheat-sheet notice below it.
+    assert len(replies) == 2
+    card = next(r for r in replies if (r["props"] or {}).get("attachments", [{}])[0].get("actions"))
+    assert card["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
 
-    # Idempotent: a redelivered event does not post a second card.
+    # Idempotent: a redelivered event does not post a second card or cheat-sheet.
     await service.handle_manual_incident_post(post)
     replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    assert len(replies) == 1
+    assert len(replies) == 2
 
 
 @pytest.mark.asyncio
@@ -3164,8 +3201,13 @@ async def test_manual_incident_ignores_bots_and_replies(settings, post):
 async def test_manual_incident_no_controls_without_public_url(settings):
     service = _build_service(settings)
     post = _manual_post()
+    service.mattermost.posts[post.id] = post
     await service.handle_manual_incident_post(post)
-    assert service.mattermost.created_posts == []
+    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
+    # No SERVICE_PUBLIC_URL → no create-task card, only the duty cheat-sheet notice.
+    assert len(replies) == 1
+    assert "Памятка дежурному" in _reply_text(replies[0])
+    assert all("actions" not in a for a in (replies[0]["props"] or {}).get("attachments", []))
 
 
 @pytest.mark.asyncio
@@ -3174,6 +3216,7 @@ async def test_manual_incident_card_pings_duty(settings):
         replace(
             settings,
             service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=True,
             mattermost_duty_mention=":look: @sre-ads-duty",
         )
     )
@@ -3259,7 +3302,13 @@ async def test_incident_summary_button_posts_light_summary(settings):
 
 
 def test_endpoint_routes_incident_create_task(settings):
-    service = _build_service(replace(settings, service_public_url="https://bot.example.com"))
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=True,
+        )
+    )
     post = _manual_post()
     service.mattermost.posts[post.id] = post
     service.repository.create_or_get_incident_thread(
@@ -3330,7 +3379,7 @@ async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
     cards = [
         c
         for c in service.mattermost.created_posts
-        if c["root_id"] == post.id and (c["props"] or {}).get("attachments")
+        if c["root_id"] == post.id and (c["props"] or {}).get("attachments", [{}])[0].get("actions")
     ]
     assert len(cards) == 1
     assert cards[0]["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
@@ -3459,3 +3508,291 @@ def test_incident_and_end_buttons_require_confirmation():
     # Summary stays a plain one-click button.
     summary_btn = next(a for a in inc["actions"] if a.get("id") == "summary")
     assert "confirm" not in summary_btn
+
+
+# --- Duty cheat-sheet -------------------------------------------------------
+
+
+def test_alert_duty_help_lists_configured_reactions():
+    text = format_alert_duty_help(
+        incident_emoji="incident",
+        false_emoji="man_gesturing_no",
+        expected_emoji="arrows_counterclockwise",
+    )
+    assert ":incident:" in text
+    assert ":man_gesturing_no:" in text
+    assert ":arrows_counterclockwise:" in text
+    assert "завести инцидент" in text
+    # No button hints, as buttons are off by default.
+    assert "кнопк" not in text.lower()
+
+
+def test_alert_duty_help_uses_custom_emoji_names():
+    text = format_alert_duty_help(
+        incident_emoji="fire", false_emoji="no_entry", expected_emoji="repeat"
+    )
+    assert ":fire:" in text and ":no_entry:" in text and ":repeat:" in text
+
+
+def test_incident_duty_help_lists_checkmark_reaction():
+    text = format_incident_duty_help()
+    assert "✅" in text
+    assert "кнопк" not in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_firing_alert_posts_duty_help(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    help_replies = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == post.id and "Памятка дежурному" in _reply_text(c)
+    ]
+    assert len(help_replies) == 1
+    assert ":incident:" in _reply_text(help_replies[0])
+
+
+@pytest.mark.asyncio
+async def test_manual_incident_posts_duty_help(service):
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    await service.handle_manual_incident_post(post)
+    help_replies = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == post.id and "Памятка дежурному" in _reply_text(c)
+    ]
+    assert len(help_replies) == 1
+    assert "✅" in _reply_text(help_replies[0])
+
+
+@pytest.mark.asyncio
+async def test_duty_help_disabled_posts_nothing(settings):
+    service = _build_service(replace(settings, duty_help_enabled=False))
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    assert not [
+        c for c in service.mattermost.created_posts if "Памятка дежурному" in _reply_text(c)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_alert_originated_incident_has_no_duty_help(service):
+    # The incident-channel thread (alert-originated) does not repeat the cheat-sheet;
+    # it was already shown in the alert thread.
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    incident_help = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == ticket.incident_post_id and "Памятка дежурному" in _reply_text(c)
+    ]
+    assert incident_help == []
+
+
+# --- Postmortem comment Jira-wiki conversion --------------------------------
+
+
+def test_markdown_to_jira_wiki_headings_bullets_bold_links():
+    assert markdown_to_jira_wiki("## Сводка") == "h2. Сводка"
+    assert markdown_to_jira_wiki("##Сводка") == "h2. Сводка"
+    assert markdown_to_jira_wiki("### Уроки") == "h3. Уроки"
+    assert markdown_to_jira_wiki("- пункт") == "* пункт"
+    assert markdown_to_jira_wiki(" - пункт") == "* пункт"
+    assert markdown_to_jira_wiki("**жирный**") == "*жирный*"
+    assert markdown_to_jira_wiki("[OPS-1](https://j/OPS-1)") == "[OPS-1|https://j/OPS-1]"
+
+
+def test_markdown_to_jira_wiki_is_idempotent_on_wiki():
+    already = "h2. Сводка\n* пункт\n*жирный*\n[OPS-1|https://j/OPS-1]"
+    assert markdown_to_jira_wiki(already) == already
+    once = markdown_to_jira_wiki("## X\n- y\n**z**")
+    assert markdown_to_jira_wiki(once) == once
+
+
+def test_postmortem_comment_is_jira_wiki_without_disturbing_summary():
+    report = "[INC] 01.01.2026 - Сбой\n## Сводка\nТекст\n- пункт\n**жирный**"
+    comment = build_postmortem_comment(
+        report=report, incident_thread_url="https://t/1", postmortem_author="Автор"
+    )
+    assert "h2. Сводка" in comment
+    assert "## Сводка" not in comment
+    assert "* пункт" in comment
+    assert "*жирный*" in comment and "**жирный**" not in comment
+    # Summary extraction reads the untouched raw report.
+    assert extract_postmortem_summary(report, fallback="f").startswith("[INC] 01.01.2026 - Сбой")
+
+
+# --- Time to fix ------------------------------------------------------------
+
+
+async def _confirm_and_close_incident(service, *, closed_at_ms: int):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    return await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="validator",
+            emoji_name="white_check_mark",
+            create_at=closed_at_ms,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_postmortem_sets_time_to_fix_minutes(settings):
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+    # Alert at 1_700_000_000_000; closed 300_000 ms (5 min) later.
+    await _confirm_and_close_incident(service, closed_at_ms=1_700_000_300_000)
+    assert service.jira.time_to_fix_updates == [("OPS-1", 5)]
+
+
+@pytest.mark.asyncio
+async def test_time_to_fix_skipped_when_end_before_start(settings):
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+    # Checkmark timestamped before the alert was created → non-positive duration.
+    await _confirm_and_close_incident(service, closed_at_ms=1_699_999_000_000)
+    assert service.jira.time_to_fix_updates == []
+
+
+@pytest.mark.asyncio
+async def test_time_to_fix_not_set_when_field_unconfigured(service):
+    service.llm = FakeLlmClient()
+    await _confirm_and_close_incident(service, closed_at_ms=1_700_000_300_000)
+    assert service.jira.time_to_fix_updates == []
+
+
+@pytest.mark.asyncio
+async def test_time_to_fix_on_manual_checkmark_new_issue(settings):
+    # Manual checkmark with no prior create_task → the new-issue postmortem branch.
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+    root = MattermostPost(
+        id="manualincidentroot000000099",
+        channel_id="incidents-channel",
+        user_id="author",
+        message="Инцидент по росту 500.",
+        create_at=1_700_000_000_000,
+        channel_name="incidents",
+    )
+    service.mattermost.posts[root.id] = root
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=root.id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_300_000,
+        )
+    )
+    assert service.jira.time_to_fix_updates == [("OPS-1", 5)]
+
+
+@pytest.mark.asyncio
+async def test_time_to_fix_on_manual_incident_close(settings):
+    # create_task → end_incident → the existing-issue postmortem branch.
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=True,
+            jira_time_to_fix_field="customfield_99999",
+        )
+    )
+    service.llm = FakeLlmClient()
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    await service.handle_manual_incident_post(post)
+    await service.handle_incident_action(
+        action="create_task", incident_post_id=post.id, user_id="opener"
+    )
+    await service.handle_incident_action(
+        action="end_incident", incident_post_id=post.id, user_id="closer"
+    )
+    # Exactly one write, positive minutes (no double-write across set_end_time sites).
+    assert len(service.jira.time_to_fix_updates) == 1
+    assert service.jira.time_to_fix_updates[0][0] == "OPS-1"
+    assert service.jira.time_to_fix_updates[0][1] > 0
+
+
+@pytest.mark.asyncio
+async def test_time_to_fix_failure_does_not_block_closure(settings):
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+
+    async def _boom(issue_key, minutes):
+        raise ApiError("nope", retryable=False)
+
+    service.jira.set_time_to_fix = _boom
+    result = await _confirm_and_close_incident(service, closed_at_ms=1_700_000_300_000)
+    assert result.status == "incident_ended"
+    assert ("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000)) in service.jira.end_updates
+
+
+@pytest.mark.asyncio
+async def test_set_time_to_fix_sends_minutes(settings):
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.read()) if request.method == "PUT" else None,
+            }
+        )
+        if request.url.path == "/rest/api/2/issue/OPS-1":
+            return httpx.Response(204)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = jira_module.JiraClient(
+        replace(settings, jira_time_to_fix_field="customfield_77777"),
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        await client.set_time_to_fix("OPS-1", 42)
+    finally:
+        await client.aclose()
+
+    assert requests == [
+        {
+            "method": "PUT",
+            "path": "/rest/api/2/issue/OPS-1",
+            "body": {"fields": {"customfield_77777": 42}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_time_to_fix_skipped_when_field_unconfigured(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected when the field is not configured")
+
+    client = jira_module.JiraClient(
+        settings,
+        http_client=httpx.AsyncClient(
+            base_url=settings.jira_base_url,
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    try:
+        await client.set_time_to_fix("OPS-1", 10)
+    finally:
+        await client.aclose()

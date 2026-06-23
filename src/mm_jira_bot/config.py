@@ -101,7 +101,9 @@ class Settings:
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     service_public_url: str | None = None
-    interactive_buttons_enabled: bool = True
+    interactive_buttons_enabled: bool = False
+    duty_help_enabled: bool = True
+    jira_time_to_fix_field: str | None = None
     mattermost_false_incident_reaction_name: str = "man_gesturing_no"
     mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
     mattermost_authorized_usernames: tuple[str, ...] = ()
@@ -149,6 +151,7 @@ class Settings:
             jira_is_crit_alert_field=_required("JIRA_IS_CRIT_ALERT_FIELD"),
             jira_start_field=_env("JIRA_START_FIELD"),
             jira_end_field=_env("JIRA_END_FIELD"),
+            jira_time_to_fix_field=_env("JIRA_TIME_TO_FIX_FIELD"),
             jira_confirmed_status_id=_env("JIRA_CONFIRMED_STATUS_ID"),
             jira_create_enabled=_env("JIRA_CREATE_ENABLED", "true") != "false",
             jira_stub_issue_key=_env("JIRA_STUB_ISSUE_KEY"),
@@ -158,7 +161,8 @@ class Settings:
             service_public_url=(
                 _env("SERVICE_PUBLIC_URL").rstrip("/") if _env("SERVICE_PUBLIC_URL") else None
             ),
-            interactive_buttons_enabled=_env("INTERACTIVE_BUTTONS_ENABLED", "true") != "false",
+            interactive_buttons_enabled=_env("INTERACTIVE_BUTTONS_ENABLED", "false") == "true",
+            duty_help_enabled=_env("DUTY_HELP_ENABLED", "true") != "false",
             mattermost_false_incident_reaction_name=_env(
                 "MATTERMOST_FALSE_INCIDENT_REACTION_NAME", "man_gesturing_no"
             ),

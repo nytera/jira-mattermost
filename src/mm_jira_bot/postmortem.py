@@ -1,9 +1,33 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from mm_jira_bot.domain import MattermostPost, backend_datetime
 from mm_jira_bot.formatting import truncate_for_summary
+
+# Markdown→Jira-wiki conversion (single deterministic pass over known Markdown).
+# Order matters and no rule may consume a "*" emitted by an earlier rule:
+# bold runs first; the bullet rule only adds "* " at line start.
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_MD_HEADING = re.compile(r"^(#{1,6})[ \t]*", re.MULTILINE)
+_MD_BULLET = re.compile(r"^[ \t]*[-+] ", re.MULTILINE)
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+
+
+def markdown_to_jira_wiki(text: str) -> str:
+    """Convert the Markdown the LLM emits into Jira wiki markup for v2 comments.
+
+    Idempotent on already-wiki input. Markdown italics are intentionally left
+    alone: ``*x*`` collides with the wiki bold this produces, and rendering an
+    italic as bold is an acceptable cosmetic loss in a postmortem.
+    """
+    text = _MD_BOLD.sub(r"*\1*", text)
+    text = _MD_HEADING.sub(lambda m: f"h{len(m.group(1))}. ", text)
+    text = _MD_BULLET.sub("* ", text)
+    text = _MD_LINK.sub(r"[\1|\2]", text)
+    return text
+
 
 POSTMORTEM_SUMMARY_MAX_CHARS = 120
 POSTMORTEM_TITLE_MAX_CHARS = 80
@@ -169,7 +193,7 @@ def build_postmortem_comment(
     incident_thread_url: str,
     postmortem_author: str,
 ) -> str:
-    return "\n".join(
+    body = "\n".join(
         [
             "Постмортем сгенерирован по треду инцидента.",
             f"Тред инцидента: {incident_thread_url}",
@@ -178,6 +202,9 @@ def build_postmortem_comment(
             report.strip(),
         ]
     )
+    # The Jira v2 comment endpoint renders wiki markup, not Markdown. Convert the
+    # whole assembled body (header + report) so headings/bullets/links render.
+    return markdown_to_jira_wiki(body)
 
 
 def format_postmortem_jira_footer(

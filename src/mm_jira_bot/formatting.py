@@ -149,6 +149,43 @@ def mention_from_display(display: str) -> str:
     return match.group(0) if match else display
 
 
+_DUTY_HELP_HEADER = "**ℹ️ Памятка дежурному SRE**"
+
+
+def format_alert_duty_help(
+    *,
+    incident_emoji: str,
+    false_emoji: str,
+    expected_emoji: str,
+) -> str:
+    """Reaction cheat-sheet posted in a firing-alert thread.
+
+    Each reaction lists both the ``:shortcode:`` (which renders to the emoji
+    when it exists on the instance) and a plain-language label, so the help
+    stays readable even if a custom emoji like ``:incident:`` is missing.
+    """
+    return "\n".join(
+        [
+            _DUTY_HELP_HEADER,
+            "Реакции на этот алерт:",
+            f"- :{incident_emoji}: — завести инцидент",
+            f"- :{false_emoji}: — пометить ложным",
+            f"- :{expected_emoji}: — пометить ожидаемым",
+        ]
+    )
+
+
+def format_incident_duty_help() -> str:
+    """Reaction cheat-sheet posted in a manual-incident thread."""
+    return "\n".join(
+        [
+            _DUTY_HELP_HEADER,
+            "Реакции на это сообщение:",
+            "- ✅ галочка на корневом сообщении — создать задачу / завершить инцидент",
+        ]
+    )
+
+
 def format_incident_message(
     ticket: TicketView,
     *,

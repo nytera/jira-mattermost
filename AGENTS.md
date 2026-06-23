@@ -87,8 +87,8 @@ calls for issue-key operations**: `create_issue`/`create_postmortem_issue` retur
 a stub `JiraIssue` (`stub_jira_issue` — `JIRA_STUB_ISSUE_KEY` plus a
 Mattermost-post-id suffix for DB uniqueness, or a generated
 `{JIRA_PROJECT_KEY}-12345`-style key), and `get_valid_incident` / `set_validity`
-/ `set_valid_incident` / `set_end_time` / `set_description` / `add_comment` /
-`transition_issue` are no-ops. This matters because the stub key does not exist in
+/ `set_valid_incident` / `set_end_time` / `set_time_to_fix` / `set_description` /
+`add_comment` / `transition_issue` are no-ops. This matters because the stub key does not exist in
 Jira — without the no-op, those calls would 404 and abort `confirm_incident`
 (after the incident-channel post but before the alert-thread reply). Mattermost
 issue-created replies display the clean configured `JIRA_STUB_ISSUE_KEY` via
@@ -112,9 +112,14 @@ ping fires); `fallback` carries the notice text into push/preview.
 point to the same two flows plus a thread summary. The bot can't attach controls
 to the alert (a Grafana/user post), so it hangs them on its own issue-created
 reply via `_alert_action_attachments` (only when `_interactive_controls_enabled()`
-— `SERVICE_PUBLIC_URL` set and `INTERACTIVE_BUTTONS_ENABLED` not `false`; emoji
-reactions stay as the fallback, and `INTERACTIVE_BUTTONS_ENABLED=false` forces that
-emoji-only mode for every card). Current UI is a single thread reply with
+— `SERVICE_PUBLIC_URL` set **and** `INTERACTIVE_BUTTONS_ENABLED=true`; the toggle
+**defaults to false**, so the bot is in emoji-only mode unless buttons are
+explicitly enabled, and emoji reactions are always the fallback).
+Independently, after the issue-created reply the alert thread also gets a boxed
+**duty cheat-sheet** (`format_alert_duty_help`, reactions only) when
+`DUTY_HELP_ENABLED` (default true); resolved alerts create no issue and get
+neither. The incident-channel thread of an alert-originated incident does **not**
+repeat the cheat-sheet. Current UI is a single thread reply with
 two stacked attachment blocks: a blue (`#3B82F6`) main card with bold
 `Создана задача`, the `Выбрать валидность ▼` menu, and the `🚨 Инцидент` /
 `📝 Summary` buttons under it, then a separate gray (`#4B5563`) card below with
@@ -179,13 +184,25 @@ When `LLM_API_TOKEN` is configured, the same checkmark also generates a
 postmortem from the full incident thread through the OpenAI-compatible
 `LLM_BASE_URL`, keeps Jira description as a PM template with the incident root
 link, postmortem author, and participants, adds the generated report as a Jira
-comment, and posts a fact-based incident-report summary back to the incident
+comment (the LLM's Markdown is converted to Jira **wiki markup** via
+`markdown_to_jira_wiki` before posting, since the v2 comment endpoint renders
+wiki, not Markdown), and posts a fact-based incident-report summary back to the incident
 thread (a separate `build_thread_summary_prompt` call — not derived from the Jira
 postmortem — published as a "Генерация саммари…" placeholder that is then edited
 into the final reply). A checkmark on
 an unmapped manual incident thread root post creates a Jira issue with a
 PM-template description, but it does not set the alert-only source/is-crit-alert
 fields. Checkmarks on incident thread replies are ignored.
+
+`JIRA_TIME_TO_FIX_FIELD` (optional) is a **numeric** field set to the incident
+duration in **minutes** whenever the end time is written at closure (`_set_time_to_fix`,
+mirrored at all three `set_end_time` sites — `apply_incident_end_time` and both
+branches of `_ensure_postmortem_jira_issue`). Start is `ticket.mattermost_message_created_at`
+(same instant as `JIRA_START_FIELD`); a naive persisted value is localized to the
+runtime timezone (not assumed UTC) before subtraction. It is best-effort and
+**must not break closure**: unlike `set_end_time`, the call is wrapped in
+try/except + log, and it skips (with a log line) when the field is unset, the start
+is missing, or the duration is non-positive.
 
 ### Manual incidents: button card (incident channel)
 
@@ -196,12 +213,16 @@ handler routes incident-channel posts to `handle_manual_incident_post`: for ever
 `props.from_bot` / `props.from_webhook` and `MATTERMOST_BOT_USER_ID`) it pre-creates
 the ticket row via `create_or_get_incident_thread` (idempotent) and posts a
 "➕ Создать задачу" card with the `MATTERMOST_DUTY_MENTION` text above it. In
-emoji-only mode (no `SERVICE_PUBLIC_URL` or `INTERACTIVE_BUTTONS_ENABLED=false`)
-there is no card, but if `MATTERMOST_DUTY_MENTION` is set the handler still
-pre-creates the ticket row and posts that mention as a bare reply (via
-`_post_incident_thread_mention`, kept unboxed so the ping fires); with no duty
-mention it posts nothing and leaves the checkmark flow as the only path. No Jira
-issue yet. The card's controls carry
+emoji-only mode (the default — buttons are off unless `SERVICE_PUBLIC_URL` is set
+**and** `INTERACTIVE_BUTTONS_ENABLED=true`) there is no card, but if
+`MATTERMOST_DUTY_MENTION` is set the handler still posts that mention as a bare
+reply (via `_post_incident_thread_mention`, kept unboxed so the ping fires).
+After the `if not created: return` guard, a single **duty cheat-sheet** reply
+(`format_incident_duty_help`, boxed, reactions only — no button hints) is posted
+across all branches when `DUTY_HELP_ENABLED` (default true); this is why the
+handler now proceeds even in emoji-only mode with no duty mention (it only
+short-circuits before the ticket row when there is genuinely nothing to post:
+no card, no mention, and help disabled). No Jira issue yet. The card's controls carry
 `context.source = "incident"` + `incident_post_id`, so `handle_alert_action` branches
 early to `handle_incident_action` (keyed by `incident_post_id`, skips the alert-channel
 checks). Actions: `create_task` → `create_postmortem_issue` (no alert fields) and the
