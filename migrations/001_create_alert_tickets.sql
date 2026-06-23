@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS alert_tickets (
     pending_confirmation_by_user_id VARCHAR(64),
     pending_confirmation_at TIMESTAMP WITH TIME ZONE,
     jira_confirmation_comment_added BOOLEAN NOT NULL DEFAULT FALSE,
+    postmortem_comment_added BOOLEAN NOT NULL DEFAULT FALSE,
     validity_label VARCHAR(64),
     last_error TEXT,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,

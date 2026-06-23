@@ -17,7 +17,8 @@ from mm_jira_bot.actions import (
     ACTION_SUMMARY,
     ACTION_VALID,
     ACTION_VALIDITY,
-    FEEDBACK_ATTACHMENT_COLOR,
+    INCIDENT_DONE_COLOR,
+    INCIDENT_OPEN_COLOR,
     NOTICE_ATTACHMENT_COLOR,
     alert_action_callback_url,
     build_alert_controls_attachment,
@@ -197,52 +198,75 @@ class IncidentBotService:
         self._authorization_enforced: bool = False
 
     async def resolve_authorized_users(self) -> None:
-        """Resolve configured usernames to ids and enable the allowlist gate.
+        """Resolve configured logins/groups to ids and enable the allowlist gate.
 
-        No usernames configured -> the gate stays disabled (act on everyone).
-        Partial resolution (a typo'd login) is logged loudly so the operator
-        sees who was dropped instead of silently locking them out. Total
-        resolution failure is fail-open (loud warning): the action endpoint
-        already relies on network isolation as the real boundary, so bricking
-        incident tooling during a Mattermost hiccup is worse than briefly not
-        enforcing a 5-person filter.
+        ``MATTERMOST_AUTHORIZED_USERNAMES`` is a mixed list: each entry is first
+        tried as a login (batch resolve), and anything left over is tried as a
+        Mattermost group whose members are expanded into the allowlist. Re-run
+        periodically (see ``authorized_users_refresh_loop``) so group membership
+        changes propagate.
+
+        No entries configured -> the gate stays disabled (act on everyone). A
+        typo'd entry (neither login nor group) is logged loudly. Failure
+        semantics differ by state: the *first* resolve fails open (a Mattermost
+        hiccup must not brick incident tooling), but a later refresh keeps the
+        last known-good set instead of clobbering a working allowlist.
         """
-        usernames = list(self.settings.mattermost_authorized_usernames)
-        if not usernames:
+        names = list(self.settings.mattermost_authorized_usernames)
+        if not names:
             log.info("authorized_users.disabled")
             return
         try:
-            resolved = await self.mattermost.get_user_ids_by_usernames(usernames)
+            users = await self.mattermost.get_user_ids_by_usernames(names)
         except ApiError as exc:
-            self._authorized_user_ids = frozenset()
-            self._authorization_enforced = False
-            log.warning(
-                "authorized_users.resolve_failed_fail_open",
-                requested=usernames,
-                error=str(exc),
-            )
+            self._degrade_authorization("authorized_users.resolve_failed", names, error=str(exc))
             return
-        if not resolved:
-            # No login resolved at all (every name typo'd, or an empty response):
-            # treat like total failure and fail open rather than locking everyone out.
-            self._authorized_user_ids = frozenset()
-            self._authorization_enforced = False
-            log.warning("authorized_users.none_resolved_fail_open", requested=usernames)
-            return
-        unresolved = [name for name in usernames if name not in resolved]
+
+        member_ids: set[str] = set(users.values())
+        group_names = [name for name in names if name not in users]
+        resolved_groups: dict[str, str] = {}
+        if group_names:
+            try:
+                resolved_groups = await self.mattermost.get_group_ids_by_names(group_names)
+                for group_id in resolved_groups.values():
+                    member_ids |= await self.mattermost.get_group_member_ids(group_id)
+            except ApiError as exc:
+                # Groups may need a license/permission the token lacks: a group
+                # lookup failure must not brick the login-based allowlist.
+                log.warning(
+                    "authorized_users.groups_resolve_failed",
+                    requested_groups=group_names,
+                    error=str(exc),
+                )
+
+        unresolved = [name for name in names if name not in users and name not in resolved_groups]
         if unresolved:
-            log.warning(
-                "authorized_users.unresolved",
-                unresolved=unresolved,
-                resolved=sorted(resolved),
-            )
-        self._authorized_user_ids = frozenset(resolved.values())
+            log.warning("authorized_users.unresolved", unresolved=unresolved)
+        if not member_ids:
+            self._degrade_authorization("authorized_users.none_resolved", names)
+            return
+        self._authorized_user_ids = frozenset(member_ids)
         self._authorization_enforced = True
         log.info(
             "authorized_users.enabled",
-            resolved_count=len(self._authorized_user_ids),
-            resolved=sorted(resolved),
+            resolved_count=len(member_ids),
+            resolved_logins=sorted(users),
+            resolved_groups=sorted(resolved_groups),
         )
+
+    def _degrade_authorization(self, event: str, names: list[str], **fields: object) -> None:
+        """Handle a failed/empty resolution: keep last-good if already enforced.
+
+        Fail-open (disable the gate) only on the very first resolution; once a
+        working set exists, a transient failure or empty response keeps it so a
+        Mattermost glitch can't silently lock everyone out or open the gate.
+        """
+        if self._authorization_enforced:
+            log.warning(f"{event}_keep_last", requested=names, **fields)
+            return
+        self._authorized_user_ids = frozenset()
+        self._authorization_enforced = False
+        log.warning(f"{event}_fail_open", requested=names, **fields)
 
     def _is_authorized(self, user_id: str) -> bool:
         return not self._authorization_enforced or user_id in self._authorized_user_ids
@@ -346,9 +370,16 @@ class IncidentBotService:
             await self._post_incident_thread_reply(
                 post.id,
                 channel_id=post.channel_id,
-                message=format_incident_duty_help(),
+                message=self._incident_duty_help(),
                 event="mattermost.incident_thread.duty_help_published",
             )
+
+    def _incident_duty_help(self) -> str:
+        return format_incident_duty_help(
+            false_emoji=self.settings.mattermost_false_incident_reaction_name,
+            expected_emoji=self.settings.mattermost_expected_incident_reaction_name,
+            summary_emoji=self.settings.mattermost_summary_reaction_name,
+        )
 
     async def _post_incident_thread_mention(
         self,
@@ -464,11 +495,12 @@ class IncidentBotService:
             user_id=reaction.user_id,
         )
         is_incident = reaction.emoji_name == self.settings.mattermost_incident_reaction_name
+        is_summary = reaction.emoji_name == self.settings.mattermost_summary_reaction_name
         validity_label = (
             None if is_incident else self._validity_label_for_emoji(reaction.emoji_name)
         )
         is_incident_end = reaction.emoji_name in INCIDENT_END_REACTION_NAMES
-        if not is_incident and validity_label is None and not is_incident_end:
+        if not is_incident and not is_summary and validity_label is None and not is_incident_end:
             return ConfirmationResult(
                 status=ConfirmationStatus.IGNORED,
                 message="Reaction ignored: not configured incident reaction.",
@@ -481,18 +513,48 @@ class IncidentBotService:
                 user_id=reaction.user_id,
                 emoji_name=reaction.emoji_name,
             )
+            try:
+                unauth_post = await self.mattermost.get_post(reaction.post_id)
+                display = mention_from_display(
+                    await self.mattermost.get_user_display_name(reaction.user_id)
+                )
+                await self._post_unauthorized_notice(
+                    root_post_id=reaction.post_id,
+                    channel_id=unauth_post.channel_id,
+                    user_mention=display,
+                )
+            except ApiError:
+                pass
             return ConfirmationResult(
                 status=ConfirmationStatus.IGNORED,
                 message="Reaction ignored: user is not authorized.",
             )
 
         post = await self.mattermost.get_post(reaction.post_id)
-        if is_incident_end and post.channel_id == self.settings.mattermost_incident_channel_id:
+        if is_summary:
+            # Summary works in any thread (alert/incident/manual); it resolves the
+            # thread root itself and never touches Jira.
+            return await self.generate_thread_summary(
+                post, requested_by_user_id=reaction.user_id, source="reaction"
+            )
+        in_incident_channel = post.channel_id == self.settings.mattermost_incident_channel_id
+        if is_incident_end and in_incident_channel:
             return await self.handle_incident_checkmark(
                 post,
                 reacted_by_user_id=reaction.user_id,
                 ended_at=datetime_from_mattermost_ms(reaction.create_at) or backend_now(),
                 source="reaction",
+            )
+        if validity_label is not None and in_incident_channel:
+            # Validity emoji in an incident thread doubles as "finish + postmortem"
+            # with that validity (✅ stays the Валидный shortcut). In the alert
+            # channel the same emoji is the light label-only path below.
+            return await self.handle_incident_checkmark(
+                post,
+                reacted_by_user_id=reaction.user_id,
+                ended_at=datetime_from_mattermost_ms(reaction.create_at) or backend_now(),
+                source="reaction",
+                validity_label=validity_label,
             )
         if is_incident_end:
             # A checkmark anywhere but an incident-thread root is not actionable; bail
@@ -579,6 +641,8 @@ class IncidentBotService:
         action: str,
         alert_post_id: str,
         user_id: str,
+        user_name: str = "",
+        channel_id: str = "",
         selected_option: str = "",
         trigger_id: str = "",
         source: str = "alert",
@@ -602,7 +666,12 @@ class IncidentBotService:
                 source=source,
                 user_id=user_id,
             )
-            return ActionResult(message="Недостаточно прав для этого действия.")
+            await self._post_unauthorized_notice(
+                root_post_id=acted_post_id,
+                channel_id=channel_id,
+                user_mention=f"@{user_name}" if user_name else user_id,
+            )
+            return ActionResult(message="")
         if source == ACTION_SOURCE_INCIDENT:
             if not incident_post_id:
                 return ActionResult(message="Не указан инцидент для действия.")
@@ -1001,6 +1070,7 @@ class IncidentBotService:
         reacted_by_user_id: str,
         ended_at: datetime,
         source: str,
+        validity_label: str | None = None,
     ) -> ConfirmationResult:
         if post.root_id:
             log.info(
@@ -1016,6 +1086,19 @@ class IncidentBotService:
             )
 
         ticket = self.repository.get_by_incident_post_id(post.id)
+        if ticket is not None and ticket.postmortem_comment_added:
+            # Already finalized: never regenerate the postmortem (the comment is
+            # additive — a second trigger would duplicate it). A validity emoji on
+            # a closed incident simply flips the Jira "Валидность" field.
+            if validity_label is not None and ticket.validity_label != validity_label:
+                await self._set_incident_validity(ticket, validity_label)
+            await self._mark_incident_post_completed(post.id)
+            return ConfirmationResult(
+                status=ConfirmationStatus.INCIDENT_ENDED,
+                message="Incident already finalized; postmortem left unchanged.",
+                jira_issue_url=ticket.jira_issue_url,
+                incident_message_url=ticket.incident_message_url,
+            )
         end_result: ConfirmationResult | None = None
         if ticket is not None and ticket.jira_issue_key is not None:
             end_result = await self.apply_incident_end_time(
@@ -1028,6 +1111,12 @@ class IncidentBotService:
             ticket = self.repository.get_by_incident_post_id(post.id)
 
         if self.llm is None:
+            # No LLM → no postmortem, but a validity emoji must still write Jira
+            # (the alert-channel path does, so the incident path must not silently
+            # drop it). _ensure_postmortem_jira_issue, which normally applies it,
+            # is never reached on this early-return branch.
+            if validity_label is not None and ticket is not None and ticket.jira_issue_key:
+                await self._set_incident_validity(ticket, validity_label)
             if end_result is not None:
                 if end_result.status == ConfirmationStatus.INCIDENT_ENDED:
                     await self._mark_incident_post_completed(post.id)
@@ -1048,6 +1137,7 @@ class IncidentBotService:
             ended_at=ended_at,
             source=source,
             existing_ticket=ticket,
+            validity_label=validity_label,
         )
         # Turn the title green once the incident has ended, even if the postmortem
         # itself failed — the end time is already set in Jira, so leaving it red
@@ -1058,6 +1148,46 @@ class IncidentBotService:
         if ended:
             await self._mark_incident_post_completed(post.id)
         return result
+
+    async def _set_incident_validity(self, ticket: AlertTicket, validity_label: str) -> None:
+        """Push an explicit validity onto a closed incident's Jira issue (best-effort).
+
+        Used when a validity emoji lands on an already-finalized incident: the
+        postmortem is left untouched, but the Jira field is updated and the same
+        templated "validity changed" notice is posted in the incident thread.
+        """
+        if ticket.jira_issue_key is None:
+            return
+        try:
+            await self.jira.set_validity(ticket.jira_issue_key, validity_label)
+        except ApiError as exc:
+            log.warning(
+                "incident.validity.update_failed",
+                mattermost_post_id=ticket.mattermost_post_id,
+                jira_issue_key=ticket.jira_issue_key,
+                validity_label=validity_label,
+                error=str(exc),
+            )
+            return
+        self.repository.set_validity_label(ticket.mattermost_post_id, validity_label)
+        log.info(
+            "incident.validity.updated",
+            mattermost_post_id=ticket.mattermost_post_id,
+            jira_issue_key=ticket.jira_issue_key,
+            validity_label=validity_label,
+            source="incident_finalized",
+        )
+        if ticket.incident_post_id:
+            await self._post_incident_thread_reply(
+                ticket.incident_post_id,
+                channel_id=self.settings.mattermost_incident_channel_id,
+                message=format_thread_validity_changed(validity_label=validity_label),
+                event="mattermost.incident_thread.validity_notice_published",
+                props={
+                    "jira_issue_key": ticket.jira_issue_key,
+                    "validity_label": validity_label,
+                },
+            )
 
     async def _mark_incident_post_completed(self, incident_post_id: str) -> None:
         """Edit the incident-channel message title to the green "завершён" state.
@@ -1084,7 +1214,10 @@ class IncidentBotService:
             new_text = mark_incident_message_completed(info_block.get("text", ""))
             if new_text == info_block.get("text", ""):
                 return
-            props["attachments"] = [{**info_block, "text": new_text}, *attachments[1:]]
+            props["attachments"] = [
+                {**info_block, "text": new_text, "color": INCIDENT_DONE_COLOR},
+                *[{**a, "color": INCIDENT_DONE_COLOR} for a in attachments[1:]],
+            ]
             await self.mattermost.update_post(ticket.incident_post_id, props=props)
         except ApiError as exc:
             log.warning(
@@ -1101,6 +1234,7 @@ class IncidentBotService:
         ended_at: datetime,
         source: str,
         existing_ticket: AlertTicket | None = None,
+        validity_label: str | None = None,
     ) -> ConfirmationResult:
         incident_thread_url = self.mattermost.permalink(root_post.id)
         ticket = existing_ticket
@@ -1167,6 +1301,7 @@ class IncidentBotService:
                 description=description,
                 ended_at=ended_at,
                 reacted_by_user_id=reacted_by_user_id,
+                validity_label=validity_label,
             )
             assert ticket.jira_issue_key is not None
             await self.jira.set_description(ticket.jira_issue_key, description)
@@ -1178,6 +1313,7 @@ class IncidentBotService:
                     postmortem_author=postmortem_author,
                 ),
             )
+            self.repository.mark_postmortem_comment_added(ticket.mattermost_post_id)
         except ApiError as exc:
             if ticket is not None:
                 self.repository.mark_postmortem_failed(ticket.mattermost_post_id, str(exc))
@@ -1283,6 +1419,24 @@ class IncidentBotService:
                 error=str(exc),
             )
 
+    async def _apply_postmortem_validity(
+        self, post_id: str, issue_key: str, *, validity_label: str | None
+    ) -> None:
+        """Write the incident's validity onto its Jira issue at finalize time.
+
+        ``validity_label`` is the choice made *now* (a Ложный/Ожидаемый emoji in
+        the incident thread) and wins over any earlier value. With no choice and
+        none recorded, default to Валидный; an earlier explicit Ложный/Ожидаемый
+        is left untouched (already pushed when it was picked).
+        """
+        if validity_label is not None:
+            await self.jira.set_validity(issue_key, validity_label)
+            self.repository.set_validity_label(post_id, validity_label)
+            return
+        ticket = self.repository.get_by_post_id(post_id)
+        if ticket is None or ticket.validity_label is None:
+            await self.jira.set_valid_incident(issue_key, True)
+
     async def _ensure_postmortem_jira_issue(
         self,
         ticket: AlertTicket,
@@ -1291,14 +1445,20 @@ class IncidentBotService:
         description: str,
         ended_at: datetime,
         reacted_by_user_id: str,
+        validity_label: str | None = None,
     ) -> AlertTicket:
         if ticket.jira_issue_key is not None:
-            if not ticket.valid_incident:
+            if not ticket.valid_incident or validity_label is not None:
                 # Validity and confirmation are independent axes: only default to
                 # Валидный when nobody picked a validity. An explicit Ложный/
-                # Ожидаемый (validity_label) must survive the postmortem/end step.
-                if ticket.validity_label is None:
-                    await self.jira.set_valid_incident(ticket.jira_issue_key, True)
+                # Ожидаемый (validity_label) must survive — and a validity emoji
+                # on an already-confirmed incident must still update the field.
+                await self._apply_postmortem_validity(
+                    ticket.mattermost_post_id,
+                    ticket.jira_issue_key,
+                    validity_label=validity_label,
+                )
+            if not ticket.valid_incident:
                 await self.jira.set_end_time(ticket.jira_issue_key, ended_at)
                 await self._set_time_to_fix(ticket.jira_issue_key, ticket, ended_at)
                 self.repository.mark_confirmed(
@@ -1320,9 +1480,9 @@ class IncidentBotService:
             issue.key,
             issue.url,
         )
-        # Default to Валидный only when no explicit validity was chosen.
-        if ticket.validity_label is None:
-            await self.jira.set_valid_incident(issue.key, True)
+        await self._apply_postmortem_validity(
+            ticket.mattermost_post_id, issue.key, validity_label=validity_label
+        )
         await self.jira.set_end_time(issue.key, ended_at)
         await self._set_time_to_fix(issue.key, ticket, ended_at)
         if self.settings.jira_confirmed_status_id:
@@ -2201,6 +2361,7 @@ class IncidentBotService:
                         incident_emoji=self.settings.mattermost_incident_reaction_name,
                         false_emoji=self.settings.mattermost_false_incident_reaction_name,
                         expected_emoji=self.settings.mattermost_expected_incident_reaction_name,
+                        summary_emoji=self.settings.mattermost_summary_reaction_name,
                     ),
                     event="mattermost.alert_thread.duty_help_published",
                 )
@@ -2294,6 +2455,22 @@ class IncidentBotService:
             reply_post_id=reply.id,
         )
 
+    async def _post_unauthorized_notice(
+        self, *, root_post_id: str, channel_id: str, user_mention: str
+    ) -> None:
+        allowed = " ".join(f"@{u}" for u in self.settings.mattermost_authorized_usernames)
+        text = "Это действие доступно только авторизованным пользователям."
+        if allowed:
+            text += f"\nРазрешённые пользователи: `{allowed}`"
+        await self._post_alert_thread_reply(
+            root_post_id,
+            channel_id=channel_id,
+            message=text,
+            event="mattermost.unauthorized.notice_posted",
+            color=INCIDENT_OPEN_COLOR,
+            mention=user_mention,
+        )
+
     async def _publish_incident_message_if_needed(
         self,
         ticket: AlertTicket,
@@ -2314,7 +2491,7 @@ class IncidentBotService:
         )
         info_block = {
             "fallback": "Инцидент открыт",
-            "color": FEEDBACK_ATTACHMENT_COLOR,
+            "color": INCIDENT_OPEN_COLOR,
             "text": info_text,
         }
         props = {
@@ -2356,6 +2533,15 @@ class IncidentBotService:
                         )
                     ]
                 },
+            )
+        # The alert thread's cheat-sheet covers firing reactions; the incident
+        # thread needs its own (validity = close + postmortem, summary emoji).
+        if self.settings.duty_help_enabled:
+            await self._post_incident_thread_reply(
+                incident_post.id,
+                channel_id=self.settings.mattermost_incident_channel_id,
+                message=self._incident_duty_help(),
+                event="mattermost.incident_thread.duty_help_published",
             )
 
     async def _alert_attachments(self, ticket: AlertTicket) -> list[dict]:

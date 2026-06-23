@@ -197,6 +197,18 @@ async def pending_work_loop(service: IncidentBotService) -> None:
         await asyncio.sleep(service.settings.pending_work_interval_seconds)
 
 
+async def authorized_users_refresh_loop(service: IncidentBotService) -> None:
+    """Periodically re-resolve the allowlist so group membership changes apply."""
+    while True:
+        await asyncio.sleep(service.settings.mattermost_authorized_refresh_seconds)
+        try:
+            await service.resolve_authorized_users()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error("authorized_users.refresh_failed", error=str(exc))
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -239,6 +251,10 @@ def create_app(
         if settings.enable_websocket:
             app.state.background_tasks.append(asyncio.create_task(websocket_loop(service)))
         app.state.background_tasks.append(asyncio.create_task(pending_work_loop(service)))
+        if settings.mattermost_authorized_usernames:
+            app.state.background_tasks.append(
+                asyncio.create_task(authorized_users_refresh_loop(service))
+            )
         try:
             yield
         finally:
@@ -290,6 +306,8 @@ def create_app(
             action=context.get("action", ""),
             alert_post_id=context.get("alert_post_id", ""),
             user_id=payload.get("user_id", ""),
+            user_name=payload.get("user_name", ""),
+            channel_id=payload.get("channel_id", ""),
             selected_option=context.get("selected_option") or payload.get("selected_option", ""),
             trigger_id=payload.get("trigger_id", ""),
             source=context.get("source", "alert"),

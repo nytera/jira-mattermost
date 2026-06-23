@@ -38,6 +38,7 @@ lifespan, launches two background asyncio tasks against one
   smoke request. Successful Jira checks warm field/createmeta caches.
 - **`websocket_loop`** — connects to Mattermost WS (`websocket_events()`), feeds every event to `service.handle_websocket_event`. Reconnects on failure.
 - **`pending_work_loop`** — every `PENDING_WORK_INTERVAL_SECONDS` calls `process_pending_work()` to retry failed Jira creates and pending confirmations from the DB. This is the durability backbone: any partial failure is recovered here.
+- **`authorized_users_refresh_loop`** (only when `MATTERMOST_AUTHORIZED_USERNAMES` is set) — every `MATTERMOST_AUTHORIZED_REFRESH_SECONDS` (default 300) re-runs `resolve_authorized_users()` so Mattermost group-membership changes propagate. Unlike the startup resolve, a transient/empty refresh keeps the last known-good set instead of failing open.
 
 HTTP endpoints: `GET /healthz`, `POST /mattermost/slash/incident` (the
 `/incident` slash command; validates `MATTERMOST_SLASH_TOKEN` if set), and
@@ -95,7 +96,13 @@ issue-created replies display the clean configured `JIRA_STUB_ISSUE_KEY` via
 `_display_jira_issue`. Field/option metadata reads (global, not issue-scoped) are
 not stubbed.
 
-There is also a **lightweight validity path** (`apply_validity_label`, triggered by the two configurable reactions `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` → `Ложный` and `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` → `Ожидаемый`). It sets Jira's `Валидность` field (`JiraClient.set_validity`), optionally sets `JIRA_END_FIELD` to the reaction time, and replies in the alert thread — no incidents-channel post, comment, or transition. Last reaction wins: each distinct label overwrites the field; the `validity_label` column guards against re-applying the same label (no duplicate replies). It does **not** touch the `valid_incident` confirmation state machine and is best-effort (no `pending_work_loop` retry) — if the Jira issue is not ready, the update is skipped.
+There is also a **lightweight validity path** (`apply_validity_label`, triggered by the two configurable reactions `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` → `Ложный` and `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` → `Ожидаемый`) **in the alert channel only**. It sets Jira's `Валидность` field (`JiraClient.set_validity`), optionally sets `JIRA_END_FIELD` to the reaction time, and replies in the alert thread — no incidents-channel post, comment, or transition. Last reaction wins: each distinct label overwrites the field; the `validity_label` column guards against re-applying the same label (no duplicate replies). It does **not** touch the `valid_incident` confirmation state machine and is best-effort (no `pending_work_loop` retry) — if the Jira issue is not ready, the update is skipped.
+
+The **same false/expected reactions in the incident channel** behave differently: on an incident-thread root they route into `handle_incident_checkmark(validity_label=...)`, which both stamps the chosen `Валидность` **and** finalizes the incident (end-time + postmortem) — the checkmark (`INCIDENT_END_REACTION_NAMES`) is the `Валидный` shortcut. Postmortem generation is now idempotent: the `postmortem_comment_added` flag (set after the additive `add_comment`) means a second checkmark/validity reaction on a closed incident only updates the `Валидность` field and never re-posts the PM comment. `_ensure_postmortem_jira_issue` takes `validity_label`: a present value is pushed via `set_validity` (overriding the default-`Валидный`), and an earlier explicit Ложный/Ожидаемый still survives.
+
+A configurable **summary reaction** (`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`) triggers `generate_thread_summary` in any channel — the emoji analogue of the 📝 summary button, gated by the same allowlist.
+
+The **allowlist** (`resolve_authorized_users`) accepts a mixed comma/semicolon-separated list of logins and Mattermost group names: each entry is resolved as a login first (`get_user_ids_by_usernames`), the remainder as groups (`get_group_ids_by_names` + `get_group_member_ids`, tolerant of a missing groups license). It is re-run by `authorized_users_refresh_loop`.
 
 Alert-thread replies (`_post_alert_thread_reply`) and incident-thread replies
 (`_post_incident_thread_reply`) are best-effort: they reuse the root `post_id`
@@ -118,8 +125,10 @@ explicitly enabled, and emoji reactions are always the fallback).
 Independently, after the issue-created reply the alert thread also gets a boxed
 **duty cheat-sheet** (`format_alert_duty_help`, reactions only) when
 `DUTY_HELP_ENABLED` (default true); resolved alerts create no issue and get
-neither. The incident-channel thread of an alert-originated incident does **not**
-repeat the cheat-sheet. Current UI is a single thread reply with
+neither. Both incident threads (manual and alert-originated) get their own
+`format_incident_duty_help` cheat-sheet, which spells out that validity reactions
+there close the incident + postmortem (distinct from the alert thread's
+label-only meaning) and lists the summary emoji. Current UI is a single thread reply with
 two stacked attachment blocks: a blue (`#3B82F6`) main card with bold
 `Создана задача`, the `Выбрать валидность ▼` menu, and the `🚨 Инцидент` /
 `📝 Summary` buttons under it, then a separate gray (`#4B5563`) card below with
@@ -150,8 +159,10 @@ where, and whether it is gated), see the "Сводка: что на что вл�
 `README.md` — keep it as the single source of truth instead of duplicating it.
 
 Idempotency keys live in `AlertTicket`: `jira_issue_key`, `incident_post_id`,
-`jira_confirmation_comment_added`, plus `creation_status` /
-`confirmation_status` state machines. Re-delivered events are no-ops.
+`jira_confirmation_comment_added`, `postmortem_comment_added` (set once the PM
+comment is posted, so repeated checkmark/validity reactions never duplicate it),
+plus `creation_status` / `confirmation_status` state machines. Re-delivered
+events are no-ops.
 
 ### Jira field/option resolution (the non-obvious part)
 

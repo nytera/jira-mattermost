@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,15 +80,16 @@ def _first_env(*names: str) -> str | None:
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
-    """Parse a comma-separated env var into a tuple of trimmed, non-empty items.
+    """Parse a comma/semicolon-separated env var into trimmed, non-empty items.
 
-    A leading ``@`` (e.g. ``@ivanov``) is stripped so operators can paste
-    Mattermost mentions directly. Empty/unset -> empty tuple.
+    Either ``,`` or ``;`` (mixed is fine) separates entries. A leading ``@``
+    (e.g. ``@ivanov``) is stripped so operators can paste Mattermost mentions
+    directly. Empty/unset -> empty tuple.
     """
     value = _env(name)
     if value is None:
         return ()
-    items = [item.strip().lstrip("@") for item in value.split(",")]
+    items = [item.strip().lstrip("@") for item in re.split(r"[,;]", value)]
     return tuple(item for item in items if item)
 
 
@@ -120,7 +122,9 @@ class Settings:
     jira_time_to_fix_field: str | None = None
     mattermost_false_incident_reaction_name: str = "man_gesturing_no"
     mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
+    mattermost_summary_reaction_name: str = "memo"
     mattermost_authorized_usernames: tuple[str, ...] = ()
+    mattermost_authorized_refresh_seconds: int = 300
     mattermost_duty_mention: str | None = None
     log_level: str = "INFO"
     log_format: str = "json"
@@ -185,7 +189,11 @@ class Settings:
             mattermost_expected_incident_reaction_name=_env(
                 "MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME", "arrows_counterclockwise"
             ),
+            mattermost_summary_reaction_name=_env("MATTERMOST_SUMMARY_REACTION_NAME", "memo"),
             mattermost_authorized_usernames=_csv_env("MATTERMOST_AUTHORIZED_USERNAMES"),
+            mattermost_authorized_refresh_seconds=_int_env(
+                "MATTERMOST_AUTHORIZED_REFRESH_SECONDS", 300
+            ),
             mattermost_duty_mention=_env("MATTERMOST_DUTY_MENTION"),
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),

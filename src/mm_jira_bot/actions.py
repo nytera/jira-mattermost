@@ -31,6 +31,9 @@ INCIDENT_CREATE_ATTACHMENT_COLOR = "#F59E0B"
 # postmortem/feedback), so every bot comment renders as a boxed attachment
 # instead of a bare message.
 NOTICE_ATTACHMENT_COLOR = "#64748B"
+# Red/green for incident-channel post: red while open, green when resolved.
+INCIDENT_OPEN_COLOR = "#EF4444"
+INCIDENT_DONE_COLOR = "#22C55E"
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 import mm_jira_bot.jira as jira_module
 import mm_jira_bot.jira_payload as jira_payload_module
 from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
-from mm_jira_bot.config import Settings, load_dotenv_file
+from mm_jira_bot.config import Settings, _csv_env, load_dotenv_file
 from mm_jira_bot.domain import (
     JiraIssue,
     MattermostPost,
@@ -58,6 +58,9 @@ class FakeMattermostClient:
         self.display_names: dict[str, str] = {}
         self.username_to_id: dict[str, str] = {}
         self.usernames_lookups: list[list[str]] = []
+        self.group_name_to_id: dict[str, str] = {}
+        self.group_members: dict[str, set[str]] = {}
+        self.group_lookups: list[list[str]] = []
 
     def permalink(self, post_id: str) -> str:
         return f"https://mattermost.example.com/_redirect/pl/{post_id}"
@@ -83,6 +86,15 @@ class FakeMattermostClient:
         return {
             name: self.username_to_id[name] for name in usernames if name in self.username_to_id
         }
+
+    async def get_group_ids_by_names(self, names: list[str]) -> dict[str, str]:
+        self.group_lookups.append(list(names))
+        return {
+            name: self.group_name_to_id[name] for name in names if name in self.group_name_to_id
+        }
+
+    async def get_group_member_ids(self, group_id: str) -> set[str]:
+        return set(self.group_members.get(group_id, set()))
 
     async def create_post(
         self,
@@ -770,14 +782,14 @@ async def test_confirmed_incident_embeds_grafana_attachment(service):
     incident_posts = [
         created
         for created in service.mattermost.created_posts
-        if created["channel_id"] == "incidents-channel"
+        if created["channel_id"] == "incidents-channel" and created["root_id"] is None
     ]
     assert len(incident_posts) == 1
     incident_post = incident_posts[0]
     post_attachments = incident_post["props"]["attachments"]
-    # Gray info block first, then the forwarded alert attachment(s) (a copy).
+    # Red info block first, then the forwarded alert attachment(s) (a copy).
     info_block = post_attachments[0]
-    assert info_block["color"] == "#4B5563"
+    assert info_block["color"] == "#EF4444"
     assert post_attachments[1:] == attachments
     assert post_attachments[1] is not attachments[0]
     info_text = info_block["text"]
@@ -1092,7 +1104,7 @@ async def test_false_reaction_sets_validity_without_incident_post(service):
     incident_posts = [
         created
         for created in service.mattermost.created_posts
-        if created["channel_id"] == "incidents-channel"
+        if created["channel_id"] == "incidents-channel" and created["root_id"] is None
     ]
     assert incident_posts == []
     validity_replies = [
@@ -1243,7 +1255,7 @@ async def test_replies_in_alert_thread_on_status_change(service):
     incident_posts = [
         created
         for created in service.mattermost.created_posts
-        if created["channel_id"] == "incidents-channel"
+        if created["channel_id"] == "incidents-channel" and created["root_id"] is None
     ]
     assert len(incident_posts) == 1
     info_text = incident_posts[0]["props"]["attachments"][0]["text"]
@@ -1433,7 +1445,7 @@ async def test_debug_admin_force_recreates_confirmed_issue_without_duplicate_inc
     incident_posts = [
         created
         for created in service.mattermost.created_posts
-        if created["channel_id"] == "incidents-channel"
+        if created["channel_id"] == "incidents-channel" and created["root_id"] is None
     ]
     assert response.status_code == 200
     assert response.json()["status"] == "recreated"
@@ -1464,7 +1476,7 @@ async def test_repeated_confirmation_does_not_duplicate_incident_post(service):
     incident_posts = [
         created
         for created in service.mattermost.created_posts
-        if created["channel_id"] == "incidents-channel"
+        if created["channel_id"] == "incidents-channel" and created["root_id"] is None
     ]
     assert len(incident_posts) == 1
     assert len(service.jira.comments) == 1
@@ -2740,7 +2752,7 @@ async def test_incident_button_confirms_incident(service):
     incident_posts = [
         created
         for created in service.mattermost.created_posts
-        if created["channel_id"] == "incidents-channel"
+        if created["channel_id"] == "incidents-channel" and created["root_id"] is None
     ]
     assert len(incident_posts) == 1
     assert "Инцидент заведён" in result.message
@@ -3004,11 +3016,25 @@ async def test_unauthorized_action_is_blocked(settings):
     service.jira.valid_updates.clear()
 
     result = await service.handle_alert_action(
-        action="incident", alert_post_id=post.id, user_id="u-bob"
+        action="incident",
+        alert_post_id=post.id,
+        user_id="u-bob",
+        user_name="bob",
+        channel_id="alert-channel",
     )
 
-    assert "Недостаточно прав" in result.message
+    assert result.message == ""
     assert service.jira.valid_updates == []
+    # A visible thread reply with the denial notice must be posted.
+    notice_replies = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == post.id and "@bob" in (c.get("message") or "")
+    ]
+    assert len(notice_replies) == 1
+    att_text = notice_replies[0]["props"]["attachments"][0]["text"]
+    assert "авторизованным" in att_text
+    assert "@alice" in att_text
 
 
 @pytest.mark.asyncio
@@ -3441,7 +3467,8 @@ async def test_confirmed_alert_incident_gets_controls_card(settings):
     cards = [
         c
         for c in service.mattermost.created_posts
-        if c["root_id"] == ticket.incident_post_id and (c["props"] or {}).get("attachments")
+        if c["root_id"] == ticket.incident_post_id
+        and any(a.get("actions") for a in (c["props"] or {}).get("attachments", []))
     ]
     assert len(cards) == 1
     card = cards[0]["props"]["attachments"][0]
@@ -3556,25 +3583,40 @@ def test_alert_duty_help_lists_configured_reactions():
         incident_emoji="incident",
         false_emoji="man_gesturing_no",
         expected_emoji="arrows_counterclockwise",
+        summary_emoji="memo",
     )
     assert ":incident:" in text
     assert ":man_gesturing_no:" in text
     assert ":arrows_counterclockwise:" in text
+    assert ":memo:" in text
     assert "завести инцидент" in text
+    assert "саммари" in text.lower()
     # No button hints, as buttons are off by default.
     assert "кнопк" not in text.lower()
 
 
 def test_alert_duty_help_uses_custom_emoji_names():
     text = format_alert_duty_help(
-        incident_emoji="fire", false_emoji="no_entry", expected_emoji="repeat"
+        incident_emoji="fire",
+        false_emoji="no_entry",
+        expected_emoji="repeat",
+        summary_emoji="scroll",
     )
-    assert ":fire:" in text and ":no_entry:" in text and ":repeat:" in text
+    assert ":fire:" in text and ":no_entry:" in text and ":repeat:" in text and ":scroll:" in text
 
 
 def test_incident_duty_help_lists_checkmark_reaction():
-    text = format_incident_duty_help()
+    text = format_incident_duty_help(
+        false_emoji="man_gesturing_no",
+        expected_emoji="arrows_counterclockwise",
+        summary_emoji="memo",
+    )
     assert "✅" in text
+    # Validity reactions here close the incident + postmortem (not the alert's
+    # label-only meaning), and the summary emoji is listed too.
+    assert ":man_gesturing_no:" in text and ":arrows_counterclockwise:" in text
+    assert ":memo:" in text
+    assert "постмортем" in text.lower()
     assert "кнопк" not in text.lower()
 
 
@@ -3618,9 +3660,9 @@ async def test_duty_help_disabled_posts_nothing(settings):
 
 
 @pytest.mark.asyncio
-async def test_alert_originated_incident_has_no_duty_help(service):
-    # The incident-channel thread (alert-originated) does not repeat the cheat-sheet;
-    # it was already shown in the alert thread.
+async def test_alert_originated_incident_posts_its_own_duty_help(service):
+    # The incident-channel thread (alert-originated) gets its own cheat-sheet:
+    # validity reactions here mean "close + postmortem", unlike the alert thread.
     post = make_alert()
     service.mattermost.posts[post.id] = post
     await service.handle_alert_post(post)
@@ -3633,7 +3675,8 @@ async def test_alert_originated_incident_has_no_duty_help(service):
         for c in service.mattermost.created_posts
         if c["root_id"] == ticket.incident_post_id and "Памятка дежурному" in _reply_text(c)
     ]
-    assert incident_help == []
+    assert len(incident_help) == 1
+    assert "постмортем" in _reply_text(incident_help[0]).lower()
 
 
 # --- Postmortem comment Jira-wiki conversion --------------------------------
@@ -3898,3 +3941,236 @@ async def test_set_time_to_fix_skipped_when_field_unconfigured(settings):
         await client.set_time_to_fix("OPS-1", 10)
     finally:
         await client.aclose()
+
+
+# --- Allowlist: groups, separators, refresh ---------------------------------
+
+
+def test_csv_env_splits_on_comma_and_semicolon(monkeypatch):
+    monkeypatch.setenv("ALLOW", "alice, bob;@carol ; ,sre-team")
+    assert _csv_env("ALLOW") == ("alice", "bob", "carol", "sre-team")
+
+
+@pytest.mark.asyncio
+async def test_group_members_resolve_into_allowlist(settings):
+    service = _authorized_service(settings, ("sre-team",), {})
+    service.mattermost.group_name_to_id = {"sre-team": "g-sre"}
+    service.mattermost.group_members = {"g-sre": {"u-alice", "u-bob"}}
+
+    await service.resolve_authorized_users()
+
+    assert service._authorization_enforced is True
+    assert service._authorized_user_ids == frozenset({"u-alice", "u-bob"})
+    assert service._is_authorized("u-bob") is True
+    assert service._is_authorized("u-stranger") is False
+
+
+@pytest.mark.asyncio
+async def test_mixed_logins_and_groups_resolve(settings):
+    service = _authorized_service(settings, ("alice", "sre-team"), {"alice": "u-alice"})
+    service.mattermost.group_name_to_id = {"sre-team": "g-sre"}
+    service.mattermost.group_members = {"g-sre": {"u-bob"}}
+
+    await service.resolve_authorized_users()
+
+    assert service._authorized_user_ids == frozenset({"u-alice", "u-bob"})
+    # The group lookup only got the names that were not resolved as logins.
+    assert service.mattermost.group_lookups == [["sre-team"]]
+
+
+@pytest.mark.asyncio
+async def test_refresh_picks_up_new_group_member(settings):
+    service = _authorized_service(settings, ("sre-team",), {})
+    service.mattermost.group_name_to_id = {"sre-team": "g-sre"}
+    service.mattermost.group_members = {"g-sre": {"u-alice"}}
+    await service.resolve_authorized_users()
+    assert service._is_authorized("u-bob") is False
+
+    # Someone is added to the group; the next refresh picks them up.
+    service.mattermost.group_members["g-sre"].add("u-bob")
+    await service.resolve_authorized_users()
+    assert service._is_authorized("u-bob") is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_last_good_on_api_error(settings):
+    service = _authorized_service(settings, ("alice",), {"alice": "u-alice"})
+    await service.resolve_authorized_users()
+    assert service._is_authorized("u-alice") is True
+
+    async def boom(_usernames):
+        raise ApiError("mattermost down", retryable=True)
+
+    service.mattermost.get_user_ids_by_usernames = boom
+    await service.resolve_authorized_users()
+
+    # A transient refresh failure must not clobber a working allowlist.
+    assert service._authorization_enforced is True
+    assert service._authorized_user_ids == frozenset({"u-alice"})
+
+
+@pytest.mark.asyncio
+async def test_group_lookup_failure_keeps_login_allowlist(settings):
+    service = _authorized_service(settings, ("alice", "sre-team"), {"alice": "u-alice"})
+
+    async def boom(_names):
+        raise ApiError("groups need a license", retryable=False)
+
+    service.mattermost.get_group_ids_by_names = boom
+    await service.resolve_authorized_users()
+
+    # Group failure (e.g. missing license) must not brick the login allowlist.
+    assert service._authorization_enforced is True
+    assert service._authorized_user_ids == frozenset({"u-alice"})
+
+
+# --- Incident validity emoji + postmortem idempotency -----------------------
+
+
+async def _confirmed_incident(service):
+    """Confirm an alert into an incident and return its ticket."""
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    return service.repository.get_by_post_id(post.id)
+
+
+@pytest.mark.asyncio
+async def test_false_reaction_in_incident_closes_with_postmortem(service):
+    service.llm = FakeLlmClient()
+    ticket = await _confirmed_incident(service)
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="closer",
+            emoji_name="man_gesturing_no",
+            create_at=1_700_000_200_000,
+        )
+    )
+
+    assert result.status == "incident_ended"
+    # Validity stamped Ложный, postmortem generated exactly once, end-time set.
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+    assert len(service.llm.prompts) == 1
+    assert [key for key, _ in service.jira.generic_comments] == ["OPS-1"]
+    assert [key for key, _ in service.jira.end_updates] == ["OPS-1"]
+    assert service.repository.get_by_post_id(ticket.mattermost_post_id).postmortem_comment_added
+
+
+@pytest.mark.asyncio
+async def test_false_reaction_in_incident_sets_validity_without_llm(service):
+    # No LLM (postmortem disabled) must still write the chosen validity to Jira.
+    service.llm = None
+    ticket = await _confirmed_incident(service)
+
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="closer",
+            emoji_name="man_gesturing_no",
+            create_at=1_700_000_200_000,
+        )
+    )
+
+    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
+    # End-time set, but no postmortem comment (no LLM).
+    assert [key for key, _ in service.jira.end_updates] == ["OPS-1"]
+    assert service.jira.generic_comments == []
+
+
+@pytest.mark.asyncio
+async def test_validity_reaction_on_finalized_incident_only_flips_validity(service):
+    service.llm = FakeLlmClient()
+    ticket = await _confirmed_incident(service)
+    # Close it once via checkmark (Валидный + postmortem).
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_200_000,
+        )
+    )
+    assert len(service.jira.generic_comments) == 1
+
+    # A later validity emoji just flips the field; it must not regenerate the PM.
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="auditor",
+            emoji_name="arrows_counterclockwise",
+            create_at=1_700_000_300_000,
+        )
+    )
+
+    assert service.jira.validity_by_issue["OPS-1"] == "Ожидаемый"
+    assert len(service.jira.generic_comments) == 1
+    assert len(service.llm.prompts) == 1
+    # The templated "validity changed" notice is posted in the incident thread.
+    notices = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == ticket.incident_post_id and "Валидность обновлена" in _reply_text(c)
+    ]
+    assert len(notices) == 1
+    assert "Ожидаемый" in _reply_text(notices[0])
+
+
+@pytest.mark.asyncio
+async def test_repeated_checkmark_does_not_duplicate_postmortem(service):
+    service.llm = FakeLlmClient()
+    ticket = await _confirmed_incident(service)
+    reaction = ReactionEvent(
+        post_id=ticket.incident_post_id,
+        user_id="closer",
+        emoji_name="white_check_mark",
+        create_at=1_700_000_200_000,
+    )
+
+    await service.handle_reaction(reaction)
+    await service.handle_reaction(reaction)
+
+    # The PM comment is additive — a second checkmark must not duplicate it.
+    assert len(service.jira.generic_comments) == 1
+    assert len(service.llm.prompts) == 1
+
+
+# --- Summary emoji ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_summary_reaction_posts_thread_summary(service):
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
+    )
+
+    assert "опубликовано" in result.message
+    assert len(service.llm.summary_prompts) == 1
+    # Summary is LLM-only; it never touches Jira.
+    assert service.jira.generic_comments == []
+
+
+@pytest.mark.asyncio
+async def test_summary_reaction_works_in_incident_thread(service):
+    service.llm = FakeLlmClient()
+    ticket = await _confirmed_incident(service)
+
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id, user_id="reader", emoji_name="memo", create_at=3
+        )
+    )
+
+    assert "опубликовано" in result.message
+    assert len(service.llm.summary_prompts) == 1
+    # No postmortem comment from a summary emoji.
+    assert service.jira.generic_comments == []

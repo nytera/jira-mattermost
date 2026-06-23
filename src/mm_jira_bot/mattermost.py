@@ -211,6 +211,66 @@ class MattermostClient(AsyncApiClient):
             parse=parse,
         )
 
+    async def get_group_ids_by_names(self, names: list[str]) -> dict[str, str]:
+        """Resolve Mattermost group names to group ids.
+
+        Each name is searched via ``GET /api/v4/groups?q=`` and matched against
+        the group ``name`` (slug) or ``display_name``. Groups may require a
+        license/permission the bot token lacks; the caller is expected to treat
+        an :class:`ApiError` as "no group resolved" rather than a fatal error.
+        Returns ``{name: group_id}`` for the names that matched a group.
+        """
+        resolved: dict[str, str] = {}
+        for name in names:
+
+            def parse(response: httpx.Response, *, wanted: str = name) -> str | None:
+                data = response.json()
+                groups = data if isinstance(data, list) else data.get("groups", [])
+                for group in groups:
+                    if not isinstance(group, dict) or not group.get("id"):
+                        continue
+                    if group.get("name") == wanted or group.get("display_name") == wanted:
+                        return str(group["id"])
+                return None
+
+            group_id = await self._request(
+                "GET",
+                "/api/v4/groups",
+                params={"q": name, "include_member_count": "false"},
+                error_message="Failed to search Mattermost groups",
+                event="mattermost.groups_search",
+                parse=parse,
+            )
+            if group_id:
+                resolved[name] = group_id
+        return resolved
+
+    async def get_group_member_ids(self, group_id: str) -> set[str]:
+        """Return the user ids of every member of a Mattermost group (paginated)."""
+        per_page = 200
+        members: set[str] = set()
+        page = 0
+        while True:
+
+            def parse(response: httpx.Response) -> list[str]:
+                data = response.json()
+                rows = data.get("members", []) if isinstance(data, dict) else data
+                return [str(row["id"]) for row in rows if isinstance(row, dict) and row.get("id")]
+
+            page_ids = await self._request(
+                "GET",
+                f"/api/v4/groups/{group_id}/members",
+                params={"page": page, "per_page": per_page},
+                error_message="Failed to get Mattermost group members",
+                event="mattermost.group_members",
+                parse=parse,
+            )
+            members.update(page_ids)
+            if len(page_ids) < per_page:
+                break
+            page += 1
+        return members
+
     async def get_user_display_name(self, user_id: str) -> str:
         return await self._request(
             "GET",

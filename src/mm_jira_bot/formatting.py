@@ -157,6 +157,7 @@ def format_alert_duty_help(
     incident_emoji: str,
     false_emoji: str,
     expected_emoji: str,
+    summary_emoji: str,
 ) -> str:
     """Reaction cheat-sheet posted in a firing-alert thread.
 
@@ -171,17 +172,31 @@ def format_alert_duty_help(
             f"- :{incident_emoji}: — завести инцидент",
             f"- :{false_emoji}: — пометить ложным",
             f"- :{expected_emoji}: — пометить ожидаемым",
+            f"- :{summary_emoji}: — саммари треда",
         ]
     )
 
 
-def format_incident_duty_help() -> str:
-    """Reaction cheat-sheet posted in a manual-incident thread."""
+def format_incident_duty_help(
+    *,
+    false_emoji: str,
+    expected_emoji: str,
+    summary_emoji: str,
+) -> str:
+    """Reaction cheat-sheet posted in an incident thread.
+
+    Unlike the alert thread, validity reactions here also *close* the incident
+    and trigger a postmortem — spell that out so on-call doesn't mistake them
+    for the alert channel's label-only behavior.
+    """
     return "\n".join(
         [
             _DUTY_HELP_HEADER,
-            "Реакции на это сообщение:",
-            "- ✅ галочка на корневом сообщении — создать задачу / завершить инцидент",
+            "Реакции на корневое сообщение инцидента:",
+            "- ✅ галочка — валидный, завершить инцидент + постмортем",
+            f"- :{false_emoji}: — ложный, завершить инцидент + постмортем",
+            f"- :{expected_emoji}: — ожидаемый, завершить инцидент + постмортем",
+            f"- :{summary_emoji}: — саммари треда",
         ]
     )
 

@@ -70,6 +70,7 @@ class AlertTicket(Base):
     pending_confirmation_by_user_id: Mapped[str | None] = mapped_column(String(64))
     pending_confirmation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     jira_confirmation_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
+    postmortem_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
     validity_label: Mapped[str | None] = mapped_column(String(64))
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=backend_now)
@@ -103,6 +104,14 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
         with engine.begin() as connection:
             connection.execute(
                 text("ALTER TABLE alert_tickets ADD COLUMN mattermost_alert_title VARCHAR(255)")
+            )
+    if "postmortem_comment_added" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE alert_tickets "
+                    "ADD COLUMN postmortem_comment_added BOOLEAN DEFAULT FALSE"
+                )
             )
 
 
@@ -370,6 +379,12 @@ class AlertTicketRepository:
     def mark_jira_confirmation_comment_added(self, post_id: str) -> None:
         def apply(ticket: AlertTicket) -> None:
             ticket.jira_confirmation_comment_added = True
+
+        self._mutate(post_id, apply)
+
+    def mark_postmortem_comment_added(self, post_id: str) -> None:
+        def apply(ticket: AlertTicket) -> None:
+            ticket.postmortem_comment_added = True
 
         self._mutate(post_id, apply)
 
