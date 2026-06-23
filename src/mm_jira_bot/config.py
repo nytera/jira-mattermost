@@ -56,6 +56,20 @@ def _float_env(name: str, default: float) -> float:
     return default if value is None else float(value)
 
 
+def _text_env(name: str) -> str | None:
+    """Read a (possibly large, multi-line) text setting.
+
+    Prefers ``<NAME>_FILE`` (a path whose contents become the value) over the
+    inline ``<NAME>`` var, because ``load_dotenv_file`` is line-based and cannot
+    carry a multi-line value from ``.env`` — the file variant is the practical
+    way to supply a big prompt. A missing file path fails fast at startup.
+    """
+    file_path = _env(f"{name}_FILE")
+    if file_path:
+        return Path(file_path).read_text(encoding="utf-8")
+    return _env(name)
+
+
 def _first_env(*names: str) -> str | None:
     for name in names:
         value = _env(name)
@@ -122,6 +136,8 @@ class Settings:
     llm_model: str = "deepseek-chat"
     llm_max_tokens: int = 4000
     llm_thread_max_chars: int = 24000
+    llm_postmortem_prompt: str | None = None
+    llm_summary_prompt: str | None = None
     llm_stream: bool = True
     llm_read_timeout: float = 120.0
 
@@ -185,6 +201,8 @@ class Settings:
             llm_model=_env("LLM_MODEL", "deepseek-chat"),
             llm_max_tokens=_int_env("LLM_MAX_TOKENS", 4000),
             llm_thread_max_chars=_int_env("LLM_THREAD_MAX_CHARS", 24000),
+            llm_postmortem_prompt=_text_env("LLM_POSTMORTEM_PROMPT"),
+            llm_summary_prompt=_text_env("LLM_SUMMARY_PROMPT"),
             llm_stream=_env("LLM_STREAM", "true") != "false",
             llm_read_timeout=_float_env("LLM_READ_TIMEOUT", 120.0),
         )

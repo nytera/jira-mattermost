@@ -183,6 +183,11 @@ someone adds a Mattermost checkmark reaction (`white_check_mark`,
 When `LLM_API_TOKEN` is configured, the same checkmark also generates a
 postmortem from the full incident thread through the OpenAI-compatible
 `LLM_BASE_URL`, keeps Jira description as a PM template with the incident root
+(the postmortem user-prompt is `DEFAULT_POSTMORTEM_PROMPT` in `postmortem.py`,
+overridable via `LLM_POSTMORTEM_PROMPT`/`_FILE`; the in-thread summary uses
+`DEFAULT_SUMMARY_PROMPT` in `summary.py`, overridable via `LLM_SUMMARY_PROMPT`/`_FILE`.
+Both substitute placeholders by ordered `str.replace` with `{transcript}` last so
+thread text is never re-scanned; the two `SYSTEM_PROMPT`s in `llm.py` stay in code)
 link, postmortem author, and participants, adds the generated report as a Jira
 comment (the LLM's Markdown is converted to Jira **wiki markup** via
 `markdown_to_jira_wiki` before posting, since the v2 comment endpoint renders

@@ -2,17 +2,12 @@ from __future__ import annotations
 
 from mm_jira_bot.postmortem import trim_transcript
 
-
-def build_thread_summary_prompt(
-    *,
-    thread_url: str,
-    participants: list[str],
-    transcript: str,
-    max_chars: int,
-) -> str:
-    trimmed_transcript = trim_transcript(transcript, max_chars=max_chars)
-    participant_text = ", ".join(participants) if participants else "не указано"
-    return f"""Составь саммари этого треда как инцидентный отчёт по фактам.
+# User-prompt template for the in-thread incident summary. Overridable via
+# ``LLM_SUMMARY_PROMPT`` / ``LLM_SUMMARY_PROMPT_FILE`` (see config.py). Supported
+# placeholders, substituted by ``build_thread_summary_prompt``: ``{thread_url}``,
+# ``{participants}``, ``{transcript}`` (the trimmed thread; substituted last so
+# thread text can safely contain brace-looking tokens).
+DEFAULT_SUMMARY_PROMPT = """Составь саммари этого треда как инцидентный отчёт по фактам.
 
 Начни с блока мета-информации:
 - Название инцидента (кратко)
@@ -56,11 +51,30 @@ def build_thread_summary_prompt(
 - Если видишь важные аспекты инцидента, добавь дополнительные блоки или детали, которых нет в шаблоне.
 
 Тред: {thread_url}
-Участники: {participant_text}
+Участники: {participants}
 
 Тред:
-{trimmed_transcript}
+{transcript}
 """
+
+
+def build_thread_summary_prompt(
+    *,
+    thread_url: str,
+    participants: list[str],
+    transcript: str,
+    max_chars: int,
+    template: str | None = None,
+) -> str:
+    trimmed_transcript = trim_transcript(transcript, max_chars=max_chars)
+    participant_text = ", ".join(participants) if participants else "не указано"
+    body = template or DEFAULT_SUMMARY_PROMPT
+    # Metadata first, transcript last (thread text never re-scanned for tokens).
+    return (
+        body.replace("{thread_url}", thread_url)
+        .replace("{participants}", participant_text)
+        .replace("{transcript}", trimmed_transcript)
+    )
 
 
 def format_thread_summary_reply(summary: str) -> str:

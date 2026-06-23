@@ -125,17 +125,13 @@ def trim_transcript(transcript: str, *, max_chars: int) -> str:
     )
 
 
-def build_postmortem_prompt(
-    *,
-    incident_thread_url: str,
-    participants: list[str],
-    postmortem_author: str,
-    transcript: str,
-    max_chars: int,
-) -> str:
-    trimmed_transcript = trim_transcript(transcript, max_chars=max_chars)
-    participant_text = ", ".join(participants) if participants else "не указано"
-    return f"""Создай инцидентный отчет по треду Mattermost/Band.
+# User-prompt template for the Jira postmortem comment. Overridable via
+# ``LLM_POSTMORTEM_PROMPT`` / ``LLM_POSTMORTEM_PROMPT_FILE`` (see config.py).
+# Supported placeholders, substituted by ``build_postmortem_prompt``:
+# ``{incident_thread_url}``, ``{participants}``, ``{postmortem_author}``,
+# ``{transcript}`` (the trimmed thread; always substituted last so thread text
+# can safely contain brace-looking tokens).
+DEFAULT_POSTMORTEM_PROMPT = """Создай инцидентный отчет по треду Mattermost/Band.
 
 Обязательные правила:
 - Верни отчет строго по шаблону ниже.
@@ -151,7 +147,7 @@ def build_postmortem_prompt(
 - Не пиши, что ты не можешь создать Jira-задачу или отправить сообщение: это сделает бот.
 
 Тред инцидента: {incident_thread_url}
-Участники инцидента: {participant_text}
+Участники инцидента: {participants}
 Автор постмортема: {postmortem_author}
 
 Шаблон:
@@ -183,8 +179,30 @@ def build_postmortem_prompt(
 12:30 - Завершение инцидента. Влияние снято, проблем нет
 
 Тред:
-{trimmed_transcript}
+{transcript}
 """
+
+
+def build_postmortem_prompt(
+    *,
+    incident_thread_url: str,
+    participants: list[str],
+    postmortem_author: str,
+    transcript: str,
+    max_chars: int,
+    template: str | None = None,
+) -> str:
+    trimmed_transcript = trim_transcript(transcript, max_chars=max_chars)
+    participant_text = ", ".join(participants) if participants else "не указано"
+    body = template or DEFAULT_POSTMORTEM_PROMPT
+    # Metadata first, transcript last: arbitrary thread text never gets re-scanned
+    # for placeholder tokens.
+    return (
+        body.replace("{incident_thread_url}", incident_thread_url)
+        .replace("{participants}", participant_text)
+        .replace("{postmortem_author}", postmortem_author)
+        .replace("{transcript}", trimmed_transcript)
+    )
 
 
 def build_postmortem_comment(

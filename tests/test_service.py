@@ -29,7 +29,9 @@ from mm_jira_bot.jira_payload import build_jira_issue_payload
 from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.mattermost import MattermostClient
 from mm_jira_bot.postmortem import (
+    DEFAULT_POSTMORTEM_PROMPT,
     build_postmortem_comment,
+    build_postmortem_prompt,
     extract_postmortem_summary,
     markdown_to_jira_wiki,
 )
@@ -41,6 +43,7 @@ from mm_jira_bot.repository import (
 )
 from mm_jira_bot.retry import ApiError
 from mm_jira_bot.service import IncidentBotService, parse_post_id_from_text
+from mm_jira_bot.summary import DEFAULT_SUMMARY_PROMPT, build_thread_summary_prompt
 from mm_jira_bot.web import create_app, run_startup_preflight
 
 POST_ID = "abcdefghijklmnopqrstuvwx01"
@@ -402,6 +405,41 @@ def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
 
     assert loaded_settings.jira_create_enabled is False
     assert loaded_settings.jira_stub_issue_key == "ADSDEV-12024"
+
+
+def test_settings_load_llm_prompt_overrides(tmp_path, monkeypatch):
+    required_env = {
+        "MATTERMOST_URL": "https://mattermost.example.com",
+        "MATTERMOST_TOKEN": "mm-token",
+        "MATTERMOST_ALERT_CHANNEL_ID": "alerts-channel",
+        "MATTERMOST_INCIDENT_CHANNEL_ID": "incidents-channel",
+        "MATTERMOST_BOT_USER_ID": "bot-user",
+        "JIRA_BASE_URL": "https://jira.example.com",
+        "JIRA_API_TOKEN": "jira-token",
+        "JIRA_PROJECT_KEY": "OPS",
+        "JIRA_ISSUE_TYPE": "Incident",
+        "JIRA_VALID_INCIDENT_FIELD": "Валидность",
+        "JIRA_SOURCE_FIELD": "Источник",
+        "JIRA_IS_CRIT_ALERT_FIELD": "Был ли крит алерт?",
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'bot.db'}",
+    }
+    for key, value in required_env.items():
+        monkeypatch.setenv(key, value)
+
+    # Unset → defaults stay (None means "use built-in template").
+    assert Settings.from_env(tmp_path / "missing.env").llm_postmortem_prompt is None
+
+    # Inline var is used; the *_FILE variant takes precedence and its file
+    # contents (including a multi-line body) become the value.
+    prompt_file = tmp_path / "pm.txt"
+    prompt_file.write_text("ПМ из файла\nвторая строка {transcript}", encoding="utf-8")
+    monkeypatch.setenv("LLM_POSTMORTEM_PROMPT", "инлайн который проиграет")
+    monkeypatch.setenv("LLM_POSTMORTEM_PROMPT_FILE", str(prompt_file))
+    monkeypatch.setenv("LLM_SUMMARY_PROMPT", "саммари инлайн")
+
+    loaded = Settings.from_env(tmp_path / "missing.env")
+    assert loaded.llm_postmortem_prompt == "ПМ из файла\nвторая строка {transcript}"
+    assert loaded.llm_summary_prompt == "саммари инлайн"
 
 
 def test_init_db_adds_alert_title_column_to_existing_schema(tmp_path):
@@ -3629,6 +3667,70 @@ def test_postmortem_comment_is_jira_wiki_without_disturbing_summary():
     assert "*жирный*" in comment and "**жирный**" not in comment
     # Summary extraction reads the untouched raw report.
     assert extract_postmortem_summary(report, fallback="f").startswith("[INC] 01.01.2026 - Сбой")
+
+
+def test_default_postmortem_prompt_fills_placeholders_without_leftovers():
+    prompt = build_postmortem_prompt(
+        incident_thread_url="https://t/1",
+        participants=["Иван Иванов", "Пётр Петров"],
+        postmortem_author="Сидор Сидоров",
+        transcript="тело треда",
+        max_chars=24000,
+    )
+    # Built from the default template when no override is given.
+    assert prompt.startswith("Создай инцидентный отчет по треду Mattermost/Band.")
+    assert prompt.endswith("Тред:\nтело треда\n")
+    assert "Тред инцидента: https://t/1" in prompt
+    assert "Участники инцидента: Иван Иванов, Пётр Петров" in prompt
+    assert "Автор постмортема: Сидор Сидоров" in prompt
+    # No placeholder token survives substitution.
+    for token in ("{incident_thread_url}", "{participants}", "{postmortem_author}", "{transcript}"):
+        assert token not in prompt
+
+
+def test_default_summary_prompt_fills_placeholders_without_leftovers():
+    prompt = build_thread_summary_prompt(
+        thread_url="https://t/1",
+        participants=[],
+        transcript="тело треда",
+        max_chars=24000,
+    )
+    assert prompt.startswith("Составь саммари этого треда как инцидентный отчёт по фактам.")
+    assert prompt.endswith("Тред:\nтело треда\n")
+    assert "Тред: https://t/1" in prompt
+    assert "Участники: не указано" in prompt  # empty list → placeholder
+    for token in ("{thread_url}", "{participants}", "{transcript}"):
+        assert token not in prompt
+
+
+def test_prompt_templates_are_overridable_and_do_not_rescan_transcript():
+    # A custom template wins, and brace-looking tokens inside the thread text are
+    # never re-substituted (transcript is filled last).
+    transcript = "юзер написал {participants} и {transcript}"
+    pm = build_postmortem_prompt(
+        incident_thread_url="https://t/1",
+        participants=["Иван Иванов"],
+        postmortem_author="Автор",
+        transcript=transcript,
+        max_chars=24000,
+        template="ПМ {incident_thread_url} | {participants} | {postmortem_author} | {transcript}",
+    )
+    assert pm == "ПМ https://t/1 | Иван Иванов | Автор | юзер написал {participants} и {transcript}"
+    sm = build_thread_summary_prompt(
+        thread_url="https://t/1",
+        participants=["Иван Иванов"],
+        transcript=transcript,
+        max_chars=24000,
+        template="СМ {thread_url} | {participants} | {transcript}",
+    )
+    assert sm == "СМ https://t/1 | Иван Иванов | юзер написал {participants} и {transcript}"
+
+
+def test_default_prompt_constants_carry_every_placeholder():
+    for token in ("{incident_thread_url}", "{participants}", "{postmortem_author}", "{transcript}"):
+        assert token in DEFAULT_POSTMORTEM_PROMPT
+    for token in ("{thread_url}", "{participants}", "{transcript}"):
+        assert token in DEFAULT_SUMMARY_PROMPT
 
 
 # --- Time to fix ------------------------------------------------------------

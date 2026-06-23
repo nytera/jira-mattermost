@@ -1134,6 +1134,7 @@ class IncidentBotService:
                 postmortem_author=postmortem_author,
                 transcript=transcript,
                 max_chars=self.settings.llm_thread_max_chars,
+                template=self.settings.llm_postmortem_prompt,
             )
             report = await self.llm.generate_postmortem(prompt)
             summary = extract_postmortem_summary(
@@ -1530,6 +1531,7 @@ class IncidentBotService:
             participants=participants,
             transcript=transcript,
             max_chars=self.settings.llm_thread_max_chars,
+            template=self.settings.llm_summary_prompt,
         )
         try:
             summary = await self.llm.generate_summary(prompt)
