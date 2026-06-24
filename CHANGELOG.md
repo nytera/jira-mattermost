@@ -63,6 +63,16 @@
   тесты) не тронуты. Имя логгера зафиксировано как `mm_jira_bot.service`
   (не `__name__`), чтобы перенос модуля не сместил его. Поведение не изменилось
   (196 тестов зелёные). Дальнейшее разнесение по доменам — отдельными PR.
+- **Рефакторинг `service/`: вынос домена тредового саммари в `ThreadSummaryMixin`
+  (пилот, move-only).** 10 методов саммари (`generate_thread_summary`,
+  `_publish_thread_summary`, стриминговый live-edit и т.д.) переехали из
+  `coordinator.py` в `service/_thread_summary.py`; собранный класс теперь
+  `IncidentBotService(ThreadSummaryMixin)`. Добавлен `service/_shared.py` —
+  лист графа импортов с разделяемыми runtime-примитивами (`ActionResult`,
+  `SUMMARY_*`, `_PROMPT_KEY_*`), что разрывает цикл coordinator↔mixin. Закреплена
+  конвенция типизации миксинов (state-атрибуты не строже `__init__`, инлайновые
+  `TYPE_CHECKING`-стабы cross-domain вызовов, фиксированное имя логгера). Поведение
+  не изменилось (196 тестов зелёные, pyright/ruff чистые).
 - Бокс «ℹ️ Памятка дежурному SRE» теперь рендерится нейтральной полосой slate-400
   (`DUTY_HELP_ATTACHMENT_COLOR = #94A3B8`) — светлее обычных уведомлений
   (`NOTICE_ATTACHMENT_COLOR = #64748B`), в той же slate-семье, читается как
