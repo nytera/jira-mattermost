@@ -31,7 +31,7 @@ from mm_jira_bot.jira_payload import build_jira_issue_payload
 from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import MattermostClient
-from mm_jira_bot.metrics import errors_total
+from mm_jira_bot.metrics import TicketStatsCollector, errors_total
 from mm_jira_bot.ops import OpsLogHandler, OpsNotifier
 from mm_jira_bot.postmortem import (
     DEFAULT_POSTMORTEM_PROMPT,
@@ -1537,6 +1537,26 @@ def test_alert_action_rejects_malformed_json(service, settings):
 
     assert response.status_code == 400
     assert "http.request.bad_json" in [r.msg for r in records]
+
+
+def test_ticket_collector_logs_on_repository_failure():
+    class FailingRepo:
+        def debug_summary(self):
+            raise RuntimeError("db down")
+
+    collector = TicketStatsCollector(FailingRepo())
+    records: list[logging.LogRecord] = []
+    logger, handler = _capture_bot_logs(records)
+    try:
+        result = list(collector.collect())
+    finally:
+        logger.removeHandler(handler)
+
+    assert result == []
+    failures = [r for r in records if r.msg == "metrics.collect_failed"]
+    assert failures
+    assert failures[0].exc_info is not None
+    assert failures[0].extra_fields["error_type"] == "RuntimeError"
 
 
 def test_debug_admin_routes_are_disabled_by_default(service, settings):

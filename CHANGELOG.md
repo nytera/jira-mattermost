@@ -58,6 +58,14 @@
     голого 500. Событие автоматически считается в `bot_errors_total` и уходит в
     ops-канал. Битое тело запроса (`request.json()`/декодирование slash) даёт
     `400` и `WARNING`-событие `http.request.bad_json` / `http.request.bad_body`.
+  - **Унификация логов uvicorn**: `__main__.py` запускает сервер с
+    `log_config=None`, поэтому `uvicorn.access`/`uvicorn.error`/lifecycle идут
+    через тот же `LOG_FORMAT` (раньше — plaintext мимо `JsonFormatter`) и
+    попадают в ring buffer debug-admin. `TextInfoFilter` теперь гейтит только
+    наши структурные INFO-события, пропуская чужие записи (uvicorn и пр.).
+  - **`metrics.collect_failed`**: сбой `debug_summary` при сборе ticket-gauge'ов
+    на скрейпе `/metrics` больше не глотается молча — логируется WARNING со
+    стеком (но не ERROR: scrape-blip не должен слать в ops-канал).
 
 - **Канал ops-алертов и метрики Prometheus — наблюдаемость за здоровьем самого
   бота.** Раньше ошибки уходили только в логи. Теперь:

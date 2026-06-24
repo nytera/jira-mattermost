@@ -125,7 +125,11 @@ class TextInfoFilter(logging.Filter):
         if record.levelno != logging.INFO:
             return True
         event = _extra_fields(record).get("event")
-        return isinstance(event, str) and event in TEXT_INFO_EVENT_ALLOWLIST
+        # Foreign INFO records (uvicorn lifecycle/access, etc.) carry no ``event``
+        # — let them through; only gate our own structured INFO events.
+        if not isinstance(event, str):
+            return True
+        return event in TEXT_INFO_EVENT_ALLOWLIST
 
 
 def _render_value(value: Any) -> str:

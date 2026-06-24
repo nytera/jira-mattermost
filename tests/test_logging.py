@@ -83,6 +83,21 @@ def test_text_info_filter_passes_warnings_independently_of_allowlist() -> None:
     assert TextInfoFilter().filter(record)
 
 
+def test_text_info_filter_passes_foreign_info_record_without_event() -> None:
+    # uvicorn (and other libraries) log INFO without an ``event`` extra field;
+    # those must not be gated by our bot-event allowlist.
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="GET /healthz",
+        args=(),
+        exc_info=None,
+    )
+    assert TextInfoFilter().filter(record)
+
+
 def test_event_logger_passes_fields_through() -> None:
     log = get_logger("mm_jira_bot.test")
     records: list[logging.LogRecord] = []

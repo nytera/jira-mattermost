@@ -75,11 +75,11 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 | `actions.py` | Pure builders/constants for the interactive alert attachments/controls (`context`, menu options, button labels); no I/O. |
 | `summary.py` | Pure builders for the LLM thread-summary prompt and the thread reply. |
 | `retry.py` | `ApiError` + `retry_async` (exponential backoff on 429/5xx only). |
-| `logging.py` | `JsonFormatter` / `TextFormatter` + text-only INFO filtering + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`, optional `exc_info=` for tracebacks); format chosen by `LOG_FORMAT`. |
+| `logging.py` | `JsonFormatter` / `TextFormatter` + text-only INFO filtering (gates only our own `event` records; foreign INFO like uvicorn passes) + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`, optional `exc_info=` for tracebacks); format chosen by `LOG_FORMAT`. `__main__.py` runs uvicorn with `log_config=None` so `uvicorn.*` loggers propagate to root and share these formatters + the ring buffer. |
 | `web.py` | FastAPI app factory (`create_app`), HTTP error-boundary middleware (`http.request.failed` with traceback → 500 JSON; `http.request.bad_json`/`bad_body` → 400), background loops, `/healthz` + `/incident` slash. |
 | `debug_admin.py` | Optional debug-admin UI/API (`register_debug_admin`), gated by `DEBUG_ADMIN_ENABLED`. |
 | `ops.py` | `OpsNotifier` + `OpsLogHandler`: forward `ERROR` events from `mm_jira_bot.*` to the `MATTERMOST_OPS_CHANNEL_ID` channel (best-effort, per-event cooldown, `_posting` contextvar recursion guard, bounded queue). Counts `bot_errors_total` even without a channel. |
-| `metrics.py` | Prometheus definitions (HTTP counters/histogram, `bot_errors_total`, ticket gauges via `TicketStatsCollector`) on the default `REGISTRY`. HTTP metrics observed in `AsyncApiClient._request`; gauges sampled lazily on scrape. |
+| `metrics.py` | Prometheus definitions (HTTP counters/histogram, `bot_errors_total`, ticket gauges via `TicketStatsCollector`) on the default `REGISTRY`. HTTP metrics observed in `AsyncApiClient._request`; gauges sampled lazily on scrape (a `debug_summary` failure logs `metrics.collect_failed` at WARNING and returns no gauges instead of blanking `/metrics`). |
 | `config.py` | `.env` loader + `Settings.from_env()`. |
 
 ### Two flows, both idempotent

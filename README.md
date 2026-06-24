@@ -530,11 +530,16 @@ WHERE jira_issue_key IS NULL
 websocket-событий, startup-backfill и HTTP-эндпоинтах) логируются на уровне
 `ERROR` со стеком (`exc_info`) и полем `error_type` — в `LOG_FORMAT=json` стек
 лежит в ключе `exception`, в `text` печатается отдельной строкой под событием.
-Ожидаемые ошибки интеграций (`ApiError`) логируются компактно, без стека.
+Ожидаемые ошибки интеграций (`ApiError`) логируются компактно, без стека. Сбой
+сбора ticket-gauge'ов на скрейпе `/metrics` логируется как `metrics.collect_failed`
+(WARNING, со стеком) — `/metrics` при этом не падает.
 
-> Замечание: логи самого `uvicorn` (`uvicorn.access`/`uvicorn.error`) сейчас
-> идут собственным plaintext-форматом мимо `JsonFormatter`, так как `__main__.py`
-> вызывает `uvicorn.run` без `log_config`. Прикладные логи бота это не затрагивает.
+Логи самого `uvicorn` унифицированы: `__main__.py` запускает сервер с
+`log_config=None`, поэтому `uvicorn.access`/`uvicorn.error`/lifecycle-сообщения
+идут через тот же `LOG_FORMAT` (в `json` — JSON-строкой с `logger="uvicorn.access"`)
+и попадают в in-memory ring buffer debug-admin (`GET …/api/logs`). В `LOG_FORMAT=text`
+чужие INFO-записи (например `Uvicorn running on …` и access-лог) видны, а наши
+шумные INFO-события (`check_ok`, skip/no-op и т.п.) по-прежнему скрыты.
 
 В Docker:
 

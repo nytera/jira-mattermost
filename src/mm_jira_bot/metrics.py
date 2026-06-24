@@ -16,8 +16,12 @@ from prometheus_client import REGISTRY, Counter, Histogram
 from prometheus_client.core import GaugeMetricFamily
 from prometheus_client.registry import Collector
 
+from mm_jira_bot.logging import get_logger
+
 if TYPE_CHECKING:
     from mm_jira_bot.repository import AlertTicketRepository
+
+log = get_logger(__name__)
 
 http_requests_total = Counter(
     "bot_http_requests_total",
@@ -55,8 +59,16 @@ class TicketStatsCollector(Collector):
     def collect(self) -> Iterable[GaugeMetricFamily]:
         try:
             summary = self._repository.debug_summary()
-        except Exception:
-            # A DB hiccup must not blank the entire /metrics output.
+        except Exception as exc:
+            # A DB hiccup must not blank the entire /metrics output — but it must
+            # not vanish silently either. WARNING (not ERROR) on purpose: a scrape
+            # blip should not page via the ops channel / bot_errors_total.
+            log.warning(
+                "metrics.collect_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=True,
+            )
             return
         for name, key, doc in (
             ("bot_tickets_total", "total", "Total alert tickets."),
