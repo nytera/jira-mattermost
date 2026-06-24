@@ -89,6 +89,7 @@ class MattermostPost:
     channel_name: str | None = None
     root_id: str | None = None
     props: dict | None = None
+    post_type: str = ""
 
     @classmethod
     def from_api(cls, data: dict, channel_name: str | None = None) -> MattermostPost:
@@ -102,6 +103,7 @@ class MattermostPost:
             channel_name=channel_name,
             root_id=data.get("root_id") or None,
             props=props if isinstance(props, dict) else None,
+            post_type=data.get("type") or "",
         )
 
     @property

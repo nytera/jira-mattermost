@@ -324,6 +324,8 @@ class IncidentBotService(ThreadSummaryMixin):
             return
         if post.root_id:  # only channel root posts, not thread replies
             return
+        if post.post_type:
+            return
         if self._is_bot_post(post):
             return
         interactive = self._interactive_controls_enabled()
@@ -444,6 +446,14 @@ class IncidentBotService(ThreadSummaryMixin):
             log.info(
                 "mattermost.post.skipped_bot_message",
                 mattermost_post_id=post.id,
+            )
+            return None
+
+        if post.post_type:
+            log.info(
+                "mattermost.post.skipped_system_message",
+                mattermost_post_id=post.id,
+                post_type=post.post_type,
             )
             return None
 
