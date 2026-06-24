@@ -7,6 +7,8 @@ the incident-channel message when an alert is confirmed. Method shapes live in
 [../reference/service-map.md](../reference/service-map.md); this doc covers the
 invariants and the WHY.
 
+> `IncidentMixin` is a domain mixin of `IncidentBotService` — see [architecture.md](../architecture.md) for how the service is assembled.
+
 ## Two entry points, one controls card
 
 There are two kinds of incident, and they converge on the **same controls card**:
@@ -73,12 +75,9 @@ Key invariants:
   any Jira write, `handle_incident_checkmark` calls `_resolve_incident_end_time`
   (PostmortemMixin) once and substitutes the result for the reaction `ended_at`, so
   the single value flows into **both** `apply_incident_end_time` and the postmortem
-  (no per-site injection). The LLM reads the thread chronology (a dedicated, small
-  call — `extract_incident_end_time`) and returns the recovery time; it is accepted
-  only when it parses and lands within `[start, now + margin]` (`set_end_time` has
-  no range guard of its own). On no-LLM / `ApiError` / `UNKNOWN` / unparseable /
-  out-of-range it **falls back to the reaction timestamp** — the previous behavior.
-  This covers all three finalize emojis and manual incidents (same entry point).
+  (no per-site injection). On no-LLM / `ApiError` / `UNKNOWN` / unparseable /
+  out-of-range it **falls back to the reaction timestamp**. The resolution / validation
+  rule lives in [../domains/postmortem.md](../domains/postmortem.md).
 
 - **Validity reactions finalize too.** Unlike the alert channel (where
   `Ложный`/`Ожидаемый` are label-only — see [../domains/alerts.md](../domains/alerts.md)),
@@ -88,10 +87,9 @@ Key invariants:
 - **Postmortem is idempotent.** Once `postmortem_comment_added` is set, a second
   checkmark/validity reaction returns early ("postmortem left unchanged") and only
   updates the `Валидность` field via `_set_incident_validity` (which also posts the
-  templated "Валидность обновлена" notice). The PM comment is additive, so it is
-  never re-posted — this holds for **both** manual and alert-originated incidents.
-  (Some prose claims a repeated checkmark on a manual incident regenerates the PM;
-  that is stale — trust the flag-keyed early return.)
+  templated "Валидность обновлена" notice). The flag-keyed early return means the PM
+  comment is never re-posted — this holds for **both** manual and alert-originated
+  incidents.
 - **Validity and confirmation are independent axes.** PM generation only stamps
   `Валидный` as a *default* when `ticket.validity_label is None`, so an explicit
   earlier `Ложный`/`Ожидаемый` survives the finalize step.
@@ -136,10 +134,9 @@ short-circuit (`ALREADY_CONFIRMED`).
 
 `_publish_incident_message_if_needed` renders incident details (title — the header
 is the status circle plus the alert name, `##### 🔴 <название>` via
-`extract_alert_title`, so the incident is identifiable at a glance; the
-`mark_incident_message_completed` close swap only flips the `##### 🔴` → `##### 🟢`
-prefix, so the name survives — plus Jira/alert links, confirmer `@mention`, time) in
-a **gray attachment block**
+`extract_alert_title`, so the incident is identifiable at a glance; the close swap
+that flips it to 🟢 is in `_mark_incident_post_completed` above — plus Jira/alert
+links, confirmer `@mention`, time) in a **gray attachment block**
 (`INCIDENT_OPEN_COLOR`) placed *above* the forwarded alert attachment(s); the post
 `message` is empty. It is guarded by `incident_post_id` so it publishes once. After
 publishing it posts the controls card (no "Создать задачу") and, when

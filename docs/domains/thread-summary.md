@@ -4,12 +4,10 @@
 LLM-generated factual summary of a Mattermost thread as a visible reply in that
 thread. It is the engine behind both the 📝 Summary button and the configurable
 summary emoji (`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
-**any** channel/thread — alert, incident, or manual. It is one mixin of the
-assembled `IncidentBotService` (`coordinator.py`); shared state (`settings` /
-`mattermost` / `llm`) is wired by the coordinator, and sibling methods it calls
-(`_box_thread_reply`, `_postmortem_thread_context`, `_resolve_prompt_template`)
-are reached via `TYPE_CHECKING` stubs. For signatures, see
+**any** channel/thread — alert, incident, or manual. For signatures, see
 [../reference/service-map.md](../reference/service-map.md).
+
+> `ThreadSummaryMixin` is a domain mixin of `IncidentBotService` — see [architecture.md](../architecture.md) for how the service is assembled.
 
 ## Scope and boundaries
 
@@ -60,19 +58,15 @@ that invokes this, and [../config.md](../config.md) for the env vars.
   keys. If the placeholder post failed, finalize falls back to a fresh reply so
   the summary still lands.
 - **Streaming (`LLM_STREAM=true`).** When a placeholder exists,
-  `_make_summary_stream_callback` live-edits it as the LLM streams. Two
-  load-bearing invariants (shared with the postmortem completion flow):
-  1. The callback receives **cumulative** text, never a delta — a retry that
-     restarts the stream replays from empty and `update_post` overwrites the
-     stale partial; the callback also force-renders when the buffer **shrinks**
-     (retry restart).
-  2. The callback **never raises** — its edit goes through `_edit_summary_reply`,
-     which swallows `ApiError`. A raised error would escape into `_retry` and
-     restart the whole generation over a transient edit blip.
-  Edits are throttled by `LLM_STREAM_EDIT_INTERVAL_SECONDS` /
-  `LLM_STREAM_EDIT_MIN_CHARS`; `last_edit_time` is seeded at callback creation so
-  the first stream edit respects the interval after any preceding status edit.
-  The final edit always overwrites the streaming render with the clean format.
+  `_make_summary_stream_callback` live-edits it as the LLM streams. The shared
+  streaming contract (cumulative-not-delta, the callback never raises, throttle
+  knobs) is owned by [../domains/postmortem.md](../domains/postmortem.md). This
+  flow honours it concretely: the callback force-renders when the buffer
+  **shrinks** (retry restart), and its edit goes through `_edit_summary_reply`,
+  which swallows `ApiError` so a transient edit blip can't escape into `_retry`.
+  `last_edit_time` is seeded at callback creation so the first stream edit respects
+  the interval after any preceding status edit. The final edit always overwrites
+  the streaming render with the clean format.
 - **Never pings.** The LLM emits `@username` mentions (for the Jira
   `[~username]` rendering); `summary.neutralize_mentions` strips the leading `@`
   to plain text on the Mattermost path so a summary never notifies anyone (emails

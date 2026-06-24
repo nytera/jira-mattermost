@@ -37,17 +37,18 @@ The service logic is one class, `IncidentBotService`, assembled from one base mi
 plus six domain mixins in `service/`. Each mixin lives in its own `_<domain>.py`,
 inherits only `object`, and gets its state (`settings`, `repository`, `mattermost`,
 `jira`, `llm`, auth fields) from `coordinator.__init__`. The MRO is the declaration
-order (see [`reference/service-map.md`](reference/service-map.md) for the linearized list).
+order, shown below (the linearized list is in
+[`reference/service-map.md`](reference/service-map.md)).
 
 | Mixin | File | Domain doc |
 |---|---|---|
 | `SharedMixin` | `service/_shared.py` | base — primitives shared by ≥2 domains |
 | `AlertMixin` | `service/_alerts.py` | [`domains/alerts.md`](domains/alerts.md) |
+| `DebugMixin` | `service/_debug.py` | [`domains/debug.md`](domains/debug.md) |
 | `IncidentMixin` | `service/_incidents.py` | [`domains/incidents.md`](domains/incidents.md) |
 | `JiraSyncMixin` | `service/_jira_sync.py` | [`domains/jira-sync.md`](domains/jira-sync.md) |
 | `PostmortemMixin` | `service/_postmortem.py` | [`domains/postmortem.md`](domains/postmortem.md) |
 | `ThreadSummaryMixin` | `service/_thread_summary.py` | [`domains/thread-summary.md`](domains/thread-summary.md) |
-| `DebugMixin` | `service/_debug.py` | [`domains/debug.md`](domains/debug.md) |
 
 `coordinator.py` keeps init/auth and the event routers
 (`handle_websocket_event`/`handle_reaction`/`handle_slash_command`) plus the
@@ -82,25 +83,18 @@ sibling method it calls; `SharedMixin` is self-contained). Every file has
    thread. If the Jira issue does not exist yet it is saved as `pending_confirmation`
    and completed by the loop. See [`domains/incidents.md`](domains/incidents.md).
 
-Idempotency keys live in `AlertTicket` (`jira_issue_key`, `incident_post_id`,
-`jira_confirmation_comment_added`, `postmortem_comment_added`, plus
-`creation_status`/`confirmation_status` state machines). Re-delivered events are
-no-ops. Details in [`persistence.md`](persistence.md).
+Re-delivered events are no-ops, guarded by idempotency keys in `AlertTicket` and the
+`creation_status`/`confirmation_status` state machines. Keys and state machines are
+documented in [`persistence.md`](persistence.md).
 
 ## Test mode (`JIRA_CREATE_ENABLED=false`)
 
-The `JiraClient` makes no issue-key calls: `create_issue`/`create_postmortem_issue`
-return a stub `JiraIssue`, and `set_validity`/`set_valid_incident`/`set_end_time`/
-`set_time_to_fix`/`set_description`/`add_comment` are no-ops
-(otherwise the non-existent stub key would 404 and abort `confirm_incident`).
-Field/option metadata reads (global, not issue-scoped) are not stubbed. See
-[`jira.md`](jira.md).
+`JiraClient` makes no issue-key calls — creates return a stub `JiraIssue` and the
+follow-up field/comment writes are no-ops. Full behavior in [`jira.md`](jira.md).
 
 ## Where to look next
 
-- HTTP routes, public API, MRO, file tree → [`reference/service-map.md`](reference/service-map.md)
-- Jira field/option resolution gotchas → [`jira.md`](jira.md)
-- DB schema, migrations, timezone → [`persistence.md`](persistence.md)
-- env vars → [`config.md`](config.md)
-- ops channel, metrics, recovery, preflight, logs → [`operations.md`](operations.md)
-- tests → [`testing.md`](testing.md)
+Pick the document by task from the navigator table in
+[`../CLAUDE.md`](../CLAUDE.md); the generated
+[`reference/service-map.md`](reference/service-map.md) has routes, public API, MRO and
+the file tree.

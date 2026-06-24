@@ -3,10 +3,11 @@
 `JiraSyncMixin` (`src/mm_jira_bot/service/_jira_sync.py`) owns the **alert → Jira
 issue** flow: it creates the Jira issue for a firing alert, replies "Создана
 задача" in the alert thread, annotates expected repeats, plumbs confirmation
-fields into Jira, and provides the background-durability entry points. State
-(`settings`/`repository`/`mattermost`/`jira`) and sibling methods come from the
-assembled `IncidentBotService` — see [../reference/service-map.md](../reference/service-map.md)
-for signatures and MRO; this page covers WHY and the invariants.
+fields into Jira, and provides the background-durability entry points. This page
+covers WHY and the invariants; for signatures see
+[../reference/service-map.md](../reference/service-map.md).
+
+> `JiraSyncMixin` is a domain mixin of `IncidentBotService` — see [architecture.md](../architecture.md) for how the service is assembled.
 
 Field/option **resolution mechanics** (name → `customfield_*`, validity/option
 plumbing, `JIRA_CREATE_ENABLED=false` stubbing) live in [../jira.md](../jira.md) —

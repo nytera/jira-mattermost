@@ -12,7 +12,6 @@ these methods see [domains/jira-sync.md](domains/jira-sync.md) and
 [config.md](config.md).
 
 Source of truth: `src/mm_jira_bot/jira.py` and `src/mm_jira_bot/jira_payload.py`.
-Trust the code over this prose if they ever drift.
 
 ## Field name → id resolution
 

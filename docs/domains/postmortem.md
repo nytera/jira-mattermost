@@ -1,10 +1,12 @@
 # Postmortem (PostmortemMixin)
 
-`PostmortemMixin` (`src/mm_jira_bot/service/_postmortem.py`) generates the incident postmortem when an incident is closed: it runs the LLM report into the Jira issue, plumbs the Jira fields (validity, END time, time-to-fix), then posts the fact-based summary back into the thread and a standalone green "incident closed" notice. It is one mixin of the assembled `IncidentBotService` (shared state `llm` / `jira` / `mattermost` / `repository` / `settings` is wired by the coordinator). Pure helpers live in `src/mm_jira_bot/postmortem.py`; the OpenAI-compatible client lives in `src/mm_jira_bot/llm.py`. For method signatures see [../reference/service-map.md](../reference/service-map.md).
+`PostmortemMixin` (`src/mm_jira_bot/service/_postmortem.py`) generates the incident postmortem when an incident is closed: it runs the LLM report into the Jira issue, plumbs the Jira fields (validity, END time, time-to-fix), then posts the fact-based summary back into the thread and a standalone green "incident closed" notice. Pure helpers live in `src/mm_jira_bot/postmortem.py`; the OpenAI-compatible client lives in `src/mm_jira_bot/llm.py`. For method signatures see [../reference/service-map.md](../reference/service-map.md).
+
+> `PostmortemMixin` is a domain mixin of `IncidentBotService` — see [architecture.md](../architecture.md) for how the service is assembled.
 
 ## Scope and boundaries
 
-- **Owned here:** `generate_incident_postmortem` (orchestration), `_ensure_postmortem_jira_issue`, `_apply_postmortem_validity`, `_set_time_to_fix`, `_resolve_incident_end_time` / `_parse_incident_end_time` (LLM-inferred recovery time for END / time-to-fix, validated + reaction-time fallback; called from `handle_incident_checkmark`), `_postmortem_thread_context`.
+- **Owned here:** `generate_incident_postmortem` (orchestration), `_ensure_postmortem_jira_issue`, `_apply_postmortem_validity`, `_set_time_to_fix`, `_resolve_incident_end_time` / `_parse_incident_end_time` (END / time-to-fix recovery time — see below), `_postmortem_thread_context`.
 - **Delegated out** (called via `TYPE_CHECKING` stubs): the **thread-summary FLOW** (`_post_summary_placeholder`, `_set_summary_status`, `_generate_and_finalize_summary`, `_create_thread_summary_reply`, the live-stream throttle callback) lives in [../domains/thread-summary.md](../domains/thread-summary.md) — this domain only *calls* it. The reaction/dispatch that decides to close an incident and the idempotency *guard* live in [../domains/incidents.md](../domains/incidents.md). Jira field/option semantics: [../jira.md](../jira.md). Env vars: [../config.md](../config.md). Runtime prompt overrides: [../domains/debug.md](../domains/debug.md).
 
 ## One template, two renderings (the central invariant)
@@ -43,6 +45,16 @@ Creates the issue if missing (then `attach_jira_issue`, announce to ops, set val
 ### `_apply_postmortem_validity`
 
 The `validity_label` (a Ложный / Ожидаемый choice made *now* in the incident thread) **wins** over any earlier value (`set_validity` + persist). With no choice and none previously recorded, default to **Валидный** (`set_valid_incident(True)`); an earlier explicit Ложный / Ожидаемый is left untouched (it was already pushed when picked).
+
+### `_resolve_incident_end_time`
+
+Called once from `handle_incident_checkmark` (incidents) before any Jira write. A
+dedicated, small LLM call (`extract_incident_end_time`) reads the thread chronology and
+returns the recovery time; it is accepted only when it parses and lands within
+`[start, now + margin]` (`set_end_time` has no range guard of its own). On no-LLM /
+`ApiError` / `UNKNOWN` / unparseable / out-of-range it falls back to the reaction
+timestamp. The single resolved value then flows into both the END field and the
+postmortem.
 
 ### `_set_time_to_fix`
 

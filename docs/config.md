@@ -34,8 +34,7 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `JIRA_IS_CRIT_ALERT_FIELD` | "is crit alert" field (must have option `Да`) |
 | `DATABASE_URL` | SQLAlchemy URL; `postgres://`/`postgresql://` are rewritten to `postgresql+psycopg://` (see [`persistence.md`](persistence.md)) |
 
-> Drift note: older README copy listed `MATTERMOST_INCIDENT_REACTION_NAME` among
-> "minimal" vars — it is **optional** in `config.py` (defaulted).
+`MATTERMOST_INCIDENT_REACTION_NAME` is **optional** (defaulted), not required.
 
 ## Mattermost (optional)
 

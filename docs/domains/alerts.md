@@ -1,6 +1,8 @@
 # Alerts (AlertMixin)
 
-`AlertMixin` (`src/mm_jira_bot/service/_alerts.py`) owns the full lifecycle of a post in the **alert channel**: turning a firing alert into a Jira issue, the interactive alert card (buttons + validity menu), the feedback dialog, and the lightweight validity labels (`Ложный` / `Ожидаемый`). It is one mixin of the assembled `IncidentBotService` (see `coordinator.py`); shared state (`settings` / `repository` / `mattermost` / `jira`) is wired by the coordinator, and sibling domains supply the methods it calls into. For method signatures, see [../reference/service-map.md](../reference/service-map.md).
+`AlertMixin` (`src/mm_jira_bot/service/_alerts.py`) owns the full lifecycle of a post in the **alert channel**: turning a firing alert into a Jira issue, the interactive alert card (buttons + validity menu), the feedback dialog, and the lightweight validity labels (`Ложный` / `Ожидаемый`). For method signatures, see [../reference/service-map.md](../reference/service-map.md).
+
+> `AlertMixin` is a domain mixin of `IncidentBotService` — see [architecture.md](../architecture.md) for how the service is assembled.
 
 ## Scope and boundaries
 

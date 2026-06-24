@@ -11,10 +11,9 @@ pytest + pytest-asyncio, configured in `pyproject.toml`: `asyncio_mode = "auto"`
 .venv/bin/pytest --cov=mm_jira_bot --cov-report=term-missing # with coverage
 ```
 
-Current baseline: **346 tests, ~87% line coverage** (verified via the `--cov`
-command above; treat the number as approximate and re-measure rather than trusting a
-stale figure). The full pre-commit gate also runs ruff, ruff format `--check`,
-pyright and the service-map `--check` — see [`../CLAUDE.md`](../CLAUDE.md).
+Coverage is measured via the `--cov` command above; re-measure rather than trusting a
+stale figure. The full pre-commit gate (ruff, format, pyright, service-map `--check`)
+is in [`../CLAUDE.md`](../CLAUDE.md).
 
 ## Layout (per-domain, mirrors `service/`)
 
@@ -42,9 +41,6 @@ Reliability / contract seams (not tied to one mixin):
 | `tests/test_migrations.py` | `migrations/*.sql` vs `Base.metadata` schema round-trip |
 | `tests/test_websocket_loop.py` | `web.py`/`mattermost.py` — websocket reconnect, handler isolation, pending-work loop, event parsers |
 | `tests/test_parsers_properties.py` | property-based (Hypothesis) over `markdown_to_jira_wiki`, `alert_signature`, `is_resolved_alert`, post-id parsing |
-
-> Drift note: older README copy described a single pre-split test set. The current
-> layout is per-domain plus the reliability/contract files above.
 
 ## Harness
 

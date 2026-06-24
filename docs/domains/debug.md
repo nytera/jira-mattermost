@@ -1,6 +1,8 @@
 # Debug admin (DebugMixin)
 
-`DebugMixin` (`src/mm_jira_bot/service/_debug.py`) backs two operator entry points that the optional debug-admin panel exposes: create a Jira issue for an alert from a pasted link/post id, and recreate (force-replace) the Jira link of an existing ticket. The panel itself — a single-page UI plus its JSON API — lives in `src/mm_jira_bot/debug_admin.py` (`register_debug_admin`). The mixin is one member of the assembled `IncidentBotService` (see `coordinator.py`); shared state (`settings` / `repository` / `mattermost`) is wired by the coordinator, and sibling domains supply the methods it calls into. For the exact route table and method signatures, see [../reference/service-map.md](../reference/service-map.md).
+`DebugMixin` (`src/mm_jira_bot/service/_debug.py`) backs two operator entry points that the optional debug-admin panel exposes: create a Jira issue for an alert from a pasted link/post id, and recreate (force-replace) the Jira link of an existing ticket. The panel itself — a single-page UI plus its JSON API — lives in `src/mm_jira_bot/debug_admin.py` (`register_debug_admin`). For the exact route table and method signatures, see [../reference/service-map.md](../reference/service-map.md).
+
+> `DebugMixin` is a domain mixin of `IncidentBotService` — see [architecture.md](../architecture.md) for how the service is assembled.
 
 ## Safety (read first)
 

@@ -9,15 +9,8 @@ non-obvious behavior.
 
 `init_db()` runs `Base.metadata.create_all` at startup **and** applies small
 backward-compatible `ALTER TABLE` additions, so no separate migration step is needed
-locally. The SQL files in `migrations/` are the hand-maintained **reference** schema,
-kept aligned with the SQLAlchemy model by hand (there is no Alembic):
-
-- `001_create_alert_tickets.sql`
-- `002_create_alert_feedback.sql`
-- `003_add_alert_title_to_alert_tickets.sql`
-- `004_add_postmortem_comment_added_to_alert_tickets.sql`
-- `005_add_episode_tracking_to_alert_tickets.sql`
-- `006_create_app_settings.sql`
+locally. The `migrations/*.sql` files are the hand-maintained **reference** schema,
+kept aligned with the SQLAlchemy model by hand (there is no Alembic).
 
 When you change schema behavior, keep `migrations/`, the model, and the startup
 init expectations aligned.
