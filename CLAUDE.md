@@ -5,15 +5,20 @@
 
 ## Основные правила
 
-- **Перед коммитом — гейт.** Прогоняй `/gate` (ruff + ruff format `--check` + pyright
-  + pytest + `scripts/gen_service_map.py --check`) из `.venv`. Подробности и baseline
-  pyright — в [AGENTS.md](AGENTS.md).
+- **Гейт — два тира (CI нет, всё локально).**
+  - **`/gate` (быстрый)** — на каждой итерации/коммите: ruff + ruff format `--check`
+    + pyright + pytest из `.venv`. Дёшево, гоняй свободно.
+  - **`/gate full`** — перед PR / вливанием в `main`: быстрый тир + `scripts/gen_service_map.py --check`
+    + doc-sync (см. ниже).
+
+  Тяжёлые проверки (service-map, doc-sync) НЕ обязательны на каждой мелкой правке —
+  достаточно привести их в порядок перед PR. Подробности и baseline pyright — в [AGENTS.md](AGENTS.md).
 - **Карта сервиса генерируется, не пишется руками.** [`docs/reference/service-map.md`](docs/reference/service-map.md)
   собирается из AST. После изменения кода (новые/изменённые публичные сигнатуры,
-  маршруты, миксины, файлы) перегенерируй:
+  маршруты, миксины, файлы) перегенерируй **перед PR**:
   `.venv/bin/python scripts/gen_service_map.py && git add docs/reference/service-map.md`.
-  Иначе шаг `--check` в гейте упадёт.
-- **Doc-sync.** При изменении поведения/архитектуры до коммита приведи в соответствие
+  Иначе шаг `--check` в `/gate full` упадёт.
+- **Doc-sync.** При изменении поведения/архитектуры **перед PR** приведи в соответствие
   нужный документ (см. таблицу ниже) и добавь запись в `[Unreleased]` в
   [CHANGELOG.md](CHANGELOG.md). Эталон «что генерируется vs что пишется руками» —
   [docs/architecture.md](docs/architecture.md).
