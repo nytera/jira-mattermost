@@ -459,6 +459,14 @@ class IncidentBotService:
             )
             return None
 
+        if not self._is_bot_post(post):
+            log.info(
+                "mattermost.post.skipped_non_bot_alert_message",
+                mattermost_post_id=post.id,
+                mattermost_user_id=post.user_id,
+            )
+            return None
+
         if post.root_id:
             log.info(
                 "mattermost.post.skipped_thread_reply",

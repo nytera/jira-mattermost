@@ -365,7 +365,11 @@ def make_alert(
     channel_id: str = "alerts-channel",
     message: str = "CPU usage is above 95%",
     props: dict | None = None,
+    is_bot: bool = True,
 ) -> MattermostPost:
+    post_props = {"from_webhook": "true"} if is_bot else {}
+    if props:
+        post_props.update(props)
     return MattermostPost(
         id=post_id,
         channel_id=channel_id,
@@ -373,7 +377,7 @@ def make_alert(
         message=message,
         create_at=1_700_000_000_000,
         channel_name="alerts",
-        props=props,
+        props=post_props,
     )
 
 
@@ -563,6 +567,18 @@ async def test_creates_jira_issue_for_new_mattermost_message(service):
     assert ticket.jira_issue_key == "OPS-1"
     assert ticket.mattermost_alert_title == "CPU usage is above 95%"
     assert len(service.jira.created_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_ignores_human_message_in_alert_channel(service):
+    post = make_alert(post_id="humanalertpost00000000001", is_bot=False)
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is None
+    assert service.repository.get_by_post_id(post.id) is None
+    assert service.jira.created_payloads == []
 
 
 @pytest.mark.asyncio
