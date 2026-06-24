@@ -1346,7 +1346,7 @@ def test_format_incident_closed_notice_degrades_without_url():
 @pytest.mark.asyncio
 async def test_summary_stream_callback_throttles_edits(service, monkeypatch):
     clock = {"t": 100.0}
-    monkeypatch.setattr("mm_jira_bot.service.perf_counter", lambda: clock["t"])
+    monkeypatch.setattr("mm_jira_bot.service.coordinator.perf_counter", lambda: clock["t"])
     edits: list[str] = []
 
     async def _record(reply_id, post_id, *, message, base_props, event):

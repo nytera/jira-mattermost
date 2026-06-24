@@ -84,7 +84,9 @@ from mm_jira_bot.summary import (
     format_thread_summary_streaming,
 )
 
-log = get_logger(__name__)
+# Имя логгера держим стабильным (`mm_jira_bot.service`), несмотря на перенос модуля
+# в пакет `service/` — на него завязаны тесты и настроенные логгеры.
+log = get_logger("mm_jira_bot.service")
 
 POST_ID_PATTERN = re.compile(r"(?:^|/)(?:_redirect/)?pl/([a-z0-9]{20,32})(?:$|[/?#])")
 BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")

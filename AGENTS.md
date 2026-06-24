@@ -70,7 +70,7 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 
 | Module | Role |
 |--------|------|
-| `service.py` | Orchestration. The only place that coordinates Mattermost + Jira + repository. Read this first. |
+| `service/` | Orchestration package. The only place that coordinates Mattermost + Jira + repository. Read this first. `IncidentBotService` is being split into per-domain mixin files; today it still lives whole in `service/coordinator.py`, re-exported from `service/__init__.py` (so `from mm_jira_bot.service import IncidentBotService` is unchanged). |
 | `http.py` | `AsyncApiClient` base for both REST clients: owns the httpx client (`aclose`) and folds per-request retry/HTTP boilerplate into `_retry` / `_request`. |
 | `mattermost.py` | Mattermost REST + WebSocket client (extends `AsyncApiClient`); event parsers (`parse_posted_event`, `parse_reaction_event`). |
 | `jira.py` | Jira **9.x Data Center / on-prem** REST v2 client (Bearer auth, extends `AsyncApiClient`). Field-name→id resolution, option-value resolution via createmeta. |
