@@ -119,8 +119,8 @@ def format_thread_issue_created(*, jira_issue_key: str, jira_issue_url: str | No
 
 def format_thread_status_changed(*, incident_message_url: str | None) -> str:
     if incident_message_url:
-        return f"**Инцидент заведен**\n[Ссылка на инцидент]({incident_message_url})"
-    return "**Инцидент заведен**"
+        return f"🚨 **Инцидент заведен**\n- [Ссылка на инцидент]({incident_message_url})"
+    return "🚨 **Инцидент заведен**"
 
 
 def format_thread_validity_changed(*, validity_label: str) -> str:

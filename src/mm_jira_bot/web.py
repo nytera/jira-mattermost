@@ -174,11 +174,41 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
     )
 
 
+# The only firehose events the bot acts on. Everything else (typing, presence,
+# channel_viewed, …) is filtered out before we spawn a task, so the read loop
+# stays cheap. parse_posted_event/parse_reaction_event re-check this anyway.
+_HANDLED_WS_EVENTS = frozenset({"posted", "reaction_added"})
+
+
+async def _handle_ws_event(service: IncidentBotService, event: dict) -> None:
+    """Run one websocket event off the read loop.
+
+    Handling can take many seconds (postmortem/summary = LLM + Jira calls). Doing
+    it inline stalls the socket read, fills the websockets receive buffer, pauses
+    the transport and times out the keepalive ping (1011 disconnect). Each event
+    therefore runs as its own task; its errors are logged here since the loop's
+    own ``except`` no longer wraps them.
+    """
+    try:
+        await service.handle_websocket_event(event)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.error("mattermost.event.handler_failed", error=str(exc))
+
+
 async def websocket_loop(service: IncidentBotService) -> None:
+    handlers: set[asyncio.Task[None]] = set()
     while True:
         try:
             async for event in service.mattermost.websocket_events():
-                await service.handle_websocket_event(event)
+                if event.get("event") not in _HANDLED_WS_EVENTS:
+                    continue
+                # Off-load handling so a long postmortem never blocks the read
+                # loop (and the keepalive). Keep a strong ref until it finishes.
+                task = asyncio.create_task(_handle_ws_event(service, event))
+                handlers.add(task)
+                task.add_done_callback(handlers.discard)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -36,7 +36,7 @@ lifespan, launches two background asyncio tasks against one
   access, Mattermost `/users/me` + configured channels, Jira field/issue-type
   metadata and required option values, and the optional LLM chat-completions
   smoke request. Successful Jira checks warm field/createmeta caches.
-- **`websocket_loop`** — connects to Mattermost WS (`websocket_events()`), feeds every event to `service.handle_websocket_event`. Reconnects on failure.
+- **`websocket_loop`** — connects to Mattermost WS (`websocket_events()`), pre-filters to `posted`/`reaction_added`, and dispatches each to `service.handle_websocket_event` as its own `asyncio.Task` (strong-ref set + `add_done_callback`). Off-loading is mandatory: handling can run for many seconds (postmortem/summary = LLM + Jira), and doing it inline stalls the socket read → the `websockets` receive buffer fills → transport pauses → keepalive ping times out → `1011` disconnect. Per-task errors are logged in `_handle_ws_event`; the loop reconnects on failure.
 - **`pending_work_loop`** — every `PENDING_WORK_INTERVAL_SECONDS` calls `process_pending_work()` to retry failed Jira creates and pending confirmations from the DB. This is the durability backbone: any partial failure is recovered here.
 - **`authorized_users_refresh_loop`** (only when `MATTERMOST_AUTHORIZED_USERNAMES` is set) — every `MATTERMOST_AUTHORIZED_REFRESH_SECONDS` (default 300) re-runs `resolve_authorized_users()` so Mattermost group-membership changes propagate. Unlike the startup resolve, a transient/empty refresh keeps the last known-good set instead of failing open.
 
