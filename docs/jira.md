@@ -110,8 +110,8 @@ In test mode the client makes **no Jira calls for issue-key operations**:
   DB uniqueness, or a generated `{JIRA_PROJECT_KEY}-NNNNN` key when unset. The
   clean configured key is what Mattermost replies display.
 - `get_valid_incident`, `set_validity`, `set_valid_incident`, `set_end_time`,
-  `set_time_to_fix`, `set_description`, `add_comment`, `transition_issue`,
-  `link_child_of` are **no-ops**.
+  `set_time_to_fix`, `set_description`, `add_comment`, `link_child_of` are
+  **no-ops**.
 
 These no-ops are not cosmetic: the stub key **does not exist in Jira**, so without
 them a follow-up call (e.g. setting `Валидность` during `confirm_incident`) would

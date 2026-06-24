@@ -417,17 +417,6 @@ class PostmortemMixin:
         )
         await self.jira.set_end_time(issue.key, ended_at)
         await self._set_time_to_fix(issue.key, ticket, ended_at)
-        if self.settings.jira_confirmed_status_id:
-            try:
-                await self.jira.transition_issue(issue.key, self.settings.jira_confirmed_status_id)
-            except ApiError as exc:
-                log.warning(
-                    "jira.issue.transition_failed",
-                    mattermost_post_id=ticket.mattermost_post_id,
-                    jira_issue_key=issue.key,
-                    transition_id=self.settings.jira_confirmed_status_id,
-                    error=str(exc),
-                )
         self.repository.mark_confirmed(
             ticket.mattermost_post_id,
             user_id=reacted_by_user_id,

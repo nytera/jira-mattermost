@@ -542,19 +542,6 @@ class JiraClient(AsyncApiClient):
         )
         return self._link_type_name
 
-    async def transition_issue(self, issue_key: str, transition_id: str) -> None:
-        if not self._settings.jira_create_enabled:
-            return
-        await self._request(
-            "POST",
-            self._api_path(f"issue/{issue_key}/transitions"),
-            json={"transition": {"id": transition_id}},
-            error_message="Failed to transition Jira issue",
-            event="jira.transition",
-            jira_issue_key=issue_key,
-            transition_id=transition_id,
-        )
-
     async def _get_field_id(self, configured_field: str) -> str:
         field_id = self._field_ids.get(configured_field)
         if field_id is not None:

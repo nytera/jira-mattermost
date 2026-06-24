@@ -85,8 +85,7 @@ Called by `confirm_incident` (the `:incident:` / valid-incident flow lives in
 per confirmation, guarded by `jira_confirmation_comment_added` — swaps the alert
 description for the postmortem template (`build_postmortem_description`) **before**
 adding the confirmation comment, so a comment failure never leaves the issue
-without the template (the guard skips both on retry). An optional transition to
-`JIRA_CONFIRMED_STATUS_ID` is best-effort (failure logged, not raised).
+without the template (the guard skips both on retry).
 
 ## Background durability
 

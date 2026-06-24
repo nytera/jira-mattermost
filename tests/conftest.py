@@ -34,7 +34,6 @@ def settings(tmp_path):
         jira_is_crit_alert_field="customfield_34567",
         jira_start_field=None,
         jira_end_field=None,
-        jira_confirmed_status_id="31",
         database_url=f"sqlite:///{tmp_path / 'bot.db'}",
         mattermost_slash_token="slash-token",
         enable_websocket=False,

@@ -78,7 +78,7 @@ sibling method it calls; `SharedMixin` is self-contained). Every file has
    expected-repeat model.
 2. **Confirmation → valid incident** (`confirm_incident`, via the `:incident:`
    reaction or `/incident <permalink>`): posts to the incidents channel, sets Jira
-   `Valid Incident = Валидный`, comments, optional transition, replies in the alert
+   `Valid Incident = Валидный`, comments, replies in the alert
    thread. If the Jira issue does not exist yet it is saved as `pending_confirmation`
    and completed by the loop. See [`domains/incidents.md`](domains/incidents.md).
 
@@ -91,7 +91,7 @@ no-ops. Details in [`persistence.md`](persistence.md).
 
 The `JiraClient` makes no issue-key calls: `create_issue`/`create_postmortem_issue`
 return a stub `JiraIssue`, and `set_validity`/`set_valid_incident`/`set_end_time`/
-`set_time_to_fix`/`set_description`/`add_comment`/`transition_issue` are no-ops
+`set_time_to_fix`/`set_description`/`add_comment` are no-ops
 (otherwise the non-existent stub key would 404 and abort `confirm_incident`).
 Field/option metadata reads (global, not issue-scoped) are not stubbed. See
 [`jira.md`](jira.md).

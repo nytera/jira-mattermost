@@ -34,9 +34,8 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `JIRA_IS_CRIT_ALERT_FIELD` | "is crit alert" field (must have option `Да`) |
 | `DATABASE_URL` | SQLAlchemy URL; `postgres://`/`postgresql://` are rewritten to `postgresql+psycopg://` (see [`persistence.md`](persistence.md)) |
 
-> Drift note: older README copy listed `MATTERMOST_INCIDENT_REACTION_NAME` and
-> `JIRA_CONFIRMED_STATUS_ID` among "minimal" vars — both are **optional** in
-> `config.py` (defaulted / `None`).
+> Drift note: older README copy listed `MATTERMOST_INCIDENT_REACTION_NAME` among
+> "minimal" vars — it is **optional** in `config.py` (defaulted).
 
 ## Mattermost (optional)
 
@@ -60,7 +59,6 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `JIRA_START_FIELD` | — | Date-time field set to alert arrival time on create |
 | `JIRA_END_FIELD` | — | Date-time field set on validity/checkmark close |
 | `JIRA_TIME_TO_FIX_FIELD` | — | Numeric field, incident duration in minutes (best-effort) |
-| `JIRA_CONFIRMED_STATUS_ID` | — | Transition id applied on confirmation |
 | `JIRA_REPEAT_LINK_INWARD` | `is child of` | Link type for expected-repeat → root |
 | `JIRA_CREATE_ENABLED` | `true` | `false` = test mode, no Jira issue-key calls |
 | `JIRA_STUB_ISSUE_KEY` | — | Key shown in Mattermost in test mode |

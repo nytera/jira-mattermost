@@ -38,7 +38,7 @@ Runs only on the final-status completion path. Steps, all behind one placeholder
 
 ### `_ensure_postmortem_jira_issue`
 
-Creates the issue if missing (then `attach_jira_issue`, announce to ops, set validity / END / time-to-fix, optionally `transition_issue` to `JIRA_CONFIRMED_STATUS_ID` best-effort, `mark_confirmed`). For an **existing** issue it short-circuits but still honours one subtle rule, captured in code: **validity and confirmation are independent axes** — a validity emoji (`validity_label`) must update the field even on an already-confirmed incident, and END / time-to-fix / `mark_confirmed` only run when the incident is not yet confirmed.
+Creates the issue if missing (then `attach_jira_issue`, announce to ops, set validity / END / time-to-fix, `mark_confirmed`). For an **existing** issue it short-circuits but still honours one subtle rule, captured in code: **validity and confirmation are independent axes** — a validity emoji (`validity_label`) must update the field even on an already-confirmed incident, and END / time-to-fix / `mark_confirmed` only run when the incident is not yet confirmed.
 
 ### `_apply_postmortem_validity`
 

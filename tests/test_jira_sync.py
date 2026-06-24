@@ -292,7 +292,6 @@ async def test_jira_client_makes_no_calls_in_test_mode(settings):
     await client.set_end_time("OPS-1", datetime(2026, 1, 1, tzinfo=UTC))
     await client.set_description("OPS-1", "desc")
     await client.add_comment("OPS-1", "body")
-    await client.transition_issue("OPS-1", "31")
     issue = await client.create_postmortem_issue(
         make_alert(), message_url="u", channel_name="c", summary="s", description="d"
     )

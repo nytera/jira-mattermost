@@ -136,7 +136,6 @@ class FakeJiraClient:
         self.created_payloads: list[dict] = []
         self.valid_updates: list[tuple[str, bool]] = []
         self.comments: list[tuple[str, str, str]] = []
-        self.transitions: list[tuple[str, str]] = []
         self.valid_by_issue: dict[str, bool] = {}
         self.validity_updates: list[tuple[str, str]] = []
         self.validity_end_updates: list[tuple[str, datetime]] = []
@@ -229,9 +228,6 @@ class FakeJiraClient:
 
     async def add_comment(self, issue_key: str, body: str):
         self.generic_comments.append((issue_key, body))
-
-    async def transition_issue(self, issue_key: str, transition_id: str):
-        self.transitions.append((issue_key, transition_id))
 
     async def aclose(self) -> None:
         return None
