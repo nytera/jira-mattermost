@@ -11,7 +11,7 @@
 
 The entry point for every alert-channel post. Early returns (each logged, all no-ops) skip: wrong channel, the bot's own posts, system messages, posts not from the configured bot user, and thread replies (only roots create tickets).
 
-- **Resolve invariant.** A resolved (`✅`) repost (`is_resolved_alert`) creates **no ticket and no Jira issue** — it only calls `mark_episode_resolved` to stamp the open episode's root, so the next firing of that title becomes a fresh root.
+- **Resolve invariant.** A resolved (`✅`) repost (`is_resolved_alert`) creates **no ticket and no Jira issue** — it only calls `mark_episode_resolved` to stamp the open episode's root, so the next firing of that title becomes a fresh root. The check treats a marker **anywhere on the first non-empty line** as resolved (not a strict prefix), so a markdown-wrapped title like `**✅ …**` is not mistaken for a firing; both the `✅` emoji and the `:white_check_mark:` shortcode count.
 - Otherwise `create_or_classify_alert` inserts/looks up the `alert_tickets` row (unique by `mattermost_post_id`) and classifies it within its episode. The DB row exists **before** the Jira call, so a crash mid-create is retried on redelivery.
 - If a row already has a `jira_issue_key` and is neither newly created nor a repeat, it returns early (`jira.issue.skipped_existing_mapping`) — idempotent on redelivery.
 - Hands off to `_ensure_jira_issue(is_repeat=...)`; if it is a **repeat**, also `_handle_expected_repeat`. Finally, if the ticket is mid-confirmation (`pending_confirmation` / `failed_confirmation` / `confirming`), it completes via `confirm_incident`.

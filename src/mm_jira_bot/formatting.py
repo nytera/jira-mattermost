@@ -19,19 +19,27 @@ _GRAFANA_ALERT_ANGLE_LINK = re.compile(
     re.IGNORECASE,
 )
 
-# When an alert clears, Grafana re-posts the same title prefixed with a green
-# check mark instead of the firing 🔴. Such "resolved" posts must not create a
-# Jira issue. Both the literal emoji and the shortcode form are matched.
+# When an alert clears, Grafana re-posts the same title with a green check mark
+# instead of the firing 🔴. Such "resolved" posts must not create a Jira issue.
+# The marker may sit anywhere on the title line (Grafana wraps it in markdown,
+# e.g. ``**✅ Title**``), so we look for its presence, not a strict prefix. Both
+# the literal emoji and the shortcode form are matched.
 _RESOLVED_MARKERS = ("✅", ":white_check_mark:")
 
 
 def is_resolved_alert(message: str) -> bool:
-    """True if the alert's first non-empty line starts with a resolved marker."""
+    """True if the alert's first non-empty line contains a resolved marker.
+
+    Grafana sometimes wraps the title in markdown (``**✅ …**``) or pads the
+    marker, so the check is "marker anywhere on the title line" rather than a
+    strict prefix. Trade-off: a firing whose title literally contains ✅ would be
+    read as resolved — accepted, since Grafana firings are prefixed with 🔴.
+    """
     for line in message.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        return stripped.startswith(_RESOLVED_MARKERS)
+        return any(marker in stripped for marker in _RESOLVED_MARKERS)
     return False
 
 
