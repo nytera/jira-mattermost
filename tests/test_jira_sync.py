@@ -17,9 +17,12 @@ from support import (
 import mm_jira_bot.jira as jira_module
 import mm_jira_bot.jira_payload as jira_payload_module
 from mm_jira_bot.domain import (
+    ConfirmationStatus,
     MattermostPost,
+    ReactionEvent,
 )
 from mm_jira_bot.jira_payload import build_jira_issue_payload
+from mm_jira_bot.retry import ApiError
 
 
 def test_builds_jira_payload(settings):
@@ -934,3 +937,184 @@ async def test_set_time_to_fix_skipped_when_field_unconfigured(settings):
         await client.set_time_to_fix("OPS-1", 10)
     finally:
         await client.aclose()
+
+
+# --- Idempotency / recovery: confirmation + backfill + pending work ----------
+
+
+async def _confirm_via_reaction(service, post, *, user_id="validator", create_at=1):
+    """Drive the alert -> incident confirmation through the validity reaction,
+    matching the flow used elsewhere in the suite (buttons disabled fixture)."""
+    return await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id=user_id,
+            emoji_name="incident",
+            create_at=create_at,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_jira_for_confirmation_idempotent_and_sync_back(service):
+    """When Jira already reports the issue valid, confirmation syncs the local
+    flag instead of issuing a duplicate set_valid_incident; the description swap
+    and confirmation comment each happen exactly once across repeat confirms."""
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    issue_key = service.repository.get_by_post_id(post.id).jira_issue_key
+    assert issue_key == "OPS-1"
+
+    # Pretend Jira already flipped the field to valid before we confirm.
+    service.jira.valid_by_issue[issue_key] = True
+
+    await _confirm_via_reaction(service, post)
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket.valid_incident is True
+    # sync-back path: no set_valid_incident PUT issued.
+    assert service.jira.valid_updates == []
+    assert ticket.confirmation_status == "confirmed"
+    assert service.jira.descriptions == [
+        (issue_key, service.jira.descriptions[0][1]),
+    ]
+    assert len(service.jira.comments) == 1
+
+    # Confirming a second time is a no-op for the one-shot Jira mutations.
+    await _confirm_via_reaction(service, post, create_at=2)
+
+    assert service.jira.valid_updates == []
+    assert len(service.jira.descriptions) == 1
+    assert len(service.jira.comments) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_replays_idempotently(service):
+    """Backfill is a no-op for posts that already have a ticket and only creates
+    issues for genuinely new posts; with a non-positive limit it never fetches."""
+    existing = make_alert()
+    service.mattermost.posts[existing.id] = existing
+    await service.handle_alert_post(existing)
+    assert len(service.jira.created_payloads) == 1
+
+    fresh = make_alert(post_id="freshalertpost000000000002")
+    service.mattermost.posts[fresh.id] = fresh
+
+    async def fake_fetch(channel_id, *, limit):
+        return [existing, fresh]
+
+    service.mattermost.fetch_recent_channel_posts = fake_fetch
+
+    service.settings = replace(service.settings, backfill_recent_posts_limit=10)
+    await service.backfill_recent_alerts()
+
+    # The already-ticketed post produced no second issue; only `fresh` was new.
+    assert len(service.jira.created_payloads) == 2
+    assert service.repository.get_by_post_id(fresh.id).jira_issue_key == "OPS-2"
+
+    # limit <= 0 must short-circuit before touching the Mattermost client.
+    called = False
+
+    async def guard_fetch(channel_id, *, limit):
+        nonlocal called
+        called = True
+        return []
+
+    service.mattermost.fetch_recent_channel_posts = guard_fetch
+    service.settings = replace(service.settings, backfill_recent_posts_limit=0)
+    await service.backfill_recent_alerts()
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_jira_create_failure_marks_pending_and_retries_to_success(service):
+    """A one-shot create_issue failure leaves the ticket keyless and failed;
+    clearing the failure and draining pending work creates exactly one issue and
+    posts the "Создана задача" reply exactly once."""
+    real_create = service.jira.create_issue
+    calls = {"n": 0}
+
+    async def flaky_create(post, *, message_url, channel_name):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ApiError("boom: jira create down")
+        return await real_create(post, message_url=message_url, channel_name=channel_name)
+
+    service.jira.create_issue = flaky_create
+
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.jira_issue_key is None
+    assert ticket.creation_status == "failed_jira"
+    assert ticket.last_error is not None and "boom" in ticket.last_error
+    assert _issue_created_replies(service, post.id) == []
+
+    # Recovery: subsequent create succeeds; pending work drains the ticket.
+    await service.process_pending_work()
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket.jira_issue_key == "OPS-1"
+    assert ticket.creation_status == "jira_created"
+    assert ticket.last_error is None
+    # Exactly one issue created (failed attempt did not produce a payload).
+    assert len(service.jira.created_payloads) == 1
+    # "Создана задача" reply posted exactly once.
+    assert len(_issue_created_replies(service, post.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_failure_is_recovered_by_process_pending_work(service):
+    """A one-shot set_valid_incident failure during confirmation leaves the
+    ticket in failed_confirmation; clearing it and running pending work drains
+    to valid_incident=True with the confirmation comment added exactly once."""
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    real_set_valid = service.jira.set_valid_incident
+    calls = {"n": 0}
+
+    async def flaky_set_valid(issue_key, value):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ApiError("boom: valid_incident update down")
+        return await real_set_valid(issue_key, value)
+
+    service.jira.set_valid_incident = flaky_set_valid
+
+    result = await _confirm_via_reaction(service, post)
+    assert result.status == ConfirmationStatus.ERROR
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket.confirmation_status == "failed_confirmation"
+    assert ticket.valid_incident is False
+    # The one-shot failure aborted before the description/comment swap.
+    assert service.jira.comments == []
+
+    # Recovery: subsequent set_valid succeeds; pending work drains confirmation.
+    await service.process_pending_work()
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket.valid_incident is True
+    assert ticket.confirmation_status == "confirmed"
+    # Confirmation comment added exactly once (no duplication on recovery).
+    assert len(service.jira.comments) == 1
+    assert service.jira.descriptions.count(service.jira.descriptions[0]) == 1
+    assert len(service.jira.descriptions) == 1
+
+
+def _issue_created_replies(service, post_id, *, issue_key="OPS-1"):
+    """Bot thread replies announcing the created Jira issue, matched on the
+    persisted ``jira_issue_key`` prop (the notice may be a bare message or a
+    boxed attachment depending on whether interactive buttons are enabled)."""
+    return [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == post_id
+        and (created["props"] or {}).get("jira_issue_key") == issue_key
+    ]

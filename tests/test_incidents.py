@@ -18,8 +18,11 @@ from mm_jira_bot.actions import (
     DUTY_HELP_ATTACHMENT_COLOR,
 )
 from mm_jira_bot.domain import (
+    ConfirmationResult,
+    ConfirmationStatus,
     MattermostPost,
     ReactionEvent,
+    backend_now,
     datetime_from_mattermost_ms,
 )
 from mm_jira_bot.formatting import (
@@ -27,6 +30,7 @@ from mm_jira_bot.formatting import (
     format_incident_duty_help,
     format_incident_message,
 )
+from mm_jira_bot.retry import ApiError
 
 
 @pytest.mark.asyncio
@@ -1086,3 +1090,221 @@ async def test_alert_originated_incident_posts_its_own_duty_help(service):
     ]
     assert len(incident_help) == 1
     assert "постмортем" in _reply_text(incident_help[0]).lower()
+
+
+# --- confirm_incident branches ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_incident_already_confirmed_short_circuits(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    first = await service.confirm_incident(
+        post.id, confirmed_by_user_id="validator", source="reaction"
+    )
+    assert first.status == ConfirmationStatus.CONFIRMED
+
+    incident_posts_after_first = len(
+        [
+            c
+            for c in service.mattermost.created_posts
+            if c["channel_id"] == "incidents-channel" and c["root_id"] is None
+        ]
+    )
+    comments_after_first = len(service.jira.comments)
+    valid_after_first = list(service.jira.valid_updates)
+
+    second = await service.confirm_incident(
+        post.id, confirmed_by_user_id="validator", source="reaction"
+    )
+
+    assert second.status == ConfirmationStatus.ALREADY_CONFIRMED
+    incident_posts_after_second = [
+        c
+        for c in service.mattermost.created_posts
+        if c["channel_id"] == "incidents-channel" and c["root_id"] is None
+    ]
+    # No second incident post, no duplicate Jira comment / valid_incident write.
+    assert len(incident_posts_after_second) == incident_posts_after_first
+    assert len(service.jira.comments) == comments_after_first
+    assert service.jira.valid_updates == valid_after_first
+
+
+@pytest.mark.asyncio
+async def test_confirm_incident_pending_jira_saves_pending(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    # Seed a keyless alert ticket directly so confirm_incident hits the
+    # PENDING_JIRA branch (no Jira issue yet).
+    service.repository.create_or_get_alert(
+        post,
+        message_url=service.mattermost.permalink(post.id),
+        channel_name="alerts",
+    )
+    confirmed_at = backend_now()
+
+    result = await service.confirm_incident(
+        post.id,
+        confirmed_by_user_id="validator",
+        source="reaction",
+        confirmed_at=confirmed_at,
+    )
+
+    assert result.status == ConfirmationStatus.PENDING_JIRA
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.confirmation_status == "pending_confirmation"
+    assert ticket.pending_confirmation_by_user_id == "validator"
+    # The SQLite roundtrip drops tzinfo, so compare the naive wall-clock value.
+    assert ticket.pending_confirmation_at is not None
+    assert ticket.pending_confirmation_at.replace(tzinfo=None) == confirmed_at.replace(tzinfo=None)
+    assert ticket.valid_incident is False
+    # No incident post published while still pending.
+    assert [
+        c
+        for c in service.mattermost.created_posts
+        if c["channel_id"] == "incidents-channel" and c["root_id"] is None
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_process_pending_work_completes_seeded_pending_confirmation(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    # A real keyed alert ticket (OPS-1) that is not yet confirmed.
+    await service.handle_alert_post(post)
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.jira_issue_key == "OPS-1"
+    assert ticket.valid_incident is False
+
+    confirmed_at = backend_now()
+    service.repository.mark_pending_confirmation(post.id, "validator", confirmed_at)
+
+    await service.process_pending_work()
+
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.confirmation_status == "confirmed"
+    assert ticket.valid_incident is True
+    assert ticket.incident_post_id is not None
+    assert service.jira.valid_updates == [("OPS-1", True)]
+
+
+# --- apply_incident_end_time branches --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_incident_end_time_ignored_and_error_branches(service):
+    # 1) Unknown post: no incident mapping for this post id -> IGNORED.
+    unknown = MattermostPost(
+        id="unknownincidentpost00000001",
+        channel_id="incidents-channel",
+        user_id="someone",
+        message="not an incident",
+        create_at=1_700_000_000_000,
+    )
+    ignored_unknown = await service.apply_incident_end_time(
+        unknown, ended_at=backend_now(), source="reaction"
+    )
+    assert ignored_unknown.status == ConfirmationStatus.IGNORED
+
+    # 2) Unconfirmed / no Jira key: a manual incident thread row (incident_post_id
+    #    == post.id, valid_incident False, no key) -> IGNORED, set_end_time untouched.
+    manual = _manual_post()
+    service.mattermost.posts[manual.id] = manual
+    service.repository.create_or_get_incident_thread(
+        manual,
+        message_url=service.mattermost.permalink(manual.id),
+        channel_name="incidents",
+    )
+    ignored_unconfirmed = await service.apply_incident_end_time(
+        manual, ended_at=backend_now(), source="reaction"
+    )
+    assert ignored_unconfirmed.status == ConfirmationStatus.IGNORED
+    assert service.jira.end_updates == []
+
+    # 3) Confirmed incident whose Jira write raises -> ERROR + last_error persisted.
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
+    )
+    ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.incident_post_id is not None
+    incident_post = service.mattermost.posts[ticket.incident_post_id]
+
+    async def _boom(issue_key, ended_at):
+        raise ApiError("end-time write failed", status_code=500, retryable=True)
+
+    service.jira.set_end_time = _boom
+
+    error_result = await service.apply_incident_end_time(
+        incident_post, ended_at=backend_now(), source="reaction"
+    )
+    assert error_result.status == ConfirmationStatus.ERROR
+    refreshed = service.repository.get_by_incident_post_id(incident_post.id)
+    assert refreshed is not None
+    assert refreshed.last_error == "end-time write failed"
+
+
+# --- handle_manual_incident_post early short-circuit -----------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_manual_incident_post_short_circuits_before_creating_ticket(settings):
+    # No interactive controls (no public url), no duty mention, duty help off:
+    # nothing to post, so the method returns before creating any ticket row.
+    service = _build_service(
+        replace(settings, duty_help_enabled=False, mattermost_duty_mention=None)
+    )
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+
+    await service.handle_manual_incident_post(post)
+
+    assert service.repository.get_by_incident_post_id(post.id) is None
+    assert service.mattermost.created_posts == []
+    assert service.jira.created_payloads == []
+
+
+# --- reaction self-echo + unauthorized notice ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bot_self_echo_ignored_and_unauthorized_notice(settings):
+    service = _build_service(replace(settings, mattermost_authorized_usernames=("alice",)))
+    service.mattermost.username_to_id = {"alice": "alice-id"}
+    service.mattermost.display_names = {"intruder": "Мария Мир (@maria.mir)"}
+    await service.resolve_authorized_users()
+
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    # The bot's own reaction echoes back over the websocket: ignored before any
+    # get_post / unauthorized notice fires.
+    bot_result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="bot-user", emoji_name="incident", create_at=1)
+    )
+    assert isinstance(bot_result, ConfirmationResult)
+    assert bot_result.status == ConfirmationStatus.IGNORED
+    assert service.mattermost.created_posts == []
+
+    # An unauthorized human gets exactly one thread notice listing the allowed users.
+    human_result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="intruder", emoji_name="incident", create_at=2)
+    )
+    assert isinstance(human_result, ConfirmationResult)
+    assert human_result.status == ConfirmationStatus.IGNORED
+    notices = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
+    assert len(notices) == 1
+    notice = notices[0]
+    # The body (allowed users) lands in the boxed attachment; the @mention is the
+    # bare message so the ping fires.
+    body = notice["props"]["attachments"][0]["text"]
+    assert "@alice" in body
+    assert "авторизованным" in body
+    assert notice["message"] == "@maria.mir"

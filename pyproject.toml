@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+  "hypothesis>=6,<7",
   "pyright[nodejs]>=1.1.410,<1.2",
   "pytest>=8,<9",
   "pytest-asyncio>=0.24,<2",

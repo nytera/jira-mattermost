@@ -16,6 +16,7 @@ from support import (
 from mm_jira_bot.domain import (
     MattermostPost,
     ReactionEvent,
+    configure_runtime_timezone,
     datetime_from_mattermost_ms,
 )
 from mm_jira_bot.postmortem import (
@@ -567,3 +568,130 @@ async def test_repeated_checkmark_does_not_duplicate_postmortem(service):
     # The PM comment is additive — a second checkmark must not duplicate it.
     assert len(service.jira.generic_comments) == 1
     assert len(service.llm.prompts) == 1
+
+
+# --- Runtime timezone is Europe/Moscow, not UTC ----------------------------
+# These guard the localization of *naive* datetimes against an implicit-UTC
+# assumption. The persisted start (alert at 1_700_000_000_000 ms) is
+# 2023-11-14T22:13:20Z, i.e. 2023-11-15T01:13:20 wall-clock in Moscow (UTC+3).
+# A naive value carrying that wall-clock must be stamped MSK, not UTC — otherwise
+# a +03:00 aware counterpart sits 180 minutes away and durations/bounds break.
+
+
+@pytest.fixture()
+def _moscow_runtime():
+    """Run a single test under the real runtime timezone (Europe/Moscow).
+
+    The global runtime tz defaults to UTC for the rest of the suite; flip it to
+    MSK for the body and restore UTC afterward so sibling tests are unaffected.
+    """
+    configure_runtime_timezone("Europe/Moscow")
+    try:
+        yield
+    finally:
+        configure_runtime_timezone("UTC")
+
+
+def _notice_text(update_or_post) -> str:
+    """Visible text of an updated/created post: bare message or boxed attachment."""
+    if update_or_post.get("message"):
+        return update_or_post["message"]
+    attachments = (update_or_post.get("props") or {}).get("attachments") or []
+    return attachments[0].get("text", "") if attachments else ""
+
+
+@pytest.mark.asyncio
+async def test_naive_persisted_start_localizes_to_moscow_not_utc_for_time_to_fix(
+    settings, _moscow_runtime
+):
+    # SQLite can hand the start back naive (it drops the tz). _set_time_to_fix must
+    # localize that naive value to the runtime tz (MSK), the same wall-clock the
+    # instant was written with — NOT assume UTC. The alert start is 01:13:20 MSK and
+    # the close lands 5 min later, so the recorded duration must be 5.
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+
+    original_set_ttf = service._set_time_to_fix
+
+    async def strip_tz_then_set(issue_key, ticket, ended_at):
+        # Simulate the persisted start coming back naive at read time.
+        start = ticket.mattermost_message_created_at
+        if start is not None and start.tzinfo is not None:
+            ticket.mattermost_message_created_at = start.replace(tzinfo=None)
+        return await original_set_ttf(issue_key, ticket, ended_at)
+
+    service._set_time_to_fix = strip_tz_then_set
+
+    # Alert at 1_700_000_000_000; closed 300_000 ms (5 min) later.
+    await _confirm_and_close_incident(service, closed_at_ms=1_700_000_300_000)
+
+    # Localized as MSK wall-clock → 5 minutes. An implicit-UTC reading of the naive
+    # start would treat it as a 3h-later instant, landing the start after the end
+    # → non-positive duration → no write at all (an empty list, not 185).
+    assert service.jira.time_to_fix_updates == [("OPS-1", 5)]
+
+
+def test_parse_incident_end_time_treats_naive_iso_as_moscow_wallclock(service, _moscow_runtime):
+    start = datetime_from_mattermost_ms(1_700_000_000_000)  # 2023-11-15T01:13:20+03:00
+    parse = service._parse_incident_end_time
+
+    # A naive ISO end-time is stamped MSK (+03:00 aware), not UTC.
+    parsed = parse("2023-11-15T01:23:20", start=start)
+    assert parsed == datetime_from_mattermost_ms(1_700_000_600_000)  # start + 10 min, MSK
+    assert parsed.utcoffset().total_seconds() == 3 * 3600
+
+    # In range when read as MSK (after the 01:13:20 MSK start) → accepted.
+    assert parse("2023-11-15T01:18:20", start=start) == datetime_from_mattermost_ms(
+        1_700_000_300_000
+    )
+
+    # 22:20:00 is after the start only if read as UTC (22:13:20Z); read as MSK
+    # wall-clock it precedes the 01:13:20 MSK start, so it is rejected. This is the
+    # bound that breaks if naive values were assumed UTC.
+    assert parse("2023-11-14T22:20:00", start=start) is None
+
+
+@pytest.mark.asyncio
+async def test_generate_incident_postmortem_llm_failure_edits_placeholder(service):
+    # The postmortem LLM call fails → the ticket ends in ERROR, the spinner
+    # placeholder is edited into a retry notice (never left on "Генерация саммари…"),
+    # mark_postmortem_failed is recorded, and no green "closed" notice is posted.
+    service.llm = FakeLlmClient()
+
+    async def _boom(prompt):
+        raise ApiError("llm down", retryable=False)
+
+    service.llm.generate_postmortem = _boom
+
+    ticket = await _confirmed_incident(service)
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=ticket.incident_post_id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_200_000,
+        )
+    )
+
+    assert result.status == "error"
+
+    # The placeholder post was UPDATED to the failure/retry message …
+    failure_updates = [
+        u
+        for u in service.mattermost.updated_posts
+        if "Не удалось" in _notice_text(u) and "повторить" in _notice_text(u)
+    ]
+    assert len(failure_updates) == 1
+    # … and never left stuck on the spinner: the "Генерация саммари…" placeholder is
+    # only ever a create, never an update, so the placeholder must end on the failure
+    # notice (the sole update carrying it), not a spinner.
+    assert not any("Генерация саммари" in _notice_text(u) for u in service.mattermost.updated_posts)
+
+    # The repository marked the postmortem as failed.
+    failed = service.repository.get_by_post_id(ticket.mattermost_post_id)
+    assert failed.creation_status == "failed_postmortem"
+    assert failed.last_error and "llm down" in failed.last_error
+
+    # No green "Инцидент закрыт" success notice was posted.
+    assert not any("Инцидент закрыт" in _notice_text(c) for c in service.mattermost.created_posts)
+    assert not any("Инцидент закрыт" in _notice_text(u) for u in service.mattermost.updated_posts)
