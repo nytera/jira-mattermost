@@ -23,6 +23,7 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+docker-compose.yml
 
 # macOS
 .DS_Store
