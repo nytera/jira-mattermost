@@ -14,7 +14,9 @@ httpx, SQLAlchemy 2.0.
 - `python -m mm_jira_bot`: run the bot locally on `0.0.0.0:8080`, reads `.env`.
 - `curl http://localhost:8080/healthz`: check the local FastAPI health endpoint.
 - `pytest`: full suite (`asyncio_mode=auto`, `pythonpath=src`).
-- `pytest tests/test_service.py::test_<name>`: run a single test.
+- `pytest tests/test_<domain>.py::test_<name>`: run a single test (service tests are split
+  by domain: `test_alerts`, `test_incidents`, `test_debug`, `test_jira_sync`, `test_postmortem`,
+  `test_thread_summary`, `test_service_infra`).
 - `pytest --cov=mm_jira_bot --cov-report=term-missing`: suite with coverage report (baseline ~78%).
 - `ruff check src tests`: lint (rules `E,F,I,UP,B,SIM`; config in `pyproject.toml`).
 - `ruff format src tests`: apply formatting (`--check` to verify without writing).
@@ -342,11 +344,16 @@ Pyright (`basic` mode); run them before committing and keep diffs focused.
 ## Testing Guidelines
 
 pytest + pytest-asyncio (`asyncio_mode = "auto"` — no `@pytest.mark.asyncio`
-needed). Name test files `test_*.py` and test functions `test_<behavior>`. Use
-fake Mattermost/Jira clients and a temp SQLite DB (see `tests/test_service.py`)
-to avoid live Mattermost, Jira, or Postgres dependencies. Add/extend tests for
-any behavior change, especially idempotency, retry/recovery, slash commands, and
-Jira payload/option formatting.
+needed). Name test files `test_*.py` and test functions `test_<behavior>`. The
+service suite is split by domain to mirror `service/` (`test_alerts.py`,
+`test_incidents.py`, `test_debug.py`, `test_jira_sync.py`, `test_postmortem.py`,
+`test_thread_summary.py`, `test_service_infra.py` for config/db/auth/routers/ops).
+Shared scaffolding lives in `tests/conftest.py` (the `settings`/`service` fixtures,
+auto-injected) and `tests/support.py` (fake Mattermost/Jira/LLM clients, `make_alert`,
+`_build_service`, and cross-domain flow helpers — imported via `from support import …`).
+Use these fakes and the temp SQLite DB to avoid live Mattermost, Jira, or Postgres
+dependencies. Add/extend tests for any behavior change, especially idempotency,
+retry/recovery, slash commands, and Jira payload/option formatting.
 
 ## Commit & Pull Request Guidelines
 

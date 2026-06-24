@@ -77,6 +77,19 @@
 
 ### Изменено
 
+- **Рефакторинг тестов: разбивка монолитного `tests/test_service.py` (~4900 строк)
+  по доменам (move-only).** Единый тест-файл разнесён в зеркало `service/`:
+  `test_alerts.py`, `test_incidents.py`, `test_debug.py`, `test_jira_sync.py`,
+  `test_postmortem.py`, `test_thread_summary.py` и `test_service_infra.py`
+  (config/db/auth/роутеры/ops/metrics — у группы нет своего миксина). Общая
+  оснастка вынесена в `tests/conftest.py` (фикстуры `settings`/`service`,
+  авто-инжект) и `tests/support.py` (фейковые клиенты Mattermost/Jira/LLM,
+  `make_alert`, `_build_service`, кросс-доменные flow-хелперы — импорт
+  `from support import …`). Тела тестов перенесены байт-в-байт; страховка — диффинг
+  множества собираемых node-ID до/после (191 node-ID, совпали точь-в-точь, без
+  дублей). Поведение не изменилось (202 теста зелёные, ruff/format чистые; pyright —
+  1 pre-existing ошибка переехала вместе со своим тестом, новых нет).
+
 - **Рефакторинг `service/`: вынос debug-домена в `DebugMixin` (move-only).**
   2 admin-метода debug-панели (`debug_create_from_link` — создать Jira-задачу по
   ссылке/post id через `handle_alert_post`; `debug_recreate_jira_issue` — пересоздать
