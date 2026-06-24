@@ -815,6 +815,44 @@ async def test_repeat_firing_marked_expected(service):
 
 
 @pytest.mark.asyncio
+async def test_repeat_firing_skips_duty_ping_and_cheat_sheet(settings):
+    # A repeat firing is auto-marked expected, so the on-call ping and the duty
+    # cheat-sheet are suppressed in its thread — only the root thread gets them.
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com/",
+            interactive_buttons_enabled=True,
+            mattermost_duty_mention=":look: @sre-ads-duty",
+        )
+    )
+    root_post = make_alert(post_id="rootpost00000000000000010")
+    repeat_post = make_alert(post_id="repeatpost000000000000010")
+    for post in (root_post, repeat_post):
+        service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(root_post)
+    await service.handle_alert_post(repeat_post)
+
+    # Root thread: duty pinged above the box, cheat-sheet posted.
+    assert _issue_reply(service, root_post.id, issue_key="OPS-1")["message"] == (
+        ":look: @sre-ads-duty"
+    )
+    assert any(
+        c["root_id"] == root_post.id and "Памятка дежурному" in _reply_text(c)
+        for c in service.mattermost.created_posts
+    )
+
+    # Repeat thread: "Создана задача" box stays, but no duty ping and no cheat-sheet.
+    repeat_replies = [c for c in service.mattermost.created_posts if c["root_id"] == repeat_post.id]
+    box = [c for c in repeat_replies if "Создана задача" in _reply_text(c)]
+    assert len(box) == 1
+    assert box[0]["message"] == ""
+    assert all("@sre-ads-duty" not in _reply_text(c) for c in repeat_replies)
+    assert all("Памятка дежурному" not in _reply_text(c) for c in repeat_replies)
+
+
+@pytest.mark.asyncio
 async def test_resolve_closes_episode_creates_nothing(service):
     root_post = make_alert(post_id="rootpost00000000000000002")
     repeat_post = make_alert(post_id="repeatpost000000000000002")

@@ -484,7 +484,7 @@ class IncidentBotService:
             )
             return ticket
 
-        await self._ensure_jira_issue(ticket)
+        await self._ensure_jira_issue(ticket, is_repeat=root is not None)
         if root is not None:
             ticket = self.repository.get_by_post_id(post.id) or ticket
             await self._handle_expected_repeat(ticket, root)
@@ -2447,12 +2447,17 @@ class IncidentBotService:
             previous_jira_issue_url=previous_url,
         )
 
-    async def _ensure_jira_issue(self, ticket: AlertTicket) -> None:
+    async def _ensure_jira_issue(self, ticket: AlertTicket, is_repeat: bool = False) -> None:
         """Create the Jira issue for a firing alert and post the "Создана задача"
         reply once (guarded by the existing key). Resolved alerts never reach
         here — they are skipped in ``handle_alert_post`` before a ticket exists —
         so the on-call ``MATTERMOST_DUTY_MENTION`` ping fires only for firing
         alerts, above the boxed notice.
+
+        For ``is_repeat=True`` (a repeat firing of an open episode) the duty ping
+        and the duty cheat-sheet are suppressed: ``_handle_expected_repeat`` runs
+        right after and auto-marks the repeat as expected, so no on-call action is
+        required and the reminders would only be noise.
         """
         if ticket.jira_issue_key:
             return
@@ -2474,7 +2479,7 @@ class IncidentBotService:
                 title=display_issue.key,
                 title_link=display_issue.url,
             )
-            duty_mention = self.settings.mattermost_duty_mention
+            duty_mention = None if is_repeat else self.settings.mattermost_duty_mention
             if action_attachments is not None:
                 await self._post_alert_thread_reply(
                     ticket.mattermost_post_id,
@@ -2496,7 +2501,7 @@ class IncidentBotService:
                     props={"jira_issue_key": issue.key},
                     mention=duty_mention,
                 )
-            if self.settings.duty_help_enabled:
+            if self.settings.duty_help_enabled and not is_repeat:
                 await self._post_alert_thread_reply(
                     ticket.mattermost_post_id,
                     channel_id=ticket.mattermost_channel_id,

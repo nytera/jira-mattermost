@@ -31,9 +31,9 @@ INCIDENT_CREATE_ATTACHMENT_COLOR = "#F59E0B"
 # postmortem/feedback), so every bot comment renders as a boxed attachment
 # instead of a bare message.
 NOTICE_ATTACHMENT_COLOR = "#64748B"
-# White accent for the on-call duty cheat-sheet, so its box reads as a neutral
-# reference card rather than another slate notice.
-DUTY_HELP_ATTACHMENT_COLOR = "#FFFFFF"
+# Light slate-400 accent for the on-call duty cheat-sheet — a neutral reference
+# card, lighter than the slate-500 plain notices but in the same slate family.
+DUTY_HELP_ATTACHMENT_COLOR = "#94A3B8"
 # Red/green for incident-channel post: red while open, green when resolved.
 INCIDENT_OPEN_COLOR = "#EF4444"
 INCIDENT_DONE_COLOR = "#22C55E"
