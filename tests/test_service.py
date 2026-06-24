@@ -42,6 +42,7 @@ from mm_jira_bot.postmortem import (
     build_postmortem_comment,
     build_postmortem_prompt,
     extract_postmortem_summary,
+    format_incident_closed_notice,
     markdown_to_jira_wiki,
 )
 from mm_jira_bot.repository import (
@@ -52,7 +53,11 @@ from mm_jira_bot.repository import (
 )
 from mm_jira_bot.retry import ApiError
 from mm_jira_bot.service import IncidentBotService, parse_post_id_from_text
-from mm_jira_bot.summary import DEFAULT_SUMMARY_PROMPT, build_thread_summary_prompt
+from mm_jira_bot.summary import (
+    DEFAULT_SUMMARY_PROMPT,
+    build_thread_summary_prompt,
+    format_thread_summary_streaming,
+)
 from mm_jira_bot.web import create_app, run_startup_preflight
 
 POST_ID = "abcdefghijklmnopqrstuvwx01"
@@ -302,8 +307,10 @@ class FakeLlmClient:
         self.prompts.append(prompt)
         return self.report
 
-    async def generate_summary(self, prompt: str) -> str:
+    async def generate_summary(self, prompt: str, *, on_progress=None) -> str:
         self.summary_prompts.append(prompt)
+        if on_progress is not None:
+            await on_progress(self.summary)
         return self.summary
 
     async def aclose(self) -> None:
@@ -1126,15 +1133,28 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
         and "Генерация саммари" in _reply_text(created)
     ]
     assert len(placeholders) == 1
-    final = [
+    # The placeholder is edited through the 1/3·2/3·3/3 status steps, then into the
+    # final summary (last edit).
+    edits = [
         u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
     ]
-    assert len(final) == 1
-    assert "Саммари треда" in _reply_text(final[0])
-    assert "всё сломалось" in _reply_text(final[0])
-    # The completion summary still links back to the Jira postmortem.
-    assert "Полный постмортем отправлен в Jira" in _reply_text(final[0])
-    assert "OPS-1" in _reply_text(final[0])
+    assert any("Шаг 1/3" in _reply_text(u) for u in edits)
+    final = edits[-1]
+    assert "Саммари треда" in _reply_text(final)
+    assert "всё сломалось" in _reply_text(final)
+    # The Jira link no longer rides inside the summary; closure is announced in a
+    # standalone green box posted as a separate reply.
+    assert "Полный постмортем отправлен в Jira" not in _reply_text(final)
+    closed = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == ticket.incident_post_id
+        and "Инцидент закрыт" in _reply_text(created)
+    ]
+    assert len(closed) == 1
+    assert "ПМ:" in _reply_text(closed[0])
+    assert "INC" in _reply_text(closed[0])  # link text is the task title (brackets escaped)
+    assert closed[0]["props"]["attachments"][0]["color"] == "#22C55E"
 
 
 @pytest.mark.asyncio
@@ -1196,13 +1216,21 @@ async def test_checkmark_on_manual_incident_thread_creates_postmortem_issue(serv
         if created["root_id"] == root.id and "Генерация саммари" in _reply_text(created)
     ]
     assert len(placeholders) == 1
-    final = [
+    edits = [
         u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
     ]
-    assert len(final) == 1
-    assert "Саммари треда" in _reply_text(final[0])
-    assert "Полный постмортем отправлен в Jira" in _reply_text(final[0])
-    assert "OPS-1" in _reply_text(final[0])
+    assert any("Шаг 1/3" in _reply_text(u) for u in edits)
+    final = edits[-1]
+    assert "Саммари треда" in _reply_text(final)
+    assert "Полный постмортем отправлен в Jira" not in _reply_text(final)
+    closed = [
+        created
+        for created in service.mattermost.created_posts
+        if created["root_id"] == root.id and "Инцидент закрыт" in _reply_text(created)
+    ]
+    assert len(closed) == 1
+    assert "ПМ: [\\[INC\\] 15.11.2023 - Ошибки API]" in _reply_text(closed[0])
+    assert closed[0]["props"]["attachments"][0]["color"] == "#22C55E"
 
 
 def test_postmortem_summary_limits_llm_title_words_and_chars():
@@ -1221,6 +1249,101 @@ def test_postmortem_summary_limits_llm_title_words_and_chars():
     assert summary == (
         "[INC] 15.11.2023 - Очень длинное название инцидента про падение checkout api после релиза"
     )
+
+
+def test_format_thread_summary_streaming_marks_in_progress():
+    rendered = format_thread_summary_streaming("  частичный текст  ")
+    assert rendered.startswith("📝 **Саммари треда** _(генерируется…)_")
+    assert "частичный текст" in rendered
+    assert rendered.endswith("частичный текст")  # surrounding whitespace trimmed
+
+
+def test_format_incident_closed_notice_links_task_by_title():
+    notice = format_incident_closed_notice(
+        jira_issue_title="[INC] 15.11.2023 - Ошибки API",
+        jira_issue_url="https://jira.example.com/browse/OPS-1",
+    )
+    # Brackets in the title are escaped so the leading "[INC]" does not nest inside
+    # the markdown link text and break rendering.
+    assert notice == (
+        "🟢 **Инцидент закрыт**\n"
+        "ПМ: [\\[INC\\] 15.11.2023 - Ошибки API](https://jira.example.com/browse/OPS-1)"
+    )
+
+
+def test_format_incident_closed_notice_degrades_without_url():
+    notice = format_incident_closed_notice(jira_issue_title="OPS-1", jira_issue_url=None)
+    assert notice == "🟢 **Инцидент закрыт**\nПМ: OPS-1"
+
+
+@pytest.mark.asyncio
+async def test_summary_stream_callback_throttles_edits(service, monkeypatch):
+    clock = {"t": 100.0}
+    monkeypatch.setattr("mm_jira_bot.service.perf_counter", lambda: clock["t"])
+    edits: list[str] = []
+
+    async def _record(reply_id, post_id, *, message, base_props, event):
+        edits.append(message)
+
+    monkeypatch.setattr(service, "_edit_summary_reply", _record)
+    on_progress = service._make_summary_stream_callback(
+        reply_id="reply1", post_id="root1", base_props={}, event="evt"
+    )
+
+    # Below both thresholds (≈10 chars, 0.5s after the seed) → no edit yet.
+    clock["t"] = 100.5
+    await on_progress("a" * 10)
+    assert edits == []
+    # Crossing the char threshold (≥80 new chars) forces an edit.
+    clock["t"] = 100.6
+    await on_progress("a" * 100)
+    assert len(edits) == 1
+    assert "генерируется" in edits[0]
+    # Crossing the time threshold (≥1.5s) forces the next edit.
+    clock["t"] = 102.5
+    await on_progress("a" * 120)
+    assert len(edits) == 2
+    # A shrinking buffer (retry restart) forces a re-render regardless of thresholds.
+    clock["t"] = 102.6
+    await on_progress("x" * 5)
+    assert len(edits) == 3
+
+
+class _FakeStreamResponse:
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+@pytest.mark.asyncio
+async def test_collect_stream_emits_cumulative_progress(settings):
+    # End-to-end wiring of the SSE collector: each delta fires on_progress with the
+    # CUMULATIVE text, and the joined result is returned.
+    client = PostmortemLlmClient(settings, http_client=httpx.AsyncClient())
+    lines = [
+        'data: {"choices":[{"delta":{"content":"Привет"}}]}',
+        "",  # non-data line is skipped
+        'data: {"choices":[{"delta":{"content":", "}}]}',
+        'data: {"choices":[{"delta":{"content":"мир"}}]}',
+        "data: [DONE]",
+    ]
+    seen: list[str] = []
+
+    async def record(text: str) -> None:
+        seen.append(text)
+
+    try:
+        result = await client._collect_stream(
+            _FakeStreamResponse(lines), on_progress=record
+        )
+    finally:
+        await client.aclose()
+
+    assert result == "Привет, мир"
+    assert seen == ["Привет", "Привет, ", "Привет, мир"]  # cumulative, per delta
 
 
 @pytest.mark.asyncio

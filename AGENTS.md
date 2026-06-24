@@ -213,10 +213,31 @@ comment (the LLM's Markdown is converted to Jira **wiki markup** via
 wiki, not Markdown), and posts a fact-based incident-report summary back to the incident
 thread (a separate `build_thread_summary_prompt` call — not derived from the Jira
 postmortem — published as a "Генерация саммари…" placeholder that is then edited
-into the final reply). A checkmark on
+into the final reply). During the completion flow the placeholder shows stepwise
+status (`_set_summary_status`: "Шаг 1/3 … 3/3"), and the summary text is streamed
+into it live (throttled) as the LLM generates. On closure a **standalone green box**
+"🟢 Инцидент закрыт" with a "ПМ: [title](url)" line is posted as a *separate* reply
+(`format_incident_closed_notice`, `INCIDENT_DONE_COLOR`) — it replaces the old
+in-summary footer and only fires on the postmortem path (so the Jira link always
+exists). A checkmark on
 an unmapped manual incident thread root post creates a Jira issue with a
 PM-template description, but it does not set the alert-only source/is-crit-alert
 fields. Checkmarks on incident thread replies are ignored.
+
+**LLM streaming into the thread** (`generate_summary(prompt, on_progress=…)` →
+`_collect_stream` in `llm.py`; throttle callback `_make_summary_stream_callback` in
+`service.py`). Two load-bearing invariants — break either and generation misbehaves:
+(1) the callback receives the **cumulative** text of the current attempt, not a
+delta — so a retry that restarts the stream replays from an empty buffer and
+`update_post` (wholesale replace) overwrites the stale partial cleanly; the callback
+also force-renders when the buffer **shrinks** (retry restart). (2) the callback
+**never raises** — its `update_post` is wrapped in try/except-log (via
+`_edit_summary_reply`); a raised `ApiError` would escape `_collect_stream`, reach
+`_retry`, and restart the whole LLM generation over a transient Mattermost edit blip.
+Edits are throttled by `LLM_STREAM_EDIT_INTERVAL_SECONDS` / `LLM_STREAM_EDIT_MIN_CHARS`;
+`last_edit_time` is seeded at callback creation so the first stream edit respects the
+interval after the "Шаг 3/3" status edit. The buffered-JSON fallback and
+`LLM_STREAM=false` never invoke the callback (static placeholder, no failure).
 
 `JIRA_TIME_TO_FIX_FIELD` (optional) is a **numeric** field set to the incident
 duration in **minutes** whenever the end time is written at closure (`_set_time_to_fix`,

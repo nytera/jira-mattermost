@@ -225,17 +225,25 @@ def build_postmortem_comment(
     return markdown_to_jira_wiki(body)
 
 
-def format_postmortem_jira_footer(
+def format_incident_closed_notice(
     *,
-    jira_issue_key: str | None,
+    jira_issue_title: str,
     jira_issue_url: str | None,
 ) -> str:
-    """Trailing line that points the incident thread at the Jira postmortem."""
-    if jira_issue_key and jira_issue_url:
-        jira_text = f"[{jira_issue_key}]({jira_issue_url})"
+    """Standalone green-boxed reply posted when an incident reaches a final status.
+
+    Line one announces closure; line two links the Jira postmortem under its task
+    title. Without a URL it degrades to the bare title.
+    """
+    title = jira_issue_title.strip() or "постмортем"
+    if jira_issue_url:
+        # The title always starts with "[INC] …"; escape brackets so the leading
+        # "[" does not nest inside the markdown link text and break rendering.
+        safe_title = title.replace("[", "\\[").replace("]", "\\]")
+        pm_text = f"[{safe_title}]({jira_issue_url})"
     else:
-        jira_text = jira_issue_key or "Jira issue"
-    return f"Полный постмортем отправлен в Jira: {jira_text}"
+        pm_text = title
+    return "\n".join(["🟢 **Инцидент закрыт**", f"ПМ: {pm_text}"])
 
 
 def extract_postmortem_summary(report: str, *, fallback: str) -> str:

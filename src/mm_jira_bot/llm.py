@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -10,6 +11,11 @@ from mm_jira_bot.logging import get_logger
 from mm_jira_bot.retry import ApiError
 
 log = get_logger(__name__)
+
+# Called during streaming with the CUMULATIVE text generated so far (the full
+# buffer of the current attempt, not a delta) — so a retry that restarts the
+# stream simply replays from an empty buffer and the consumer overwrites cleanly.
+StreamProgress = Callable[[str], Awaitable[None]]
 
 SYSTEM_PROMPT = """Ты — старший SRE и incident manager. Ты помогаешь дежурным
 инженерам составлять профессиональный постмортем инцидента в духе blameless
@@ -147,12 +153,15 @@ class PostmortemLlmClient(AsyncApiClient):
             error_message="Failed to generate postmortem",
         )
 
-    async def generate_summary(self, prompt: str) -> str:
+    async def generate_summary(
+        self, prompt: str, *, on_progress: StreamProgress | None = None
+    ) -> str:
         return await self._generate(
             prompt,
             system_prompt=SUMMARY_SYSTEM_PROMPT,
             event="llm.summary.generate",
             error_message="Failed to generate thread summary",
+            on_progress=on_progress,
         )
 
     async def _generate(
@@ -162,6 +171,7 @@ class PostmortemLlmClient(AsyncApiClient):
         system_prompt: str,
         event: str,
         error_message: str,
+        on_progress: StreamProgress | None = None,
     ) -> str:
         payload = {
             "model": self._settings.llm_model,
@@ -191,6 +201,7 @@ class PostmortemLlmClient(AsyncApiClient):
             prompt_length=len(prompt),
             event=event,
             error_message=error_message,
+            on_progress=on_progress,
         )
 
     async def _generate_streaming(
@@ -200,6 +211,7 @@ class PostmortemLlmClient(AsyncApiClient):
         prompt_length: int,
         event: str,
         error_message: str,
+        on_progress: StreamProgress | None = None,
     ) -> str:
         stream_payload = {**payload, "stream": True}
 
@@ -214,11 +226,12 @@ class PostmortemLlmClient(AsyncApiClient):
                     content_type = response.headers.get("content-type", "")
                     # Auto-fallback: a proxy that ignores ``stream`` answers with a
                     # buffered JSON body instead of an SSE stream — parse it as a
-                    # normal chat completion rather than failing.
+                    # normal chat completion rather than failing. ``on_progress`` is
+                    # never invoked here, so the caller keeps its static placeholder.
                     if "text/event-stream" not in content_type:
                         await response.aread()
                         return _parse_chat_content(response)
-                    return await self._collect_stream(response)
+                    return await self._collect_stream(response, on_progress=on_progress)
             except httpx.HTTPError as exc:
                 raise wrap_transport_error(error_message, exc) from exc
 
@@ -229,7 +242,9 @@ class PostmortemLlmClient(AsyncApiClient):
             prompt_length=prompt_length,
         )
 
-    async def _collect_stream(self, response: httpx.Response) -> str:
+    async def _collect_stream(
+        self, response: httpx.Response, *, on_progress: StreamProgress | None = None
+    ) -> str:
         chunks: list[str] = []
         async for line in response.aiter_lines():
             line = line.strip()
@@ -241,6 +256,9 @@ class PostmortemLlmClient(AsyncApiClient):
             piece = _extract_stream_delta(data)
             if piece:
                 chunks.append(piece)
+                if on_progress is not None:
+                    # Hand over the cumulative text; the callback owns throttling.
+                    await on_progress("".join(chunks))
         report = "".join(chunks).strip()
         if not report:
             raise ApiError("LLM stream returned empty content", retryable=False)

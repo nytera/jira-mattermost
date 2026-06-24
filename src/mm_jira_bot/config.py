@@ -148,6 +148,8 @@ class Settings:
     llm_summary_prompt: str | None = None
     llm_stream: bool = True
     llm_read_timeout: float = 120.0
+    llm_stream_edit_interval_seconds: float = 1.5
+    llm_stream_edit_min_chars: int = 80
 
     def __post_init__(self) -> None:
         configure_runtime_timezone(self.incident_timezone)
@@ -221,4 +223,6 @@ class Settings:
             llm_summary_prompt=_text_env("LLM_SUMMARY_PROMPT"),
             llm_stream=_env("LLM_STREAM", "true") != "false",
             llm_read_timeout=_float_env("LLM_READ_TIMEOUT", 120.0),
+            llm_stream_edit_interval_seconds=_float_env("LLM_STREAM_EDIT_INTERVAL_SECONDS", 1.5),
+            llm_stream_edit_min_chars=_int_env("LLM_STREAM_EDIT_MIN_CHARS", 80),
         )

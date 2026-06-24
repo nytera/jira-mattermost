@@ -5,6 +5,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from time import perf_counter
 
 from mm_jira_bot.actions import (
     ACTION_CREATE_TASK,
@@ -64,6 +65,7 @@ from mm_jira_bot.jira_payload import (
     build_jira_description,
     build_postmortem_description,
 )
+from mm_jira_bot.llm import StreamProgress
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.postmortem import (
@@ -71,7 +73,7 @@ from mm_jira_bot.postmortem import (
     build_postmortem_comment,
     build_postmortem_prompt,
     extract_postmortem_summary,
-    format_postmortem_jira_footer,
+    format_incident_closed_notice,
     format_thread_transcript,
 )
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
@@ -79,6 +81,7 @@ from mm_jira_bot.retry import ApiError
 from mm_jira_bot.summary import (
     build_thread_summary_prompt,
     format_thread_summary_reply,
+    format_thread_summary_streaming,
 )
 
 log = get_logger(__name__)
@@ -1301,6 +1304,13 @@ class IncidentBotService:
                 max_chars=self.settings.llm_thread_max_chars,
                 template=self.settings.llm_postmortem_prompt,
             )
+            await self._set_summary_status(
+                placeholder_id,
+                root_post.id,
+                message="⏳ Шаг 1/3: генерирую постмортем…",
+                base_props=summary_base_props,
+                event=f"{summary_event}.status",
+            )
             report = await self.llm.generate_postmortem(prompt)
             summary = extract_postmortem_summary(
                 report,
@@ -1325,6 +1335,13 @@ class IncidentBotService:
                 alert_message_url=alert_message_url,
                 postmortem_author=postmortem_author,
                 participants=participants,
+            )
+            await self._set_summary_status(
+                placeholder_id,
+                root_post.id,
+                message="⏳ Шаг 2/3: отправляю постмортем в Jira…",
+                base_props=summary_base_props,
+                event=f"{summary_event}.status",
             )
             ticket = await self._ensure_postmortem_jira_issue(
                 ticket,
@@ -1374,8 +1391,14 @@ class IncidentBotService:
             )
 
         # The thread gets the fact-based incident summary (own LLM prompt); the
-        # Jira postmortem above is generated separately and stays untouched. The
-        # footer keeps the link to that postmortem in the thread.
+        # Jira postmortem above is generated separately and stays untouched.
+        await self._set_summary_status(
+            placeholder_id,
+            root_post.id,
+            message="⏳ Шаг 3/3: генерирую саммари…",
+            base_props=summary_base_props,
+            event=f"{summary_event}.status",
+        )
         await self._generate_and_finalize_summary(
             placeholder_id=placeholder_id,
             root_post_id=root_post.id,
@@ -1385,10 +1408,20 @@ class IncidentBotService:
             participants=participants,
             transcript=transcript,
             event=summary_event,
-            jira_ref=format_postmortem_jira_footer(
-                jira_issue_key=ticket.jira_issue_key,
+        )
+        # Reached only after the Jira postmortem succeeded, so the link is always
+        # present: announce closure in a standalone green box (replaces the old
+        # in-summary footer). Only the final-status completion flow gets here.
+        await self._create_thread_summary_reply(
+            root_post.id,
+            channel_id=root_post.channel_id,
+            message=format_incident_closed_notice(
+                jira_issue_title=summary,
                 jira_issue_url=ticket.jira_issue_url,
             ),
+            base_props=summary_base_props,
+            event="mattermost.incident_thread.incident_closed_notice",
+            color=INCIDENT_DONE_COLOR,
         )
         log.info(
             "postmortem.completed",
@@ -1605,11 +1638,10 @@ class IncidentBotService:
         message: str,
         base_props: dict,
         event: str,
+        color: str = NOTICE_ATTACHMENT_COLOR,
     ) -> str | None:
         """Create a boxed thread reply and return its id (None if the post fails)."""
-        boxed_message, props = self._box_thread_reply(
-            message, dict(base_props), NOTICE_ATTACHMENT_COLOR
-        )
+        boxed_message, props = self._box_thread_reply(message, dict(base_props), color)
         try:
             reply = await self.mattermost.create_post(
                 channel_id=channel_id,
@@ -1627,6 +1659,53 @@ class IncidentBotService:
             return None
         log.info(event, mattermost_post_id=post_id, reply_post_id=reply.id)
         return reply.id
+
+    async def _edit_summary_reply(
+        self,
+        reply_id: str,
+        post_id: str,
+        *,
+        message: str,
+        base_props: dict,
+        event: str,
+    ) -> None:
+        """Re-render an existing summary reply in place (status, stream, finale).
+
+        ``update_post`` replaces props wholesale, so re-box from ``base_props`` to
+        keep the thread-routing keys. Best-effort: a failed edit is logged, never
+        raised — callers in the LLM stream loop must not let an edit blip restart
+        generation.
+        """
+        boxed_message, props = self._box_thread_reply(
+            message, dict(base_props), NOTICE_ATTACHMENT_COLOR
+        )
+        try:
+            await self.mattermost.update_post(reply_id, message=boxed_message, props=props)
+        except ApiError as exc:
+            log.warning(
+                "mattermost.thread.summary_reply_update_failed",
+                reply_post_id=reply_id,
+                event_kind=event,
+                error=str(exc),
+            )
+            return
+        log.info(event, mattermost_post_id=post_id, reply_post_id=reply_id)
+
+    async def _set_summary_status(
+        self,
+        reply_id: str | None,
+        post_id: str,
+        *,
+        message: str,
+        base_props: dict,
+        event: str,
+    ) -> None:
+        """Edit the placeholder to a transient progress status (no-op if missing)."""
+        if reply_id is None:
+            return
+        await self._edit_summary_reply(
+            reply_id, post_id, message=message, base_props=base_props, event=event
+        )
 
     async def _finalize_thread_summary_reply(
         self,
@@ -1652,22 +1731,9 @@ class IncidentBotService:
                 event=event,
             )
             return
-        # update_post replaces props wholesale, so re-box from base_props to keep
-        # the thread-routing keys on the post.
-        boxed_message, props = self._box_thread_reply(
-            message, dict(base_props), NOTICE_ATTACHMENT_COLOR
+        await self._edit_summary_reply(
+            reply_id, post_id, message=message, base_props=base_props, event=event
         )
-        try:
-            await self.mattermost.update_post(reply_id, message=boxed_message, props=props)
-        except ApiError as exc:
-            log.warning(
-                "mattermost.thread.summary_reply_update_failed",
-                reply_post_id=reply_id,
-                event_kind=event,
-                error=str(exc),
-            )
-            return
-        log.info(event, mattermost_post_id=post_id, reply_post_id=reply_id)
 
     @staticmethod
     def _summary_base_props(
@@ -1696,6 +1762,49 @@ class IncidentBotService:
             event=f"{event}.pending",
         )
 
+    def _make_summary_stream_callback(
+        self,
+        *,
+        reply_id: str,
+        post_id: str,
+        base_props: dict,
+        event: str,
+    ) -> StreamProgress:
+        """Throttled progress callback: live-edit the placeholder as the LLM streams.
+
+        Receives the cumulative text per delta and edits at most every
+        ``llm_stream_edit_interval_seconds`` OR every ``llm_stream_edit_min_chars``
+        new characters. ``last_edit_time`` is seeded to "now" so the first stream
+        edit respects the interval after any preceding status edit. Edits go through
+        ``_edit_summary_reply``, which swallows ``ApiError`` — the callback must
+        never raise, or an edit blip would restart the whole generation via retry.
+        """
+        interval = self.settings.llm_stream_edit_interval_seconds
+        min_chars = self.settings.llm_stream_edit_min_chars
+        state = {"last_edit_time": perf_counter(), "last_len": 0}
+
+        async def on_progress(text: str) -> None:
+            now = perf_counter()
+            # Shrink ⇒ a retry restarted the stream: force a re-render so the stale
+            # longer text is overwritten and the char baseline resets.
+            shrank = len(text) < state["last_len"]
+            due = (now - state["last_edit_time"]) >= interval or (
+                len(text) - state["last_len"]
+            ) >= min_chars
+            if not shrank and not due:
+                return
+            await self._edit_summary_reply(
+                reply_id,
+                post_id,
+                message=format_thread_summary_streaming(text),
+                base_props=base_props,
+                event=f"{event}.streaming",
+            )
+            state["last_edit_time"] = now
+            state["last_len"] = len(text)
+
+        return on_progress
+
     async def _generate_and_finalize_summary(
         self,
         *,
@@ -1707,15 +1816,13 @@ class IncidentBotService:
         participants: list[str],
         transcript: str,
         event: str,
-        jira_ref: str | None = None,
     ) -> bool:
         """Generate the incident-report summary and edit the placeholder into the
         final reply (or an error notice). Returns True on success.
 
-        ``jira_ref``, when set, is appended to the finished summary so the thread
-        still links to the Jira postmortem (the completion flow uses it; the
-        Summary button has no issue to point at). Callers must ensure ``self.llm``
-        is configured.
+        When a placeholder exists, the summary is streamed into it live (throttled);
+        the final edit always overwrites the streaming state with the clean format.
+        Callers must ensure ``self.llm`` is configured.
         """
         prompt = build_thread_summary_prompt(
             thread_url=thread_url,
@@ -1724,8 +1831,18 @@ class IncidentBotService:
             max_chars=self.settings.llm_thread_max_chars,
             template=self.settings.llm_summary_prompt,
         )
+        on_progress = (
+            self._make_summary_stream_callback(
+                reply_id=placeholder_id,
+                post_id=root_post_id,
+                base_props=base_props,
+                event=event,
+            )
+            if placeholder_id is not None
+            else None
+        )
         try:
-            summary = await self.llm.generate_summary(prompt)
+            summary = await self.llm.generate_summary(prompt, on_progress=on_progress)
         except ApiError as exc:
             log.error("summary.failed", mattermost_post_id=root_post_id, error=str(exc))
             await self._finalize_thread_summary_reply(
@@ -1737,14 +1854,11 @@ class IncidentBotService:
                 event=f"{event}.failed",
             )
             return False
-        final_message = format_thread_summary_reply(summary)
-        if jira_ref:
-            final_message = f"{final_message}\n\n{jira_ref}"
         await self._finalize_thread_summary_reply(
             placeholder_id,
             root_post_id,
             channel_id=channel_id,
-            message=final_message,
+            message=format_thread_summary_reply(summary),
             base_props=base_props,
             event=event,
         )
@@ -1761,7 +1875,6 @@ class IncidentBotService:
         requested_by_user_id: str,
         thread_id_key: str,
         event: str,
-        jira_ref: str | None = None,
     ) -> bool:
         """Post a pending placeholder, generate the incident-report summary, then
         edit the placeholder into the final reply. Returns True on success.
@@ -1785,7 +1898,6 @@ class IncidentBotService:
             participants=participants,
             transcript=transcript,
             event=event,
-            jira_ref=jira_ref,
         )
 
     async def _post_incident_thread_reply(

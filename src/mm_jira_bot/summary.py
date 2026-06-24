@@ -79,3 +79,13 @@ def build_thread_summary_prompt(
 
 def format_thread_summary_reply(summary: str) -> str:
     return "\n".join(["📝 **Саммари треда**", "", summary.strip()])
+
+
+def format_thread_summary_streaming(partial: str) -> str:
+    """In-progress render of the summary while the LLM streams it into the thread.
+
+    The header carries a "генерируется…" marker so the partial text never reads as
+    final; ``format_thread_summary_reply`` overwrites it with the clean header once
+    the full text arrives.
+    """
+    return "\n".join(["📝 **Саммари треда** _(генерируется…)_", "", partial.strip()])
