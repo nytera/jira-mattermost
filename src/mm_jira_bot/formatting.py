@@ -190,15 +190,20 @@ def format_thread_validity_changed(*, validity_label: str) -> str:
     return f"Валидность обновлена: `{validity_label}`"
 
 
-# Incident-message title: red while open, green once closed. The completion
-# update keys off the exact open-title line, so keep them in sync.
-INCIDENT_TITLE_OPEN = "##### 🔴 Инцидент открыт"
-INCIDENT_TITLE_DONE = "##### 🟢 Инцидент закрыт"
+# Incident-message title prefix: red circle while open, green once closed,
+# followed by the alert name. The completion update keys off the exact open
+# prefix, so keep the two in sync.
+INCIDENT_TITLE_OPEN_PREFIX = "##### 🔴"
+INCIDENT_TITLE_DONE_PREFIX = "##### 🟢"
 
 
 def mark_incident_message_completed(message: str) -> str:
-    """Swap the open title for the closed one in an incident message."""
-    return message.replace(INCIDENT_TITLE_OPEN, INCIDENT_TITLE_DONE, 1)
+    """Swap the open title prefix for the closed one in an incident message.
+
+    Only the leading status prefix changes (red→green); the alert-name suffix
+    on the title line is preserved.
+    """
+    return message.replace(INCIDENT_TITLE_OPEN_PREFIX, INCIDENT_TITLE_DONE_PREFIX, 1)
 
 
 _MENTION = re.compile(r"@[^\s()]+")
@@ -275,7 +280,12 @@ def format_incident_message(
         if ticket.jira_issue_key and ticket.jira_issue_url
         else "Jira issue пока недоступна"
     )
-    lines = [INCIDENT_TITLE_OPEN, ""]
+    # The title line is just the status circle plus the alert name, so the
+    # incident is identifiable at a glance. ``mark_incident_message_completed``
+    # swaps only the leading ``##### 🔴`` prefix on close, so the name survives.
+    alert_title = extract_alert_title(ticket.mattermost_message_text)
+    title_line = f"{INCIDENT_TITLE_OPEN_PREFIX} {alert_title}"
+    lines = [title_line, ""]
     if include_alert_text and ticket.mattermost_message_text.strip():
         lines.extend([ticket.mattermost_message_text, ""])
     lines.extend(

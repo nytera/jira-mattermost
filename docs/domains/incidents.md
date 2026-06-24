@@ -104,9 +104,10 @@ success, `ERROR` on a failed Jira write (recorded as `last_error`, retried).
 
 ## _mark_incident_post_completed
 
-Edits the incident-channel message title from `🔴 Инцидент открыт` to
-`🟢 Инцидент закрыт` (first attachment's text + `INCIDENT_DONE_COLOR`) via
-`update_post`. **Manual incidents are skipped**: the "incident post" is the human's
+Edits the incident-channel message title by swapping the leading status circle
+`🔴` → `🟢` (the `##### 🔴` → `##### 🟢` prefix; first attachment's text +
+`INCIDENT_DONE_COLOR`) via `update_post`. The alert-name suffix on the title line
+is preserved. **Manual incidents are skipped**: the "incident post" is the human's
 own message (`incident_post_id == mattermost_post_id`), which the bot must not
 rewrite. Only the bot-authored alert-originated message carries the editable title.
 Best-effort — a failed edit never breaks finalize.
@@ -120,8 +121,12 @@ alert thread. If the Jira issue is not ready it is saved `pending_confirmation`
 (`PENDING_JIRA`) and completed by the pending-work loop. Already-confirmed posts
 short-circuit (`ALREADY_CONFIRMED`).
 
-`_publish_incident_message_if_needed` renders incident details (title, Jira/alert
-links, confirmer `@mention`, time) in a **gray attachment block**
+`_publish_incident_message_if_needed` renders incident details (title — the header
+is the status circle plus the alert name, `##### 🔴 <название>` via
+`extract_alert_title`, so the incident is identifiable at a glance; the
+`mark_incident_message_completed` close swap only flips the `##### 🔴` → `##### 🟢`
+prefix, so the name survives — plus Jira/alert links, confirmer `@mention`, time) in
+a **gray attachment block**
 (`INCIDENT_OPEN_COLOR`) placed *above* the forwarded alert attachment(s); the post
 `message` is empty. It is guarded by `incident_post_id` so it publishes once. After
 publishing it posts the controls card (no "Создать задачу") and, when
