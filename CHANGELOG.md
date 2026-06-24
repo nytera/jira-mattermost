@@ -117,6 +117,22 @@
   Собранный класс теперь
   `IncidentBotService(SharedMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`.
   Поведение не изменилось (202 теста зелёные, pyright/ruff чистые).
+- **Рефакторинг `service/`: вынос инцидентного домена в `IncidentMixin`
+  (move-only).** 12 методов — полный жизненный цикл инцидента: ручной incident-post
+  (`handle_manual_incident_post`, `_incident_duty_help`,
+  `_post_incident_thread_mention`, `_incident_controls_attachment`),
+  кнопки/чекмарк (`handle_incident_action`, `_incident_create_task`,
+  `handle_incident_checkmark`), валидность/END-время (`_set_incident_validity`,
+  `_mark_incident_post_completed`, `apply_incident_end_time`), подтверждение и
+  публикация в incident-канал (`confirm_incident`,
+  `_publish_incident_message_if_needed`) — переехали из `coordinator.py` в
+  `service/_incidents.py`. Module-level хелпер `_validity_action_message` переехал
+  в `_shared.py` (теперь его зовут оба домена — оставшийся `handle_alert_action` и
+  переехавший `handle_incident_action`). Собранный класс теперь
+  `IncidentBotService(SharedMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`;
+  `coordinator.py` сократился с 1882 до ~1170 строк и держит теперь только
+  init/auth/роутеры + ещё не вынесенные alerts/debug. Поведение не изменилось
+  (202 теста зелёные, pyright/ruff чистые).
 - Бокс «ℹ️ Памятка дежурному SRE» теперь рендерится нейтральной полосой slate-400
   (`DUTY_HELP_ATTACHMENT_COLOR = #94A3B8`) — светлее обычных уведомлений
   (`NOTICE_ATTACHMENT_COLOR = #64748B`), в той же slate-семье, читается как

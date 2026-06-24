@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
+from mm_jira_bot.domain import ConfirmationResult, ConfirmationStatus
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.retry import ApiError
 
@@ -30,6 +31,16 @@ SUMMARY_FAILED_TEXT = "Не удалось сгенерировать самма
 # `service/__init__.py` — менять имена нельзя.
 _PROMPT_KEY_SUMMARY = "llm_summary_prompt"
 _PROMPT_KEY_POSTMORTEM = "llm_postmortem_prompt"
+
+
+def _validity_action_message(result: ConfirmationResult, validity_label: str) -> str:
+    if result.status == ConfirmationStatus.VALIDITY_SET:
+        return f"Готово: «Валидность» = {validity_label}."
+    if result.status == ConfirmationStatus.PENDING_JIRA:
+        return "Задача Jira ещё создаётся — обновлю «Валидность» автоматически."
+    if result.status == ConfirmationStatus.ERROR:
+        return "Не удалось обновить «Валидность», попробуйте ещё раз."
+    return result.message
 
 
 @dataclass(frozen=True)
