@@ -21,17 +21,27 @@ A `Mattermost alert → Jira incident` bridge bot. Python 3.11+, FastAPI + async
 Test commands and layout are in [`docs/testing.md`](docs/testing.md); env vars in
 [`docs/config.md`](docs/config.md).
 
-## The gate (run before every commit)
+## The gate (two tiers — there is no CI)
 
-Run all of these from the local venv and don't stop at the first failure:
+Run all of these from the local venv and don't stop at the first failure.
+
+**Quick tier — `/gate`, every iteration / commit:**
 
 ```
 .venv/bin/ruff check src tests
 .venv/bin/ruff format --check src tests
 .venv/bin/pyright
 .venv/bin/pytest -q
+```
+
+**Full tier — `/gate full`, before a PR / merge to `main`** — the quick tier plus:
+
+```
 .venv/bin/python scripts/gen_service_map.py --check
 ```
+
+…and the doc-sync check below. The heavy checks (service-map, doc-sync) are **not**
+required on every small edit — bring them in line before opening a PR.
 
 - ruff rules `E,F,I,UP,B,SIM`, line length 100; config in `pyproject.toml`.
   `debug_admin.py`, `jira_payload.py`, `postmortem.py`, `summary.py` ignore `E501`
@@ -39,11 +49,11 @@ Run all of these from the local venv and don't stop at the first failure:
 - pyright is `basic` mode over `src/mm_jira_bot` + `tests`. There is **one** known
   pre-existing error (`tests/test_postmortem.py` — `ActionResult.status`,
   `reportAttributeAccessIssue`); ignore exactly that one, any other is new.
-- The last step fails if `docs/reference/service-map.md` is stale. Regenerate with
+- The service-map step fails if `docs/reference/service-map.md` is stale. Regenerate with
   `.venv/bin/python scripts/gen_service_map.py && git add docs/reference/service-map.md`.
 
-The `/gate` skill runs this inline; the `service-verifier` agent adds an adversarial
-review for move-only refactors.
+The `/gate` skill runs this inline (default quick, `full` for the full tier); the
+`service-verifier` agent adds an adversarial review (full tier) for move-only refactors.
 
 ## Coding style & naming
 
@@ -79,14 +89,14 @@ user-visible Mattermost messages or HTTP behavior.
 ### Doc-sync (required)
 
 Per [`CLAUDE.md`](CLAUDE.md), when a change alters behavior or architecture, bring the
-docs in line **before** committing:
+docs in line **before opening a PR** (part of the full tier, not the quick gate):
 
 - domain/architecture change → the relevant [`docs/`](docs/) file;
 - user-facing behavior or config → [`README.md`](README.md) / [`docs/config.md`](docs/config.md);
 - every change → a `[Unreleased]` entry in [`CHANGELOG.md`](CHANGELOG.md).
 
-The generated `docs/reference/service-map.md` is **not** hand-synced — the gate's
-`--check` step enforces it.
+The generated `docs/reference/service-map.md` is **not** hand-synced — the full gate's
+`--check` step (`/gate full`) enforces it before a PR.
 
 ## Security & configuration
 

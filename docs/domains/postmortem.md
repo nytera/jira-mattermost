@@ -4,7 +4,7 @@
 
 ## Scope and boundaries
 
-- **Owned here:** `generate_incident_postmortem` (orchestration), `_ensure_postmortem_jira_issue`, `_apply_postmortem_validity`, `_set_time_to_fix`, `_postmortem_thread_context`.
+- **Owned here:** `generate_incident_postmortem` (orchestration), `_ensure_postmortem_jira_issue`, `_apply_postmortem_validity`, `_set_time_to_fix`, `_resolve_incident_end_time` / `_parse_incident_end_time` (LLM-inferred recovery time for END / time-to-fix, validated + reaction-time fallback; called from `handle_incident_checkmark`), `_postmortem_thread_context`.
 - **Delegated out** (called via `TYPE_CHECKING` stubs): the **thread-summary FLOW** (`_post_summary_placeholder`, `_set_summary_status`, `_generate_and_finalize_summary`, `_create_thread_summary_reply`, the live-stream throttle callback) lives in [../domains/thread-summary.md](../domains/thread-summary.md) — this domain only *calls* it. The reaction/dispatch that decides to close an incident and the idempotency *guard* live in [../domains/incidents.md](../domains/incidents.md). Jira field/option semantics: [../jira.md](../jira.md). Env vars: [../config.md](../config.md). Runtime prompt overrides: [../domains/debug.md](../domains/debug.md).
 
 ## One template, two renderings (the central invariant)
@@ -38,7 +38,7 @@ Runs only on the final-status completion path. Steps, all behind one placeholder
 
 ### `_ensure_postmortem_jira_issue`
 
-Creates the issue if missing (then `attach_jira_issue`, announce to ops, set validity / END / time-to-fix, optionally `transition_issue` to `JIRA_CONFIRMED_STATUS_ID` best-effort, `mark_confirmed`). For an **existing** issue it short-circuits but still honours one subtle rule, captured in code: **validity and confirmation are independent axes** — a validity emoji (`validity_label`) must update the field even on an already-confirmed incident, and END / time-to-fix / `mark_confirmed` only run when the incident is not yet confirmed.
+Creates the issue if missing (then `attach_jira_issue`, announce to ops, set validity / END / time-to-fix, `mark_confirmed`). For an **existing** issue it short-circuits but still honours one subtle rule, captured in code: **validity and confirmation are independent axes** — a validity emoji (`validity_label`) must update the field even on an already-confirmed incident, and END / time-to-fix / `mark_confirmed` only run when the incident is not yet confirmed.
 
 ### `_apply_postmortem_validity`
 

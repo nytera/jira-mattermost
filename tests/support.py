@@ -136,7 +136,6 @@ class FakeJiraClient:
         self.created_payloads: list[dict] = []
         self.valid_updates: list[tuple[str, bool]] = []
         self.comments: list[tuple[str, str, str]] = []
-        self.transitions: list[tuple[str, str]] = []
         self.valid_by_issue: dict[str, bool] = {}
         self.validity_updates: list[tuple[str, str]] = []
         self.validity_end_updates: list[tuple[str, datetime]] = []
@@ -230,9 +229,6 @@ class FakeJiraClient:
     async def add_comment(self, issue_key: str, body: str):
         self.generic_comments.append((issue_key, body))
 
-    async def transition_issue(self, issue_key: str, transition_id: str):
-        self.transitions.append((issue_key, transition_id))
-
     async def aclose(self) -> None:
         return None
 
@@ -264,10 +260,18 @@ class FakeLlmClient:
         self.prompts: list[str] = []
         self.summary_prompts: list[str] = []
         self.summary = "Суть: всё сломалось.\nСтатус: в работе."
+        # End-time extraction answer; default UNKNOWN so tests keep the legacy
+        # reaction-time behavior unless they opt into a derived value.
+        self.end_time = "UNKNOWN"
+        self.end_time_prompts: list[str] = []
 
     async def generate_postmortem(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self.report
+
+    async def extract_incident_end_time(self, prompt: str) -> str:
+        self.end_time_prompts.append(prompt)
+        return self.end_time
 
     async def generate_summary(self, prompt: str, *, on_progress=None) -> str:
         self.summary_prompts.append(prompt)

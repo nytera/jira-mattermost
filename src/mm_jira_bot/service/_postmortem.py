@@ -10,7 +10,8 @@ ops-лента живут в sibling-классах.
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from mm_jira_bot.actions import INCIDENT_DONE_COLOR
@@ -18,6 +19,7 @@ from mm_jira_bot.domain import (
     ConfirmationResult,
     ConfirmationStatus,
     MattermostPost,
+    backend_now,
     runtime_timezone,
 )
 from mm_jira_bot.formatting import extract_alert_title
@@ -25,6 +27,7 @@ from mm_jira_bot.jira_payload import build_postmortem_description
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.postmortem import (
     ThreadMessage,
+    build_incident_end_time_prompt,
     build_incident_report_prompt,
     build_postmortem_comment,
     extract_postmortem_summary,
@@ -42,6 +45,15 @@ if TYPE_CHECKING:
 # Имя логгера держим стабильным (`mm_jira_bot.service`) во всех файлах пакета —
 # тесты и настроенные логгеры завязаны на него, а не на `__name__` модуля.
 log = get_logger("mm_jira_bot.service")
+
+# An LLM-derived end time later than this margin past "now" is treated as a
+# hallucination and rejected (a recovery moment can't be in the future). Small,
+# only to tolerate clock skew between the bot host and the picked timestamps.
+_END_TIME_FUTURE_MARGIN = timedelta(minutes=5)
+
+# ISO-8601 datetime token, extracted from the LLM's single-line answer even if it
+# wraps the value in stray text. ``datetime.fromisoformat`` validates the match.
+_ISO_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:[+-]\d{2}:?\d{2})?")
 
 
 class PostmortemMixin:
@@ -417,17 +429,6 @@ class PostmortemMixin:
         )
         await self.jira.set_end_time(issue.key, ended_at)
         await self._set_time_to_fix(issue.key, ticket, ended_at)
-        if self.settings.jira_confirmed_status_id:
-            try:
-                await self.jira.transition_issue(issue.key, self.settings.jira_confirmed_status_id)
-            except ApiError as exc:
-                log.warning(
-                    "jira.issue.transition_failed",
-                    mattermost_post_id=ticket.mattermost_post_id,
-                    jira_issue_key=issue.key,
-                    transition_id=self.settings.jira_confirmed_status_id,
-                    error=str(exc),
-                )
         self.repository.mark_confirmed(
             ticket.mattermost_post_id,
             user_id=reacted_by_user_id,
@@ -480,3 +481,83 @@ class PostmortemMixin:
         ]
         postmortem_author = display_by_user_id.get(reacted_by_user_id, reacted_by_user_id)
         return thread_messages, participants, postmortem_author
+
+    async def _resolve_incident_end_time(
+        self,
+        root_post: MattermostPost,
+        *,
+        reacted_by_user_id: str,
+        reaction_ended_at: datetime,
+        ticket: AlertTicket | None,
+    ) -> datetime:
+        """Derive the incident end time from the thread chronology via the LLM.
+
+        Best-effort: the LLM reads the thread and returns the recovery moment;
+        we accept it only when it parses and lands within ``[start, now + margin]``
+        (``set_end_time`` has no range guard of its own). No LLM, ApiError,
+        ``UNKNOWN``, unparseable, or out-of-range → fall back to
+        ``reaction_ended_at`` (the previous behavior), so completion never breaks
+        on this step.
+        """
+        if self.llm is None:
+            return reaction_ended_at
+        start = (
+            ticket.mattermost_message_created_at
+            if ticket is not None
+            else root_post.created_at_datetime
+        )
+        try:
+            thread_messages, _, _ = await self._postmortem_thread_context(
+                root_post, reacted_by_user_id=reacted_by_user_id
+            )
+            transcript = format_thread_transcript(thread_messages)
+            prompt = build_incident_end_time_prompt(
+                transcript=transcript,
+                start=start,
+                max_chars=self.settings.llm_thread_max_chars,
+            )
+            raw = await self.llm.extract_incident_end_time(prompt)
+            derived = self._parse_incident_end_time(raw, start=start)
+        except Exception as exc:
+            # Deliberately broad: this is a best-effort enrichment that runs
+            # *before* the END/TTF writes, so nothing it does (thread fetch, user
+            # lookup, LLM call) may break incident closure. Any failure → fall back
+            # to the reaction timestamp, the pre-existing behavior.
+            log.warning(
+                "incident.end_time.llm_failed",
+                incident_post_id=root_post.id,
+                error=str(exc),
+            )
+            derived = None
+        if derived is None:
+            log.info("incident.end_time.fallback_reaction", incident_post_id=root_post.id)
+            return reaction_ended_at
+        log.info(
+            "incident.end_time.derived",
+            incident_post_id=root_post.id,
+            ended_at=derived.isoformat(),
+        )
+        return derived
+
+    @staticmethod
+    def _parse_incident_end_time(raw: str, *, start: datetime | None) -> datetime | None:
+        """Parse + range-validate the LLM end-time answer; ``None`` ⇒ use fallback."""
+        if not raw or "UNKNOWN" in raw.upper():
+            return None
+        match = _ISO_DATETIME.search(raw)
+        if match is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(match.group(0))
+        except ValueError:
+            return None
+        tz = runtime_timezone()
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=tz)
+        if start is not None:
+            start_aware = start if start.tzinfo else start.replace(tzinfo=tz)
+            if parsed < start_aware:
+                return None
+        if parsed > backend_now() + _END_TIME_FUTURE_MARGIN:
+            return None
+        return parsed

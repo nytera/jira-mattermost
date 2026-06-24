@@ -92,11 +92,15 @@ async def test_confirmed_incident_embeds_grafana_attachment(service):
     assert post_attachments[1:] == attachments
     assert post_attachments[1] is not attachments[0]
     info_text = info_block["text"]
-    assert info_text.startswith("##### 🔴 Инцидент открыт")
+    # The alert name is carried on the title line so the incident is
+    # identifiable at a glance.
+    assert info_text.startswith("##### 🔴 Деньги | Минус-слова vs Общее | выше на 70% [Crit]")
     assert "Задача Jira: [OPS-1]" in info_text
     assert "Исходный алерт" in info_text
-    # The alert text is in the forwarded block, not duplicated in the info block.
-    assert "Деньги | Минус-слова vs Общее" not in info_text
+    # The full alert text is in the forwarded block, not duplicated as a body
+    # block below the title line.
+    body_after_title = info_text.split("\n", 1)[1]
+    assert "Деньги | Минус-слова vs Общее" not in body_after_title
     assert incident_post["message"] == ""
 
 
@@ -399,7 +403,9 @@ def test_builds_incident_channel_message(service):
         confirmed_at=datetime(2026, 5, 29, 22, 30, tzinfo=UTC),
     )
 
-    assert "CPU usage is above 95%" in message
+    # The alert name is pinned to the title line so the incident is
+    # identifiable at a glance.
+    assert message.splitlines()[0] == "##### 🔴 CPU usage is above 95%"
     assert "Исходный алерт" in message
     assert "OPS-1" in message
     assert "@validator" in message
@@ -919,14 +925,14 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
     def info_text():
         return service.mattermost.posts[incident_post_id].props["attachments"][0]["text"]
 
-    assert "##### 🔴 Инцидент открыт" in info_text()
+    assert "##### 🔴 CPU usage is above 95%" in info_text()
 
     await service.handle_incident_action(
         action="end_incident", incident_post_id=incident_post_id, user_id="closer"
     )
 
-    assert "##### 🟢 Инцидент закрыт" in info_text()
-    assert "##### 🔴 Инцидент открыт" not in info_text()
+    assert "##### 🟢 CPU usage is above 95%" in info_text()
+    assert "##### 🔴" not in info_text()
 
 
 @pytest.mark.asyncio

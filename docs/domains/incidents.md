@@ -69,6 +69,17 @@ incident — set END-time, generate the postmortem, and turn the title green.
 
 Key invariants:
 
+- **END-time is the LLM-inferred recovery moment, not the reaction time.** Before
+  any Jira write, `handle_incident_checkmark` calls `_resolve_incident_end_time`
+  (PostmortemMixin) once and substitutes the result for the reaction `ended_at`, so
+  the single value flows into **both** `apply_incident_end_time` and the postmortem
+  (no per-site injection). The LLM reads the thread chronology (a dedicated, small
+  call — `extract_incident_end_time`) and returns the recovery time; it is accepted
+  only when it parses and lands within `[start, now + margin]` (`set_end_time` has
+  no range guard of its own). On no-LLM / `ApiError` / `UNKNOWN` / unparseable /
+  out-of-range it **falls back to the reaction timestamp** — the previous behavior.
+  This covers all three finalize emojis and manual incidents (same entry point).
+
 - **Validity reactions finalize too.** Unlike the alert channel (where
   `Ложный`/`Ожидаемый` are label-only — see [../domains/alerts.md](../domains/alerts.md)),
   the same reactions on an **incident-thread root** route here with
@@ -97,16 +108,19 @@ this mixin only orchestrates; do not duplicate it here.
 
 ## apply_incident_end_time
 
-Sets `JIRA_END_FIELD` to the reaction/button time and best-effort `set_time_to_fix`.
+Sets `JIRA_END_FIELD` to the `ended_at` passed by `handle_incident_checkmark`
+(the LLM-resolved recovery time, or the reaction/button time as fallback — see
+above) and best-effort `set_time_to_fix` off the same value.
 Ignored (no error) when the post is unknown, the incident is not confirmed
 (`valid_incident` false), or no Jira issue exists. Returns `INCIDENT_ENDED` on
 success, `ERROR` on a failed Jira write (recorded as `last_error`, retried).
 
 ## _mark_incident_post_completed
 
-Edits the incident-channel message title from `🔴 Инцидент открыт` to
-`🟢 Инцидент закрыт` (first attachment's text + `INCIDENT_DONE_COLOR`) via
-`update_post`. **Manual incidents are skipped**: the "incident post" is the human's
+Edits the incident-channel message title by swapping the leading status circle
+`🔴` → `🟢` (the `##### 🔴` → `##### 🟢` prefix; first attachment's text +
+`INCIDENT_DONE_COLOR`) via `update_post`. The alert-name suffix on the title line
+is preserved. **Manual incidents are skipped**: the "incident post" is the human's
 own message (`incident_post_id == mattermost_post_id`), which the bot must not
 rewrite. Only the bot-authored alert-originated message carries the editable title.
 Best-effort — a failed edit never breaks finalize.
@@ -120,8 +134,12 @@ alert thread. If the Jira issue is not ready it is saved `pending_confirmation`
 (`PENDING_JIRA`) and completed by the pending-work loop. Already-confirmed posts
 short-circuit (`ALREADY_CONFIRMED`).
 
-`_publish_incident_message_if_needed` renders incident details (title, Jira/alert
-links, confirmer `@mention`, time) in a **gray attachment block**
+`_publish_incident_message_if_needed` renders incident details (title — the header
+is the status circle plus the alert name, `##### 🔴 <название>` via
+`extract_alert_title`, so the incident is identifiable at a glance; the
+`mark_incident_message_completed` close swap only flips the `##### 🔴` → `##### 🟢`
+prefix, so the name survives — plus Jira/alert links, confirmer `@mention`, time) in
+a **gray attachment block**
 (`INCIDENT_OPEN_COLOR`) placed *above* the forwarded alert attachment(s); the post
 `message` is empty. It is guarded by `incident_post_id` so it publishes once. After
 publishing it posts the controls card (no "Создать задачу") and, when

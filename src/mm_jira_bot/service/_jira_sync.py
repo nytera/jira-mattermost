@@ -367,23 +367,3 @@ class JiraSyncMixin:
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=ticket.jira_issue_key,
             )
-
-        if self.settings.jira_confirmed_status_id:
-            try:
-                await self.jira.transition_issue(
-                    ticket.jira_issue_key, self.settings.jira_confirmed_status_id
-                )
-                log.info(
-                    "jira.issue.transitioned",
-                    mattermost_post_id=ticket.mattermost_post_id,
-                    jira_issue_key=ticket.jira_issue_key,
-                    transition_id=self.settings.jira_confirmed_status_id,
-                )
-            except ApiError as exc:
-                log.warning(
-                    "jira.issue.transition_failed",
-                    mattermost_post_id=ticket.mattermost_post_id,
-                    jira_issue_key=ticket.jira_issue_key,
-                    transition_id=self.settings.jira_confirmed_status_id,
-                    error=str(exc),
-                )

@@ -21,6 +21,7 @@ from mm_jira_bot.domain import (
 )
 from mm_jira_bot.formatting import (
     alert_signature,
+    is_resolved_alert,
 )
 
 
@@ -179,6 +180,32 @@ async def test_skips_resolved_alert_post(service):
     assert ticket is None
     assert len(service.jira.created_payloads) == 0
     assert service.repository.get_by_post_id(post.id) is None
+
+
+@pytest.mark.asyncio
+async def test_skips_resolved_alert_wrapped_in_markdown(service):
+    # Grafana sometimes emits the resolved title in bold (``**✅ …**``); the
+    # leading ``**`` must not hide the marker and turn a resolve into a firing.
+    post = make_alert(message="**✅ Совпадения и различия по Advert Status [Crit] [MM]**")
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is None
+    assert len(service.jira.created_payloads) == 0
+    assert service.repository.get_by_post_id(post.id) is None
+
+
+def test_is_resolved_alert_detects_marker_anywhere_on_first_line():
+    # A check mark anywhere on the first non-empty line means resolved — markdown
+    # wrappers and padding around the marker are irrelevant.
+    assert is_resolved_alert("✅ Title")
+    assert is_resolved_alert("**✅ Title**")
+    assert is_resolved_alert("**:white_check_mark: Title**")
+    assert is_resolved_alert("> ✅ Title")
+    # A firing alert (even bold-wrapped) must never read as resolved.
+    assert not is_resolved_alert("🔴 Title")
+    assert not is_resolved_alert("**🔴 Title**")
 
 
 @pytest.mark.asyncio

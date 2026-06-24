@@ -16,27 +16,27 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `__init__.py` | 3 |
 | `__main__.py` | 18 |
 | `actions.py` | 291 |
-| `config.py` | 236 |
+| `config.py` | 234 |
 | `debug_admin.py` | 736 |
 | `domain.py` | 154 |
-| `formatting.py` | 291 |
+| `formatting.py` | 309 |
 | `http.py` | 137 |
-| `jira.py` | 823 |
+| `jira.py` | 810 |
 | `jira_payload.py` | 215 |
-| `llm.py` | 274 |
+| `llm.py` | 299 |
 | `logging.py` | 276 |
 | `mattermost.py` | 392 |
 | `metrics.py` | 113 |
 | `ops.py` | 160 |
-| `postmortem.py` | 331 |
+| `postmortem.py` | 359 |
 | `repository.py` | 715 |
 | `retry.py` | 56 |
 | `service/__init__.py` | 20 |
 | `service/_alerts.py` | 607 |
 | `service/_debug.py` | 258 |
-| `service/_incidents.py` | 845 |
-| `service/_jira_sync.py` | 389 |
-| `service/_postmortem.py` | 482 |
+| `service/_incidents.py` | 866 |
+| `service/_jira_sync.py` | 369 |
+| `service/_postmortem.py` | 563 |
 | `service/_shared.py` | 171 |
 | `service/_thread_summary.py` | 392 |
 | `service/coordinator.py` | 479 |
@@ -153,7 +153,6 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
   - `async def set_time_to_fix(self, issue_key: str, minutes: int) -> None`
   - `async def set_valid_incident(self, issue_key: str, value: bool) -> None`
   - `async def set_validity(self, issue_key: str, option_value: str, *, ended_at: datetime | None = None) -> None`
-  - `async def transition_issue(self, issue_key: str, transition_id: str) -> None`
 - `def build_jira_auth_headers(settings: Settings) -> dict[str, str]`
 - `def stub_jira_issue(settings: Settings, mattermost_post_id: str) -> JiraIssue`
 
@@ -170,6 +169,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
 ### `llm.py`
 
 - **class `PostmortemLlmClient(AsyncApiClient)`**
+  - `async def extract_incident_end_time(self, prompt: str) -> str`
   - `async def generate_postmortem(self, prompt: str) -> str`
   - `async def generate_summary(self, prompt: str, *, on_progress: StreamProgress | None = None) -> str`
   - `async def preflight_check(self) -> dict[str, object]`
@@ -248,6 +248,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
 ### `postmortem.py`
 
 - **class `ThreadMessage`**
+- `def build_incident_end_time_prompt(*, transcript: str, start: datetime | None, max_chars: int) -> str`
 - `def build_incident_report_prompt(*, thread_url: str, participants: list[str], postmortem_author: str, transcript: str, max_chars: int, template: str | None = None) -> str`
 - `def build_postmortem_comment(*, report: str, incident_thread_url: str, postmortem_author: str) -> str`
 - `def extract_postmortem_summary(report: str, *, fallback: str) -> str`
