@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from time import perf_counter
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from mm_jira_bot.config import Settings
 from mm_jira_bot.debug_admin import register_debug_admin
@@ -15,6 +17,8 @@ from mm_jira_bot.jira import JiraClient
 from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.logging import configure_logging, get_logger
 from mm_jira_bot.mattermost import MattermostClient
+from mm_jira_bot.metrics import register_ticket_collector
+from mm_jira_bot.ops import OpsNotifier
 from mm_jira_bot.repository import (
     AlertTicketRepository,
     create_database_engine,
@@ -101,7 +105,9 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         mattermost_url=settings.mattermost_url,
         mattermost_alert_channel_id=settings.mattermost_alert_channel_id,
         mattermost_incident_channel_id=settings.mattermost_incident_channel_id,
+        mattermost_ops_channel_id=settings.mattermost_ops_channel_id,
         mattermost_bot_user_id=settings.mattermost_bot_user_id,
+        metrics_enabled=settings.metrics_enabled,
         enable_websocket=settings.enable_websocket,
         enable_backfill_on_startup=settings.enable_backfill_on_startup,
         interactive_buttons_enabled=(
@@ -194,7 +200,12 @@ async def _handle_ws_event(service: IncidentBotService, event: dict) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        log.error("mattermost.event.handler_failed", error=str(exc))
+        log.error(
+            "mattermost.event.handler_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            exc_info=True,
+        )
 
 
 async def websocket_loop(service: IncidentBotService) -> None:
@@ -212,7 +223,12 @@ async def websocket_loop(service: IncidentBotService) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.error("mattermost.websocket.failed", error=str(exc))
+            log.error(
+                "mattermost.websocket.failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=True,
+            )
             await asyncio.sleep(5)
 
 
@@ -223,7 +239,12 @@ async def pending_work_loop(service: IncidentBotService) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.error("pending_work.failed", error=str(exc))
+            log.error(
+                "pending_work.failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=True,
+            )
         await asyncio.sleep(service.settings.pending_work_interval_seconds)
 
 
@@ -236,7 +257,12 @@ async def authorized_users_refresh_loop(service: IncidentBotService) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.error("authorized_users.refresh_failed", error=str(exc))
+            log.error(
+                "authorized_users.refresh_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=True,
+            )
 
 
 def create_app(
@@ -265,22 +291,43 @@ def create_app(
     else:
         owns_clients = False
 
+    # Self-health observability: the ops handler counts every error event
+    # (bot_errors_total) and, when an ops channel is set, posts it; the metrics
+    # collector exposes ticket gauges on /metrics scrape.
+    ops_notifier: OpsNotifier | None = None
+    if settings.mattermost_ops_channel_id or settings.metrics_enabled:
+        ops_notifier = OpsNotifier(service.mattermost, settings)
+        ops_notifier.install()
+    if settings.metrics_enabled:
+        register_ticket_collector(service.repository)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.service = service
         app.state.owns_clients = owns_clients
         app.state.background_tasks = []
+        # Bind the ops queue before preflight so early startup errors (preflight,
+        # backfill) buffer instead of being dropped before drain() starts.
+        if ops_notifier is not None and ops_notifier.posts_to_channel:
+            ops_notifier.activate()
         await run_startup_preflight(service)
         await service.resolve_authorized_users()
         if settings.enable_backfill_on_startup:
             try:
                 await service.backfill_recent_alerts()
             except Exception as exc:
-                log.error("startup.backfill_failed", error=str(exc))
+                log.error(
+                    "startup.backfill_failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    exc_info=True,
+                )
         if settings.enable_websocket:
             app.state.background_tasks.append(asyncio.create_task(websocket_loop(service)))
         app.state.background_tasks.append(asyncio.create_task(pending_work_loop(service)))
+        if ops_notifier is not None and ops_notifier.posts_to_channel:
+            app.state.background_tasks.append(asyncio.create_task(ops_notifier.drain()))
         if settings.mattermost_authorized_usernames:
             app.state.background_tasks.append(
                 asyncio.create_task(authorized_users_refresh_loop(service))
@@ -301,13 +348,52 @@ def create_app(
 
     app = FastAPI(title="Mattermost Jira Incident Bot", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def error_boundary(request: Request, call_next):
+        """Last-resort error boundary for HTTP endpoints.
+
+        An unhandled exception in a route otherwise yields a bare 500 with no
+        structured event. Here it becomes an ``ERROR`` event (with traceback)
+        that the ops handler counts/forwards, and a clean JSON 500 for the
+        client. ``CancelledError`` is propagated so shutdown stays cooperative.
+        """
+        try:
+            return await call_next(request)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error(
+                "http.request.failed",
+                method=request.method,
+                path=request.url.path,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=True,
+            )
+            return JSONResponse(
+                {"error": "Internal server error."}, status_code=500
+            )
+
     @app.get("/healthz")
     async def healthz() -> dict[str, bool]:
         return {"ok": True}
 
+    if settings.metrics_enabled:
+
+        @app.get("/metrics")
+        async def metrics() -> Response:
+            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
     @app.post("/mattermost/slash/incident")
     async def incident_slash_command(request: Request) -> JSONResponse:
-        raw_body = (await request.body()).decode("utf-8")
+        try:
+            raw_body = (await request.body()).decode("utf-8")
+        except UnicodeDecodeError:
+            log.warning("http.request.bad_body", path=request.url.path)
+            return JSONResponse(
+                {"response_type": "ephemeral", "text": "Malformed request body."},
+                status_code=400,
+            )
         form = {key: values[0] for key, values in parse_qs(raw_body).items()}
 
         slash_token = settings.mattermost_slash_token
@@ -327,9 +413,20 @@ def create_app(
         )
         return JSONResponse({"response_type": response.response_type, "text": response.text})
 
+    async def _parse_json_body(request: Request) -> dict | None:
+        """Return the JSON body, or ``None`` after logging a malformed payload."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            log.warning("http.request.bad_json", path=request.url.path)
+            return None
+        return body if isinstance(body, dict) else {}
+
     @app.post("/mattermost/actions/alert")
     async def alert_action(request: Request) -> JSONResponse:
-        payload = await request.json()
+        payload = await _parse_json_body(request)
+        if payload is None:
+            return JSONResponse({"error": "Malformed request body."}, status_code=400)
         context = payload.get("context") or {}
 
         result = await service.handle_alert_action(
@@ -352,7 +449,9 @@ def create_app(
 
     @app.post("/mattermost/dialogs/feedback")
     async def feedback_dialog(request: Request) -> JSONResponse:
-        payload = await request.json()
+        payload = await _parse_json_body(request)
+        if payload is None:
+            return JSONResponse({"error": "Malformed request body."}, status_code=400)
         result = await service.handle_feedback_dialog_submission(
             user_id=payload.get("user_id", ""),
             state=payload.get("state", ""),

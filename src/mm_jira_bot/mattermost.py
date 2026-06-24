@@ -76,6 +76,8 @@ def parse_reaction_event(payload: dict) -> ReactionEvent | None:
 
 
 class MattermostClient(AsyncApiClient):
+    metrics_client_name = "mattermost"
+
     def __init__(
         self,
         settings: Settings,
@@ -302,6 +304,22 @@ class MattermostClient(AsyncApiClient):
             event="mattermost.create_post",
             parse=lambda response: MattermostPost.from_api(response.json()),
             mattermost_channel_id=channel_id,
+        )
+
+    async def add_reaction(self, post_id: str, emoji_name: str) -> None:
+        """Add an emoji reaction as the bot user. Idempotent — Mattermost does
+        not duplicate an existing (user, post, emoji) reaction."""
+        await self._request(
+            "POST",
+            "/api/v4/reactions",
+            json={
+                "user_id": self._settings.mattermost_bot_user_id,
+                "post_id": post_id,
+                "emoji_name": emoji_name,
+            },
+            error_message="Failed to add Mattermost reaction",
+            event="mattermost.add_reaction",
+            mattermost_post_id=post_id,
         )
 
     async def update_post(

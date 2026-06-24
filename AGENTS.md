@@ -40,7 +40,9 @@ lifespan, launches two background asyncio tasks against one
 - **`pending_work_loop`** — every `PENDING_WORK_INTERVAL_SECONDS` calls `process_pending_work()` to retry failed Jira creates and pending confirmations from the DB. This is the durability backbone: any partial failure is recovered here.
 - **`authorized_users_refresh_loop`** (only when `MATTERMOST_AUTHORIZED_USERNAMES` is set) — every `MATTERMOST_AUTHORIZED_REFRESH_SECONDS` (default 300) re-runs `resolve_authorized_users()` so Mattermost group-membership changes propagate. Unlike the startup resolve, a transient/empty refresh keeps the last known-good set instead of failing open.
 
-HTTP endpoints: `GET /healthz`, `POST /mattermost/slash/incident` (the
+HTTP endpoints: `GET /healthz`, `GET /metrics` (Prometheus exposition, mounted
+when `METRICS_ENABLED`, default on; no auth — relies on network isolation like
+debug admin), `POST /mattermost/slash/incident` (the
 `/incident` slash command; validates `MATTERMOST_SLASH_TOKEN` if set), and
 `POST /mattermost/actions/alert` (interactive-button callback → calls
 `service.handle_alert_action`; Mattermost does not sign button callbacks, so this
@@ -73,14 +75,18 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 | `actions.py` | Pure builders/constants for the interactive alert attachments/controls (`context`, menu options, button labels); no I/O. |
 | `summary.py` | Pure builders for the LLM thread-summary prompt and the thread reply. |
 | `retry.py` | `ApiError` + `retry_async` (exponential backoff on 429/5xx only). |
-| `logging.py` | `JsonFormatter` / `TextFormatter` + text-only INFO filtering + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`); format chosen by `LOG_FORMAT`. |
-| `web.py` | FastAPI app factory (`create_app`), background loops, `/healthz` + `/incident` slash. |
+| `logging.py` | `JsonFormatter` / `TextFormatter` + text-only INFO filtering + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`, optional `exc_info=` for tracebacks); format chosen by `LOG_FORMAT`. |
+| `web.py` | FastAPI app factory (`create_app`), HTTP error-boundary middleware (`http.request.failed` with traceback → 500 JSON; `http.request.bad_json`/`bad_body` → 400), background loops, `/healthz` + `/incident` slash. |
 | `debug_admin.py` | Optional debug-admin UI/API (`register_debug_admin`), gated by `DEBUG_ADMIN_ENABLED`. |
+| `ops.py` | `OpsNotifier` + `OpsLogHandler`: forward `ERROR` events from `mm_jira_bot.*` to the `MATTERMOST_OPS_CHANNEL_ID` channel (best-effort, per-event cooldown, `_posting` contextvar recursion guard, bounded queue). Counts `bot_errors_total` even without a channel. |
+| `metrics.py` | Prometheus definitions (HTTP counters/histogram, `bot_errors_total`, ticket gauges via `TicketStatsCollector`) on the default `REGISTRY`. HTTP metrics observed in `AsyncApiClient._request`; gauges sampled lazily on scrape. |
 | `config.py` | `.env` loader + `Settings.from_env()`. |
 
 ### Two flows, both idempotent
 
-1. **Alert → Jira issue** (`handle_alert_post`): skip non-alert-channel, own-bot, and resolved-alert posts (`is_resolved_alert`) → `create_or_get_alert` inserts an `alert_tickets` row (unique `mattermost_post_id`) → `_ensure_jira_issue` creates the Jira issue, stores `jira_issue_key`, and replies in the alert thread with the issue link. When `MATTERMOST_DUTY_MENTION` is set, that reply carries the on-call mention as bare text above the boxed "Создана задача" notice so the ping fires (resolved alerts are skipped before this point, so only firing alerts ping). The DB row is created *before* the Jira call so a crash mid-create is retried later.
+1. **Alert → Jira issue** (`handle_alert_post`): skip non-alert-channel, own-bot posts → `create_or_classify_alert` inserts an `alert_tickets` row (unique `mattermost_post_id`) and classifies it within its **episode** → `_ensure_jira_issue` creates the Jira issue, stores `jira_issue_key`, and replies in the alert thread with the issue link. When `MATTERMOST_DUTY_MENTION` is set, that reply carries the on-call mention as bare text above the boxed "Создана задача" notice so the ping fires (resolved alerts never reach this point, so only firing alerts ping). The DB row is created *before* the Jira call so a crash mid-create is retried later.
+   - **Episodes / expected repeats.** An episode is `(alert_signature, channel)` — `alert_signature` is keyed on the extracted **title** (`extract_alert_title`), *not* the grafana UID, so a firing and its `✅` resolve (which may drop the link) stay symmetric and the episode closes correctly. The first firing is the **root** (`root_post_id IS NULL`); every later firing of the same title in the same channel while the episode is open is a **repeat**: `_handle_expected_repeat` adds the `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` reaction (the bot's only self-added reaction, via `MattermostClient.add_reaction`), sets the repeat issue's `Валидность = Ожидаемый`, rewrites its description to append a root-links block (`build_expected_alert_block`), creates a real Jira `is child of` link to the root (`JiraClient.link_child_of`, type name auto-resolved from `JIRA_REPEAT_LINK_INWARD`), and posts a "Прилинковано к" notice. Idempotent steps run every delivery; the non-idempotent link + notice are guarded by `expected_repeat_linked` (set only after the link call returns, so a failed link is retried, not lost). The `uq_active_root` partial-unique index enforces one active root per episode and resolves the concurrent first-firing race (the loser retries as a repeat).
+   - **Resolve invariant.** A resolved (`✅`) post (`is_resolved_alert`) creates **no ticket and no Jira issue** — `mark_episode_resolved` only stamps `resolved_at` on the open episode's root, so the next firing of that title becomes a fresh root and the cycle repeats.
 2. **Confirmation → valid incident** (`confirm_incident`, triggered by the `:incident:` reaction or `/incident <permalink>`): posts to the incidents channel, sets Jira `Valid Incident = Валидный`, adds a comment, optional transition, and replies in the alert thread about the status change. If the Jira issue does not exist yet, it is saved as `pending_confirmation` and completed by `pending_work_loop`.
 
 When `JIRA_CREATE_ENABLED=false` (test mode), the `JiraClient` makes **no Jira

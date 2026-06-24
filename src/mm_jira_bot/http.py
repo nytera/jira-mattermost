@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from time import perf_counter
 from typing import Any, TypeVar
 
 import httpx
 
 from mm_jira_bot.config import Settings
 from mm_jira_bot.logging import EventLogger
+from mm_jira_bot.metrics import observe_http
 from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
 
 T = TypeVar("T")
@@ -32,6 +34,9 @@ class AsyncApiClient:
     Owns the httpx client lifecycle and folds the per-request retry/HTTP
     boilerplate into ``_request`` / ``_retry``.
     """
+
+    #: Label for Prometheus HTTP metrics; overridden per concrete client.
+    metrics_client_name: str = "unknown"
 
     def __init__(
         self,
@@ -79,12 +84,18 @@ class AsyncApiClient:
         **fields: Any,
     ) -> T | None:
         async def operation() -> T | None:
+            started = perf_counter()
+            status = "error"
             try:
-                response = await self._client.request(method, path, json=json, params=params)
-            except httpx.HTTPError as exc:
-                raise wrap_transport_error(error_message, exc) from exc
-            self._raise_for_status(response, error_message)
-            return parse(response) if parse is not None else None
+                try:
+                    response = await self._client.request(method, path, json=json, params=params)
+                except httpx.HTTPError as exc:
+                    raise wrap_transport_error(error_message, exc) from exc
+                status = str(response.status_code)
+                self._raise_for_status(response, error_message)
+                return parse(response) if parse is not None else None
+            finally:
+                observe_http(self.metrics_client_name, method, status, perf_counter() - started)
 
         return await self._retry(operation, event=event, **fields)
 

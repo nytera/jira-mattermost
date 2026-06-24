@@ -120,12 +120,16 @@ class Settings:
     interactive_buttons_enabled: bool = False
     duty_help_enabled: bool = True
     jira_time_to_fix_field: str | None = None
+    jira_repeat_link_inward: str = "is child of"
     mattermost_false_incident_reaction_name: str = "man_gesturing_no"
     mattermost_expected_incident_reaction_name: str = "arrows_counterclockwise"
     mattermost_summary_reaction_name: str = "memo"
     mattermost_authorized_usernames: tuple[str, ...] = ()
     mattermost_authorized_refresh_seconds: int = 300
     mattermost_duty_mention: str | None = None
+    mattermost_ops_channel_id: str | None = None
+    ops_cooldown_seconds: int = 300
+    metrics_enabled: bool = True
     log_level: str = "INFO"
     log_format: str = "json"
     api_retry_attempts: int = 4
@@ -173,6 +177,7 @@ class Settings:
             jira_end_field=_env("JIRA_END_FIELD"),
             jira_time_to_fix_field=_env("JIRA_TIME_TO_FIX_FIELD"),
             jira_confirmed_status_id=_env("JIRA_CONFIRMED_STATUS_ID"),
+            jira_repeat_link_inward=_env("JIRA_REPEAT_LINK_INWARD", "is child of"),
             jira_create_enabled=_env("JIRA_CREATE_ENABLED", "true") != "false",
             jira_stub_issue_key=_env("JIRA_STUB_ISSUE_KEY"),
             database_url=_required("DATABASE_URL"),
@@ -195,6 +200,9 @@ class Settings:
                 "MATTERMOST_AUTHORIZED_REFRESH_SECONDS", 300
             ),
             mattermost_duty_mention=_env("MATTERMOST_DUTY_MENTION"),
+            mattermost_ops_channel_id=_env("MATTERMOST_OPS_CHANNEL_ID"),
+            ops_cooldown_seconds=_int_env("MATTERMOST_OPS_COOLDOWN_SECONDS", 300),
+            metrics_enabled=_env("METRICS_ENABLED", "true") != "false",
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),

@@ -107,6 +107,21 @@ def extract_alert_title(message: str, *, limit: int = 120) -> str:
     return "Band alert"
 
 
+def alert_signature(message: str) -> str:
+    """Stable identity for grouping repeated firings of the same alert.
+
+    Keyed on the extracted title rather than the Grafana rule UID: the alert
+    link is not always present (some alerts arrive as plain text, and a resolved
+    ✅ repost may drop the link), so a UID-first key would make a firing and its
+    resolve diverge and the episode would never close. ``extract_alert_title``
+    recovers the same title from both the link text and the plain line, and
+    strips the leading 🔴/✅ markers, so it stays symmetric across firing/resolve
+    and link presence. Trade-off: two distinct rules sharing a title merge into
+    one episode (a single stray "expected" mark, human-recoverable).
+    """
+    return f"title:{extract_alert_title(message)}"
+
+
 def _jira_link(jira_issue_key: str | None, jira_issue_url: str | None) -> str:
     if jira_issue_key and jira_issue_url:
         return f"[{jira_issue_key}]({jira_issue_url})"
@@ -115,6 +130,12 @@ def _jira_link(jira_issue_key: str | None, jira_issue_url: str | None) -> str:
 
 def format_thread_issue_created(*, jira_issue_key: str, jira_issue_url: str | None) -> str:
     return f"Создана задача Jira: {_jira_link(jira_issue_key, jira_issue_url)}"
+
+
+def format_thread_linked_to_root(
+    *, root_issue_key: str | None, root_issue_url: str | None
+) -> str:
+    return f"Прилинковано к корневой задаче: {_jira_link(root_issue_key, root_issue_url)}"
 
 
 def format_thread_status_changed(*, incident_message_url: str | None) -> str:

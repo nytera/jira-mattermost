@@ -34,6 +34,8 @@ NOTICE_ATTACHMENT_COLOR = "#64748B"
 # Red/green for incident-channel post: red while open, green when resolved.
 INCIDENT_OPEN_COLOR = "#EF4444"
 INCIDENT_DONE_COLOR = "#22C55E"
+# Deep red accent for bot self-health alerts posted to the ops channel.
+OPS_ALERT_COLOR = "#DC2626"
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 
 import mm_jira_bot.jira as jira_module
 import mm_jira_bot.jira_payload as jira_payload_module
-from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
+from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR, OPS_ALERT_COLOR
 from mm_jira_bot.config import Settings, _csv_env, load_dotenv_file
 from mm_jira_bot.domain import (
     JiraIssue,
@@ -21,13 +22,17 @@ from mm_jira_bot.domain import (
     datetime_from_mattermost_ms,
 )
 from mm_jira_bot.formatting import (
+    alert_signature,
     format_alert_duty_help,
     format_incident_duty_help,
     format_incident_message,
 )
 from mm_jira_bot.jira_payload import build_jira_issue_payload
 from mm_jira_bot.llm import PostmortemLlmClient
+from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import MattermostClient
+from mm_jira_bot.metrics import errors_total
+from mm_jira_bot.ops import OpsLogHandler, OpsNotifier
 from mm_jira_bot.postmortem import (
     DEFAULT_POSTMORTEM_PROMPT,
     build_postmortem_comment,
@@ -61,6 +66,10 @@ class FakeMattermostClient:
         self.group_name_to_id: dict[str, str] = {}
         self.group_members: dict[str, set[str]] = {}
         self.group_lookups: list[list[str]] = []
+        self.reactions: list[tuple[str, str]] = []
+
+    async def add_reaction(self, post_id: str, emoji_name: str) -> None:
+        self.reactions.append((post_id, emoji_name))
 
     def permalink(self, post_id: str) -> str:
         return f"https://mattermost.example.com/_redirect/pl/{post_id}"
@@ -166,6 +175,10 @@ class FakeJiraClient:
         self.descriptions: list[tuple[str, str]] = []
         self.postmortem_payloads: list[dict] = []
         self.generic_comments: list[tuple[str, str]] = []
+        self.links: list[tuple[str, str]] = []
+
+    async def link_child_of(self, child_key: str, parent_key: str) -> None:
+        self.links.append((child_key, parent_key))
 
     async def create_issue(
         self,
@@ -597,8 +610,10 @@ async def test_reuses_display_stub_jira_issue_without_db_conflict(settings):
             jira_stub_issue_key="ADSDEV-12024",
         )
     )
-    first_post = make_alert(post_id="firststubalertpost00000001")
-    second_post = make_alert(post_id="secondstubalertpost0000002")
+    # Distinct messages → distinct signatures, so both are independent root
+    # alerts (not a root + expected repeat) and each gets its own stub key.
+    first_post = make_alert(post_id="firststubalertpost00000001", message="Disk above 90%")
+    second_post = make_alert(post_id="secondstubalertpost0000002", message="Memory above 80%")
     service.mattermost.posts[first_post.id] = first_post
     service.mattermost.posts[second_post.id] = second_post
 
@@ -728,6 +743,151 @@ async def test_does_not_create_two_issues_for_same_post_id(service):
     await service.handle_alert_post(post)
 
     assert len(service.jira.created_payloads) == 1
+
+
+def test_alert_signature_symmetry_link_vs_plain():
+    firing = (
+        "🔴 [DiskFull](https://grafana.wb.ru/alerting/grafana/abc123/view)\nState: Alerting"
+    )
+    resolve = "✅ DiskFull"
+    assert alert_signature(firing) == alert_signature(resolve)
+
+
+def test_alert_signature_symmetry_plain():
+    assert alert_signature("🔴 CPU usage is above 95%") == alert_signature(
+        "✅ CPU usage is above 95%"
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_firing_is_root(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket.root_post_id is None
+    assert service.mattermost.reactions == []
+    assert service.jira.links == []
+    assert service.jira.descriptions == []
+
+
+@pytest.mark.asyncio
+async def test_repeat_firing_marked_expected(service):
+    root_post = make_alert(post_id="rootpost00000000000000001")
+    repeat_post = make_alert(post_id="repeatpost000000000000001")
+    for post in (root_post, repeat_post):
+        service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(root_post)
+    await service.handle_alert_post(repeat_post)
+
+    root = service.repository.get_by_post_id(root_post.id)
+    repeat = service.repository.get_by_post_id(repeat_post.id)
+    assert repeat.root_post_id == root_post.id
+    assert repeat.jira_issue_key == "OPS-2"
+    # Reaction lands on the repeat message, not the root.
+    assert (repeat_post.id, "arrows_counterclockwise") in service.mattermost.reactions
+    # Validity "Ожидаемый" on the repeat issue.
+    assert ("OPS-2", "Ожидаемый") in service.jira.validity_updates
+    assert repeat.validity_label == "Ожидаемый"
+    # Description carries the root links.
+    description = dict(service.jira.descriptions)["OPS-2"]
+    assert root.mattermost_message_url in description
+    assert "OPS-1" in description
+    # A real Jira "is child of" link from repeat to root.
+    assert ("OPS-2", "OPS-1") in service.jira.links
+    # And a "Прилинковано к" notice in the thread.
+    assert any(
+        "Прилинковано к" in _reply_text(reply) for reply in service.mattermost.created_posts
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_closes_episode_creates_nothing(service):
+    root_post = make_alert(post_id="rootpost00000000000000002")
+    repeat_post = make_alert(post_id="repeatpost000000000000002")
+    resolve_post = make_alert(
+        post_id="resolvepost00000000000002", message="✅ CPU usage is above 95%"
+    )
+    for post in (root_post, repeat_post, resolve_post):
+        service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(root_post)
+    await service.handle_alert_post(repeat_post)
+    issues_before = len(service.jira.created_payloads)
+    result = await service.handle_alert_post(resolve_post)
+
+    assert result is None
+    assert len(service.jira.created_payloads) == issues_before
+    assert service.repository.get_by_post_id(resolve_post.id) is None
+    assert service.repository.get_by_post_id(root_post.id).resolved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refiring_after_resolve_becomes_new_root(service):
+    first = make_alert(post_id="firstpost0000000000000001")
+    resolve = make_alert(
+        post_id="resolvepost00000000000003", message="✅ CPU usage is above 95%"
+    )
+    second = make_alert(post_id="secondpost000000000000001")
+    for post in (first, resolve, second):
+        service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(first)
+    await service.handle_alert_post(resolve)
+    reactions_before = list(service.mattermost.reactions)
+    await service.handle_alert_post(second)
+
+    assert service.repository.get_by_post_id(second.id).root_post_id is None
+    assert service.mattermost.reactions == reactions_before
+
+
+@pytest.mark.asyncio
+async def test_repeat_redelivery_no_duplicate_link(service):
+    root_post = make_alert(post_id="rootpost00000000000000003")
+    repeat_post = make_alert(post_id="repeatpost000000000000003")
+    for post in (root_post, repeat_post):
+        service.mattermost.posts[post.id] = post
+
+    await service.handle_alert_post(root_post)
+    await service.handle_alert_post(repeat_post)
+    await service.handle_alert_post(repeat_post)
+
+    assert service.jira.links.count(("OPS-2", "OPS-1")) == 1
+    notices = [
+        reply
+        for reply in service.mattermost.created_posts
+        if "Прилинковано к" in _reply_text(reply)
+    ]
+    assert len(notices) == 1
+
+
+@pytest.mark.asyncio
+async def test_bot_own_expected_reaction_is_ignored(service):
+    # The bot's own "Ожидаемый" reaction echoes back over the websocket; it must
+    # not re-enter the validity path or post an unauthorized notice.
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id="anypost", user_id="bot-user", emoji_name="arrows_counterclockwise", create_at=1
+        )
+    )
+    assert result.status.name == "IGNORED"
+    assert service.jira.validity_updates == []
+    assert service.mattermost.created_posts == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_without_active_root_is_noop(service):
+    resolve_post = make_alert(
+        post_id="resolvepost00000000000004", message="✅ CPU usage is above 95%"
+    )
+    service.mattermost.posts[resolve_post.id] = resolve_post
+
+    result = await service.handle_alert_post(resolve_post)
+
+    assert result is None
+    assert len(service.jira.created_payloads) == 0
 
 
 @pytest.mark.asyncio
@@ -1320,6 +1480,63 @@ def test_slash_command_handles_missing_jira_mapping(service, settings):
     assert response.status_code == 200
     assert "Incident confirmed" in response.json()["text"]
     assert len(service.jira.created_payloads) == 1
+
+
+def _capture_bot_logs(records: list[logging.LogRecord]):
+    """Attach a record collector to ``mm_jira_bot``.
+
+    ``create_app`` runs ``configure_logging`` which clears root handlers (and so
+    pytest's ``caplog``), so capture on the bot logger after the app is built.
+    """
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger = logging.getLogger("mm_jira_bot")
+    logger.addHandler(handler)
+    return logger, handler
+
+
+def test_http_error_boundary_returns_500_and_logs(service, settings):
+    async def boom(**kwargs):
+        raise RuntimeError("kaboom")
+
+    service.handle_feedback_dialog_submission = boom
+    app = create_app(settings, service=service)
+    records: list[logging.LogRecord] = []
+    logger, handler = _capture_bot_logs(records)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(
+                "/mattermost/dialogs/feedback",
+                json={"user_id": "u", "state": "s", "submission": {}},
+            )
+    finally:
+        logger.removeHandler(handler)
+
+    assert response.status_code == 500
+    assert response.json() == {"error": "Internal server error."}
+    failures = [r for r in records if r.msg == "http.request.failed"]
+    assert failures
+    assert failures[0].exc_info is not None
+    assert failures[0].extra_fields["error_type"] == "RuntimeError"
+    assert failures[0].extra_fields["path"] == "/mattermost/dialogs/feedback"
+
+
+def test_alert_action_rejects_malformed_json(service, settings):
+    app = create_app(settings, service=service)
+    records: list[logging.LogRecord] = []
+    logger, handler = _capture_bot_logs(records)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/mattermost/actions/alert",
+                content="{not json",
+                headers={"content-type": "application/json"},
+            )
+    finally:
+        logger.removeHandler(handler)
+
+    assert response.status_code == 400
+    assert "http.request.bad_json" in [r.msg for r in records]
 
 
 def test_debug_admin_routes_are_disabled_by_default(service, settings):
@@ -3447,6 +3664,109 @@ async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
     ]
     assert len(cards) == 1
     assert cards[0]["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
+
+
+# --- Ops alerts channel & Prometheus metrics ---------------------------------
+
+
+def _error_record(event: str, level: int = logging.ERROR, **fields) -> logging.LogRecord:
+    record = logging.LogRecord("mm_jira_bot.test", level, __file__, 1, event, None, None)
+    record.extra_fields = {"event": event, **fields}
+    return record
+
+
+def _errors_counter(event: str) -> float:
+    return errors_total.labels(event=event)._value.get()
+
+
+def test_ops_handler_counts_errors_and_skips_non_errors():
+    handler = OpsLogHandler(cooldown_seconds=300)
+    before = _errors_counter("ops.test.boom")
+    handler.emit(_error_record("ops.test.boom"))
+    handler.emit(_error_record("ops.test.boom"))
+    handler.emit(_error_record("ops.test.warn", level=logging.WARNING))
+    assert _errors_counter("ops.test.boom") - before == 2
+    # A non-error record is ignored entirely (no counter for it).
+    assert _errors_counter("ops.test.warn") == 0
+
+
+@pytest.mark.asyncio
+async def test_ops_handler_enqueues_once_within_cooldown():
+    handler = OpsLogHandler(cooldown_seconds=300)
+    queue: asyncio.Queue = asyncio.Queue()
+    handler.activate(queue, asyncio.get_running_loop())
+    handler.emit(_error_record("ops.test.evt", error="x"))
+    handler.emit(_error_record("ops.test.evt", error="x"))  # cooldown suppresses repeat
+    await asyncio.sleep(0)  # let call_soon_threadsafe run
+    assert queue.qsize() == 1
+    payload = queue.get_nowait()
+    assert payload["event"] == "ops.test.evt"
+    assert payload["fields"]["error"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_ops_notifier_posts_boxed_alert(service, settings):
+    notifier = OpsNotifier(
+        service.mattermost, replace(settings, mattermost_ops_channel_id="ops-channel")
+    )
+    await notifier._post({"event": "pending_work.failed", "fields": {"error": "boom"}})
+    posted = service.mattermost.created_posts
+    assert len(posted) == 1
+    attachment = posted[0]["props"]["attachments"][0]
+    assert posted[0]["channel_id"] == "ops-channel"
+    assert attachment["color"] == OPS_ALERT_COLOR
+    assert "pending_work.failed" in attachment["text"]
+    assert "boom" in attachment["text"]
+
+
+@pytest.mark.asyncio
+async def test_ops_notifier_post_is_best_effort(service, settings):
+    async def boom(**_kwargs):
+        raise ApiError("mattermost down")
+
+    service.mattermost.create_post = boom
+    notifier = OpsNotifier(
+        service.mattermost, replace(settings, mattermost_ops_channel_id="ops-channel")
+    )
+    # Must not raise even though the underlying post fails.
+    await notifier._post({"event": "boom", "fields": {}})
+
+
+@pytest.mark.asyncio
+async def test_ops_notifier_buffers_startup_errors(service, settings):
+    """activate() runs before preflight, so an early ERROR is buffered (not
+    dropped) and later posted when drain consumes it."""
+    notifier = OpsNotifier(
+        service.mattermost, replace(settings, mattermost_ops_channel_id="ops-channel")
+    )
+    notifier.install()
+    notifier.activate()
+    try:
+        get_logger("mm_jira_bot.service").error("startup.preflight.check_failed", dependency="jira")
+        await asyncio.sleep(0)  # let call_soon_threadsafe enqueue
+        assert notifier._queue.qsize() == 1
+        await notifier._post(notifier._queue.get_nowait())
+        assert service.mattermost.created_posts[0]["channel_id"] == "ops-channel"
+    finally:
+        logging.getLogger("mm_jira_bot").removeHandler(notifier._handler)
+
+
+def test_metrics_endpoint_exposes_series(service, settings):
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.get("/metrics")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    body = response.text
+    assert "bot_http_requests_total" in body
+    assert "bot_tickets_total" in body
+
+
+def test_metrics_endpoint_absent_when_disabled(service, settings):
+    app = create_app(replace(settings, metrics_enabled=False), service=service)
+    with TestClient(app) as client:
+        response = client.get("/metrics")
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

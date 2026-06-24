@@ -85,6 +85,8 @@ def _next_start_at(data: dict[str, Any], values: list[Any], start_at: int) -> in
 
 
 class JiraClient(AsyncApiClient):
+    metrics_client_name = "jira"
+
     def __init__(
         self,
         settings: Settings,
@@ -94,6 +96,7 @@ class JiraClient(AsyncApiClient):
         self._field_ids: dict[str, str] = {}
         self._create_fields: dict[str, Any] | None = None
         self._issue_type_id: str | None = None
+        self._link_type_name: str | None = None
         log.info(
             "jira.client.configured",
             jira_base_url=settings.jira_base_url,
@@ -469,6 +472,75 @@ class JiraClient(AsyncApiClient):
             event="jira.add_comment",
             jira_issue_key=issue_key,
         )
+
+    async def link_child_of(self, child_key: str, parent_key: str) -> None:
+        """Create a Jira issue link so ``child_key`` "is child of" ``parent_key``.
+
+        Not idempotent — Jira creates a duplicate link on each call, so the
+        caller must guard with a persisted flag.
+        """
+        if not self._settings.jira_create_enabled:
+            return
+        link_type_name = await self._get_link_type_name()
+        await self._request(
+            "POST",
+            self._api_path("issueLink"),
+            json={
+                "type": {"name": link_type_name},
+                "inwardIssue": {"key": child_key},
+                "outwardIssue": {"key": parent_key},
+            },
+            error_message="Failed to link Jira issues",
+            event="jira.link_issues",
+            jira_issue_key=child_key,
+            parent_issue_key=parent_key,
+        )
+
+    async def _get_link_type_name(self) -> str:
+        """Resolve the issue-link type whose inward (or name) matches the
+        configured ``JIRA_REPEAT_LINK_INWARD`` (default "is child of") to its
+        ``name`` for the issueLink API. Cached after first lookup."""
+        if self._link_type_name is not None:
+            return self._link_type_name
+
+        configured = self._settings.jira_repeat_link_inward.casefold()
+
+        async def operation() -> str:
+            response = await self._client.get(self._api_path("issueLinkType"))
+            self._raise_for_status(response, "Failed to fetch Jira issue link types")
+            link_types = response.json().get("issueLinkTypes", [])
+            available: list[str] = []
+            for link_type in link_types:
+                if not isinstance(link_type, dict):
+                    continue
+                name = link_type.get("name")
+                if isinstance(name, str):
+                    available.append(name)
+                if not isinstance(name, str) or not name:
+                    continue
+                if (
+                    name.casefold() == configured
+                    or str(link_type.get("inward", "")).casefold() == configured
+                    or str(link_type.get("outward", "")).casefold() == configured
+                ):
+                    log.info(
+                        "jira.link_type.resolved",
+                        configured=self._settings.jira_repeat_link_inward,
+                        link_type_name=name,
+                    )
+                    return name
+            raise ApiError(
+                f"Jira issue link type matching '{self._settings.jira_repeat_link_inward}' "
+                f"was not found. Available link types: {', '.join(available) or 'none'}",
+                retryable=False,
+            )
+
+        self._link_type_name = await self._retry(
+            operation,
+            event="jira.get_link_type",
+            configured=self._settings.jira_repeat_link_inward,
+        )
+        return self._link_type_name
 
     async def transition_issue(self, issue_key: str, transition_id: str) -> None:
         if not self._settings.jira_create_enabled:

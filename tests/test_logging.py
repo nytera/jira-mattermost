@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 
 from mm_jira_bot.logging import (
     JsonFormatter,
@@ -98,3 +99,35 @@ def test_event_logger_passes_fields_through() -> None:
 
     assert records
     assert records[0].extra_fields == {"event": "some.event", "key": "value"}
+
+
+def test_event_logger_attaches_exc_info() -> None:
+    log = get_logger("mm_jira_bot.test")
+    records: list[logging.LogRecord] = []
+
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    stdlib_logger = logging.getLogger("mm_jira_bot.test")
+    stdlib_logger.addHandler(handler)
+    stdlib_logger.setLevel(logging.ERROR)
+    try:
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            log.error("some.error", exc_info=True)
+    finally:
+        stdlib_logger.removeHandler(handler)
+
+    assert records
+    assert records[0].exc_info is not None
+    assert records[0].exc_info[0] is ValueError
+
+
+def test_json_formatter_includes_exception_when_present() -> None:
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        record = _record("some.error", level=logging.ERROR)
+        record.exc_info = sys.exc_info()
+    payload = json.loads(JsonFormatter().format(record))
+    assert "ValueError" in payload["exception"]

@@ -55,6 +55,29 @@ def build_jira_description(
     return "\n".join(lines)
 
 
+def build_expected_alert_block(
+    *,
+    root_message_url: str | None,
+    root_issue_key: str | None,
+    root_issue_url: str | None,
+) -> str:
+    """Wiki block appended to a repeat alert's description, linking it back to the
+    root of the still-open episode."""
+    root_alert = f"[Открыть в Band|{root_message_url}]" if root_message_url else "—"
+    root_task = (
+        f"[{root_issue_key}|{root_issue_url}]"
+        if root_issue_key and root_issue_url
+        else (root_issue_key or "—")
+    )
+    return (
+        "----\n"
+        "h3. ♻️ Ожидаемый алерт (повтор)\n"
+        "||Параметр||Значение||\n"
+        f"|Корневой алерт|{root_alert}|\n"
+        f"|Корневая задача|{root_task}|"
+    )
+
+
 def build_jira_issue_payload(
     settings: Settings,
     valid_incident_field_id: str,

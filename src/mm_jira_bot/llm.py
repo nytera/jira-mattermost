@@ -88,6 +88,8 @@ def build_llm_auth_headers(settings: Settings) -> dict[str, str]:
 
 
 class PostmortemLlmClient(AsyncApiClient):
+    metrics_client_name = "llm"
+
     def __init__(
         self,
         settings: Settings,

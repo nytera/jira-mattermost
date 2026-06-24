@@ -52,6 +52,9 @@ TEXT_FIELD_ALIASES = {
     "duration_ms": "duration_ms",
     "status": "status",
     "error": "error",
+    "error_type": "error_type",
+    "method": "method",
+    "path": "path",
     "created": "created",
 }
 
@@ -220,28 +223,47 @@ def log_event(
     logger: logging.Logger,
     level: int,
     event: str,
+    *,
+    exc_info: bool | BaseException | None = None,
     **fields: Any,
 ) -> None:
-    logger.log(level, event, extra={"extra_fields": {"event": event, **fields}})
+    logger.log(
+        level,
+        event,
+        exc_info=exc_info,
+        extra={"extra_fields": {"event": event, **fields}},
+    )
 
 
 class EventLogger:
-    """Binds a stdlib logger so call sites read ``log.info(event, **fields)``."""
+    """Binds a stdlib logger so call sites read ``log.info(event, **fields)``.
+
+    Pass ``exc_info=True`` inside an ``except`` block (or an explicit exception)
+    to attach a traceback; every formatter/handler already renders it.
+    """
 
     def __init__(self, logger: logging.Logger) -> None:
         self._logger = logger
 
-    def info(self, event: str, **fields: Any) -> None:
-        log_event(self._logger, logging.INFO, event, **fields)
+    def info(
+        self, event: str, *, exc_info: bool | BaseException | None = None, **fields: Any
+    ) -> None:
+        log_event(self._logger, logging.INFO, event, exc_info=exc_info, **fields)
 
-    def warning(self, event: str, **fields: Any) -> None:
-        log_event(self._logger, logging.WARNING, event, **fields)
+    def warning(
+        self, event: str, *, exc_info: bool | BaseException | None = None, **fields: Any
+    ) -> None:
+        log_event(self._logger, logging.WARNING, event, exc_info=exc_info, **fields)
 
-    def error(self, event: str, **fields: Any) -> None:
-        log_event(self._logger, logging.ERROR, event, **fields)
+    def error(
+        self, event: str, *, exc_info: bool | BaseException | None = None, **fields: Any
+    ) -> None:
+        log_event(self._logger, logging.ERROR, event, exc_info=exc_info, **fields)
 
-    def debug(self, event: str, **fields: Any) -> None:
-        log_event(self._logger, logging.DEBUG, event, **fields)
+    def debug(
+        self, event: str, *, exc_info: bool | BaseException | None = None, **fields: Any
+    ) -> None:
+        log_event(self._logger, logging.DEBUG, event, exc_info=exc_info, **fields)
 
 
 def get_logger(name: str) -> EventLogger:

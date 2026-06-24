@@ -39,11 +39,13 @@ from mm_jira_bot.domain import (
     runtime_timezone,
 )
 from mm_jira_bot.formatting import (
+    alert_signature,
     extract_alert_title,
     format_alert_duty_help,
     format_incident_duty_help,
     format_incident_message,
     format_thread_issue_created,
+    format_thread_linked_to_root,
     format_thread_status_changed,
     format_thread_validity_changed,
     is_resolved_alert,
@@ -56,7 +58,11 @@ from mm_jira_bot.jira import (
     VALID_INCIDENT_FALSE_VALUE,
     stub_jira_issue,
 )
-from mm_jira_bot.jira_payload import build_postmortem_description
+from mm_jira_bot.jira_payload import (
+    build_expected_alert_block,
+    build_jira_description,
+    build_postmortem_description,
+)
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.postmortem import (
@@ -436,25 +442,36 @@ class IncidentBotService:
             )
             return None
 
+        signature = alert_signature(post.message)
+
         if is_resolved_alert(post.message):
+            # A resolved (✅) repost never creates a ticket or Jira issue — it only
+            # closes the open episode so the next firing becomes a fresh root.
+            resolved_at = datetime_from_mattermost_ms(post.create_at) or backend_now()
+            root = self.repository.mark_episode_resolved(
+                signature, post.channel_id, resolved_at
+            )
             log.info(
-                "mattermost.post.skipped_resolved_alert",
+                "mattermost.episode.resolved",
                 mattermost_post_id=post.id,
+                alert_signature=signature,
+                found=root is not None,
             )
             return None
 
         channel_name = post.channel_name or await self.mattermost.get_channel_name(post.channel_id)
         message_url = self.mattermost.permalink(post.id)
-        ticket, created = self.repository.create_or_get_alert(
-            post, message_url=message_url, channel_name=channel_name
+        ticket, created, root = self.repository.create_or_classify_alert(
+            post, message_url=message_url, channel_name=channel_name, signature=signature
         )
         log.info(
             "mattermost.alert.received",
             mattermost_post_id=post.id,
             created=created,
+            is_repeat=root is not None,
         )
 
-        if not created and ticket.jira_issue_key:
+        if root is None and not created and ticket.jira_issue_key:
             log.info(
                 "jira.issue.skipped_existing_mapping",
                 mattermost_post_id=post.id,
@@ -463,6 +480,9 @@ class IncidentBotService:
             return ticket
 
         await self._ensure_jira_issue(ticket)
+        if root is not None:
+            ticket = self.repository.get_by_post_id(post.id) or ticket
+            await self._handle_expected_repeat(ticket, root)
         ticket = self.repository.get_by_post_id(post.id)
         if ticket and ticket.confirmation_status in {
             "pending_confirmation",
@@ -494,6 +514,15 @@ class IncidentBotService:
             emoji_name=reaction.emoji_name,
             user_id=reaction.user_id,
         )
+        if reaction.user_id == self.settings.mattermost_bot_user_id:
+            # The bot adds its own "Ожидаемый" reaction on repeat alerts; that
+            # event echoes back over the websocket. Ignore it so it never
+            # re-enters the validity path (or posts an unauthorized notice when
+            # an allowlist is configured).
+            return ConfirmationResult(
+                status=ConfirmationStatus.IGNORED,
+                message="Reaction ignored: bot's own reaction.",
+            )
         is_incident = reaction.emoji_name == self.settings.mattermost_incident_reaction_name
         is_summary = reaction.emoji_name == self.settings.mattermost_summary_reaction_name
         validity_label = (
@@ -2372,6 +2401,96 @@ class IncidentBotService:
                 mattermost_post_id=ticket.mattermost_post_id,
                 error=str(exc),
             )
+
+    async def _handle_expected_repeat(self, ticket: AlertTicket, root: AlertTicket) -> None:
+        """Annotate a repeat firing as an expected duplicate of an open episode.
+
+        Idempotent steps (reaction, validity, description) run on every delivery;
+        the non-idempotent Jira "is child of" link and the "Прилинковано к" notice
+        are guarded by the persisted ``expected_repeat_linked`` flag. The flag is
+        set only after the link call returns, so a link failure is retried on the
+        next delivery rather than silently lost.
+        """
+        if not ticket.jira_issue_key:
+            return  # Jira issue creation failed upstream; nothing to annotate yet.
+
+        try:
+            await self.mattermost.add_reaction(
+                ticket.mattermost_post_id,
+                self.settings.mattermost_expected_incident_reaction_name,
+            )
+        except ApiError as exc:
+            log.warning(
+                "mattermost.expected_reaction.failed",
+                mattermost_post_id=ticket.mattermost_post_id,
+                error=str(exc),
+            )
+
+        try:
+            await self.jira.set_validity(ticket.jira_issue_key, VALID_INCIDENT_EXPECTED_VALUE)
+            self.repository.set_validity_label(
+                ticket.mattermost_post_id, VALID_INCIDENT_EXPECTED_VALUE
+            )
+        except ApiError as exc:
+            log.warning(
+                "jira.expected_validity.failed",
+                jira_issue_key=ticket.jira_issue_key,
+                error=str(exc),
+            )
+
+        try:
+            description = (
+                build_jira_description(
+                    ticket_to_post(ticket),
+                    message_url=ticket.mattermost_message_url,
+                    channel_name=ticket.mattermost_channel_name,
+                )
+                + "\n"
+                + build_expected_alert_block(
+                    root_message_url=root.mattermost_message_url,
+                    root_issue_key=root.jira_issue_key,
+                    root_issue_url=root.jira_issue_url,
+                )
+            )
+            await self.jira.set_description(ticket.jira_issue_key, description)
+        except ApiError as exc:
+            log.warning(
+                "jira.expected_description.failed",
+                jira_issue_key=ticket.jira_issue_key,
+                error=str(exc),
+            )
+
+        if ticket.expected_repeat_linked:
+            return
+        if not root.jira_issue_key:
+            log.warning(
+                "jira.expected_link.skipped_root_without_issue",
+                mattermost_post_id=ticket.mattermost_post_id,
+            )
+            return
+        try:
+            await self.jira.link_child_of(ticket.jira_issue_key, root.jira_issue_key)
+        except ApiError as exc:
+            # Linking is an explicit requirement; leave the flag false so the next
+            # delivery retries instead of permanently losing the link.
+            log.error(
+                "jira.expected_link.failed",
+                jira_issue_key=ticket.jira_issue_key,
+                root_issue_key=root.jira_issue_key,
+                error=str(exc),
+            )
+            return
+        self.repository.mark_expected_repeat_linked(ticket.mattermost_post_id)
+        await self._post_alert_thread_reply(
+            ticket.mattermost_post_id,
+            channel_id=ticket.mattermost_channel_id,
+            message=format_thread_linked_to_root(
+                root_issue_key=root.jira_issue_key,
+                root_issue_url=root.jira_issue_url,
+            ),
+            event="mattermost.alert_thread.linked_to_root",
+            props={"jira_issue_key": ticket.jira_issue_key},
+        )
 
     async def _create_jira_issue(self, ticket: AlertTicket) -> JiraIssue:
         if not self.settings.jira_create_enabled:

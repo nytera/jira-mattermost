@@ -11,6 +11,72 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Автораспознавание повторных («ожидаемых») алертов.** Раньше каждый firing
+  заводил отдельную несвязанную задачу. Теперь бот группирует сработки одного
+  алерта в «эпизод» — от первой сработки до резолва (✅) — и помечает повторы:
+  - Сигнатура алерта (`alert_signature` в `formatting.py`) — по заголовку
+    (`extract_alert_title`), не по grafana-UID: ссылка на Grafana есть не всегда,
+    а резолв-репост может прийти без неё, поэтому заголовок симметричен между
+    firing и resolve и эпизод корректно закрывается.
+  - Первая сработка эпизода — «корень» (`root_post_id IS NULL`). Каждый
+    последующий firing того же алерта в том же канале — «повтор»: бот ставит
+    реакцию `arrows_counterclockwise` («Ожидаемый») на сообщение, создаёт свою
+    задачу как обычно, выставляет ей валидность «Ожидаемый», дописывает в её
+    описание ссылки на корневой алерт и корневую задачу, создаёт реальную Jira
+    issue link «is child of» (повтор — ребёнок корня) и постит в тред бокс
+    «Прилинковано к <корневая задача>».
+  - Резолв (✅) закрывает эпизод (`resolved_at` на корне) и сам по себе не создаёт
+    ни тикет, ни задачу. Следующая сработка снова становится корнем — цикл
+    повторяется.
+  - Схема: новые колонки `alert_signature`, `resolved_at`, `root_post_id`,
+    `expected_repeat_linked` в `alert_tickets` + индексы, включая partial-unique
+    `uq_active_root` (гарантирует один активный корень на эпизод и защищает от
+    гонки двух одновременных первых сработок). Миграция
+    `migrations/005_add_episode_tracking_to_alert_tickets.sql`.
+  - Новый клиентский метод `MattermostClient.add_reaction` (бот впервые сам
+    ставит реакции) и `JiraClient.link_child_of` с авто-резолвом имени типа связи
+    через `GET /rest/api/2/issueLinkType` по env `JIRA_REPEAT_LINK_INWARD`
+    (default `is child of`).
+
+- **Логирование ошибок до commercial-grade.** Раньше неожиданные исключения
+  логировались только строкой `error=str(exc)` — без стека, а у обёрнутых
+  transport-ошибок строка вообще пустая. Теперь:
+  - `EventLogger.{info,warning,error,debug}` принимают `exc_info` и пробрасывают
+    его в stdlib-логгер; все форматтеры/хендлеры (`JsonFormatter`,
+    `TextFormatter`, `LogBufferHandler`, debug-admin UI) уже умели рендерить
+    трейсбек — теперь он действительно попадает в логи.
+  - Все catch-all обработчики неожиданных ошибок (`_handle_ws_event`,
+    `websocket_loop`, `pending_work_loop`, `authorized_users_refresh_loop`,
+    `startup.backfill_failed`) пишут `exc_info=True` и единое поле
+    `error_type=type(exc).__name__`. На `except ApiError` (ожидаемые ошибки)
+    стек намеренно не пишется — там это был бы шум.
+  - **HTTP error-boundary middleware** в `web.py`: любое необработанное
+    исключение в эндпоинте → структурное `ERROR`-событие `http.request.failed`
+    (со стеком, `method`/`path`/`error_type`) и чистый JSON-ответ `500` вместо
+    голого 500. Событие автоматически считается в `bot_errors_total` и уходит в
+    ops-канал. Битое тело запроса (`request.json()`/декодирование slash) даёт
+    `400` и `WARNING`-событие `http.request.bad_json` / `http.request.bad_body`.
+
+- **Канал ops-алертов и метрики Prometheus — наблюдаемость за здоровьем самого
+  бота.** Раньше ошибки уходили только в логи. Теперь:
+  - **Ops-канал** (`MATTERMOST_OPS_CHANNEL_ID`, опционально): новый модуль
+    `ops.py` вешает logging-хендлер на логгер `mm_jira_bot`, и каждое
+    `ERROR`-событие (обрыв websocket, падение `pending_work`, ошибки Jira/LLM,
+    preflight) постится в выделенный канал цветной плашкой. Это НЕ канал алертов
+    Grafana (`MATTERMOST_ALERT_CHANNEL_ID`). Антишторм: per-event cooldown
+    (`MATTERMOST_OPS_COOLDOWN_SECONDS`, дефолт 300) глушит повторы; доставка
+    best-effort (сбой постинга логируется warning'ом и не роняет бота);
+    защита от рекурсии через `contextvar`; bounded-очередь с дропом по
+    переполнению. При незаданном канале — no-op (ошибки по-прежнему в логах).
+  - **`/metrics`** (`METRICS_ENABLED`, дефолт `true`): новый модуль `metrics.py`
+    отдаёт Prometheus-метрики на HTTP-порту бота. Счётчики/гистограммы внешних
+    HTTP-вызовов (Jira/Mattermost/LLM) снимаются в единой точке
+    `AsyncApiClient._request`; `bot_errors_total{event}` — из ops-хендлера;
+    ticket-gauge'и (`bot_tickets_*`) собираются лениво на скрейпе через
+    `repository.debug_summary()`. Новая зависимость: `prometheus-client`.
+
 ### Исправлено
 
 - **Обрыв websocket (`1011 keepalive ping timeout`) при завершении инцидента

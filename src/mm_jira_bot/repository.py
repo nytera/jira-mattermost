@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Index,
     Integer,
     String,
     Text,
@@ -21,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from mm_jira_bot.domain import MattermostPost, backend_now, datetime_from_mattermost_ms
-from mm_jira_bot.formatting import extract_alert_title
+from mm_jira_bot.formatting import alert_signature, extract_alert_title
 
 
 def normalize_database_url(database_url: str) -> str:
@@ -72,10 +73,34 @@ class AlertTicket(Base):
     jira_confirmation_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
     postmortem_comment_added: Mapped[bool] = mapped_column(Boolean, default=False)
     validity_label: Mapped[str | None] = mapped_column(String(64))
+    alert_signature: Mapped[str | None] = mapped_column(String(255), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    root_post_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    expected_repeat_linked: Mapped[bool] = mapped_column(Boolean, default=False)
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=backend_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=backend_now, onupdate=backend_now
+    )
+
+    # Episode tracking: an episode is (alert_signature, channel) and stays open
+    # while its root (root_post_id IS NULL) is unresolved. The partial unique
+    # index enforces at most one active root per episode, so two concurrent
+    # first firings can't both become roots — the loser retries as a repeat.
+    __table_args__ = (
+        Index(
+            "ix_alert_tickets_signature_channel",
+            "alert_signature",
+            "mattermost_channel_id",
+        ),
+        Index(
+            "uq_active_root",
+            "alert_signature",
+            "mattermost_channel_id",
+            unique=True,
+            sqlite_where=text("resolved_at IS NULL AND root_post_id IS NULL"),
+            postgresql_where=text("resolved_at IS NULL AND root_post_id IS NULL"),
+        ),
     )
 
 
@@ -113,6 +138,46 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
                     "ADD COLUMN postmortem_comment_added BOOLEAN DEFAULT FALSE"
                 )
             )
+    episode_columns = {
+        "alert_signature": "VARCHAR(255)",
+        "resolved_at": "TIMESTAMP WITH TIME ZONE"
+        if engine.dialect.name == "postgresql"
+        else "TIMESTAMP",
+        "root_post_id": "VARCHAR(64)",
+        "expected_repeat_linked": "BOOLEAN DEFAULT FALSE",
+    }
+    for column_name, column_type in episode_columns.items():
+        if column_name not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f"ALTER TABLE alert_tickets ADD COLUMN {column_name} {column_type}")
+                )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_alert_tickets_alert_signature "
+                "ON alert_tickets (alert_signature)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_alert_tickets_root_post_id "
+                "ON alert_tickets (root_post_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_alert_tickets_signature_channel "
+                "ON alert_tickets (alert_signature, mattermost_channel_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_root "
+                "ON alert_tickets (alert_signature, mattermost_channel_id) "
+                "WHERE resolved_at IS NULL AND root_post_id IS NULL"
+            )
+        )
 
 
 class AlertTicketRepository:
@@ -227,25 +292,43 @@ class AlertTicketRepository:
         message_url: str,
         channel_name: str | None,
     ) -> tuple[AlertTicket, bool]:
+        ticket, created, _root = self.create_or_classify_alert(
+            post, message_url=message_url, channel_name=channel_name
+        )
+        return ticket, created
+
+    def create_or_classify_alert(
+        self,
+        post: MattermostPost,
+        *,
+        message_url: str,
+        channel_name: str | None,
+        signature: str | None = None,
+    ) -> tuple[AlertTicket, bool, AlertTicket | None]:
+        """Insert (or fetch) the ticket and classify it within its episode.
+
+        Returns ``(ticket, created, root)`` where ``root`` is the active root of
+        the open episode when this ticket is a repeat, or ``None`` when this
+        ticket is itself the root. The ``uq_active_root`` partial unique index
+        guards the concurrent first-firing race: the loser of the insert retries
+        as a repeat under the winner's root.
+        """
+        if signature is None:
+            signature = alert_signature(post.message)
         with self._session_factory() as session:
             existing = session.scalar(
                 select(AlertTicket).where(AlertTicket.mattermost_post_id == post.id)
             )
             if existing:
-                return existing, False
+                return existing, False, self._load_root(session, existing)
 
-            ticket = AlertTicket(
-                mattermost_post_id=post.id,
-                mattermost_channel_id=post.channel_id,
-                mattermost_channel_name=channel_name,
-                mattermost_message_url=message_url,
-                mattermost_message_text=post.message,
-                mattermost_alert_title=extract_alert_title(post.message),
-                mattermost_author_id=post.user_id,
-                mattermost_message_created_at=datetime_from_mattermost_ms(post.create_at),
-                creation_status="pending_jira",
-                confirmation_status="none",
-                valid_incident=False,
+            root = self._find_active_root(session, signature, post.channel_id)
+            ticket = self._new_alert_ticket(
+                post,
+                message_url=message_url,
+                channel_name=channel_name,
+                signature=signature,
+                root_post_id=root.mattermost_post_id if root else None,
             )
             session.add(ticket)
             try:
@@ -255,10 +338,81 @@ class AlertTicketRepository:
                 existing = session.scalar(
                     select(AlertTicket).where(AlertTicket.mattermost_post_id == post.id)
                 )
-                if existing is None:
-                    raise
-                return existing, False
-            return ticket, True
+                if existing is not None:
+                    return existing, False, self._load_root(session, existing)
+                # Lost the active-root race → re-classify as a repeat.
+                root = self._find_active_root(session, signature, post.channel_id)
+                ticket = self._new_alert_ticket(
+                    post,
+                    message_url=message_url,
+                    channel_name=channel_name,
+                    signature=signature,
+                    root_post_id=root.mattermost_post_id if root else None,
+                )
+                session.add(ticket)
+                session.commit()
+            return ticket, True, self._load_root(session, ticket)
+
+    def _new_alert_ticket(
+        self,
+        post: MattermostPost,
+        *,
+        message_url: str,
+        channel_name: str | None,
+        signature: str,
+        root_post_id: str | None,
+    ) -> AlertTicket:
+        return AlertTicket(
+            mattermost_post_id=post.id,
+            mattermost_channel_id=post.channel_id,
+            mattermost_channel_name=channel_name,
+            mattermost_message_url=message_url,
+            mattermost_message_text=post.message,
+            mattermost_alert_title=extract_alert_title(post.message),
+            mattermost_author_id=post.user_id,
+            mattermost_message_created_at=datetime_from_mattermost_ms(post.create_at),
+            alert_signature=signature,
+            root_post_id=root_post_id,
+            creation_status="pending_jira",
+            confirmation_status="none",
+            valid_incident=False,
+        )
+
+    def _find_active_root(
+        self, session: Session, signature: str, channel_id: str
+    ) -> AlertTicket | None:
+        return session.scalar(
+            select(AlertTicket)
+            .where(
+                AlertTicket.alert_signature == signature,
+                AlertTicket.mattermost_channel_id == channel_id,
+                AlertTicket.root_post_id.is_(None),
+                AlertTicket.resolved_at.is_(None),
+            )
+            .order_by(AlertTicket.created_at.asc())
+            .limit(1)
+        )
+
+    def _load_root(self, session: Session, ticket: AlertTicket) -> AlertTicket | None:
+        if not ticket.root_post_id:
+            return None
+        return session.scalar(
+            select(AlertTicket).where(AlertTicket.mattermost_post_id == ticket.root_post_id)
+        )
+
+    def mark_episode_resolved(
+        self, signature: str, channel_id: str, resolved_at: datetime
+    ) -> AlertTicket | None:
+        """Close the open episode for ``signature`` in ``channel_id`` by stamping
+        ``resolved_at`` on its active root. Returns the root, or ``None`` if no
+        episode is open (restart / duplicate resolve)."""
+        with self._session_factory() as session:
+            root = self._find_active_root(session, signature, channel_id)
+            if root is None:
+                return None
+            root.resolved_at = resolved_at
+            session.commit()
+            return root
 
     def create_or_get_incident_thread(
         self,
@@ -385,6 +539,12 @@ class AlertTicketRepository:
     def mark_postmortem_comment_added(self, post_id: str) -> None:
         def apply(ticket: AlertTicket) -> None:
             ticket.postmortem_comment_added = True
+
+        self._mutate(post_id, apply)
+
+    def mark_expected_repeat_linked(self, post_id: str) -> None:
+        def apply(ticket: AlertTicket) -> None:
+            ticket.expected_repeat_linked = True
 
         self._mutate(post_id, apply)
 
