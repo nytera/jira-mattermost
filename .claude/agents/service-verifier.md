@@ -12,7 +12,7 @@ tools: Bash, Read, Grep, Glob
 
 ## 1. Гейт (всегда)
 
-Каноничная команда (см. AGENTS.md): запускай инструменты из локального venv —
+Каноничная команда (см. CLAUDE.md): запускай инструменты из локального venv —
 `.venv/bin/ruff`, `.venv/bin/pyright`, `.venv/bin/pytest` (НЕ системные).
 
 ```

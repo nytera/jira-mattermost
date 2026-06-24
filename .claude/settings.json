@@ -7,9 +7,9 @@
           {
             "type": "command",
             "if": "Bash(git commit*)",
-            "command": "staged=\"$(git diff --cached --name-only 2>/dev/null)\"; printf '%s\\n' \"$staged\" | grep -q '^src/mm_jira_bot/' && ! printf '%s\\n' \"$staged\" | grep -qE 'docs/|AGENTS|README|CHANGELOG' && printf '%s' '{\"systemMessage\":\"Doc-sync (CLAUDE.md): в индексе есть изменения src/mm_jira_bot/, но не staged ни docs/, ни AGENTS.md/README.md/CHANGELOG.md. Коммит не блокирую — если правка поведенческая/архитектурная, обнови нужный doc и перегенерируй docs/reference/service-map.md (scripts/gen_service_map.py).\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"Doc-sync reminder: staged code under src/mm_jira_bot/ without any of docs/**, AGENTS.md, README.md, or CHANGELOG.md staged. Per CLAUDE.md update the relevant doc; if public signatures/routes/mixins/files changed, regenerate docs/reference/service-map.md (the gate gen_service_map.py --check step enforces this).\"}}'; exit 0",
+            "command": "staged=\"$(git diff --cached --name-only 2>/dev/null)\"; printf '%s\\n' \"$staged\" | grep -q '^src/mm_jira_bot/' || exit 0; ru=\"Перед коммитом src/mm_jira_bot/ (не блокирую): спроси, не запустить ли /code-review и /simplify (/security-review — раз в несколько коммитов или при изменениях в авторизации/секретах/внешнем вводе).\"; en=\"Pre-commit reminder for staged src/mm_jira_bot/ (non-blocking): ask the user whether to run /code-review and /simplify (/security-review every few commits or when touching auth, secrets, or external input).\"; if ! printf '%s\\n' \"$staged\" | grep -qE 'docs/|README|CHANGELOG'; then ru=\"$ru Doc-sync: не staged ни docs/, ни README.md/CHANGELOG.md — если правка поведенческая/архитектурная, обнови нужный doc и перегенерируй docs/reference/service-map.md (scripts/gen_service_map.py).\"; en=\"$en Doc-sync: no docs/, README, or CHANGELOG staged — if behavior/architecture changed, update the relevant doc and regenerate docs/reference/service-map.md.\"; fi; printf '{\"systemMessage\":\"%s\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"%s\"}}' \"$ru\" \"$en\"; exit 0",
             "timeout": 10,
-            "statusMessage": "Doc-sync check"
+            "statusMessage": "Doc-sync + review check"
           }
         ]
       }

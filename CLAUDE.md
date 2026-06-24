@@ -1,28 +1,129 @@
 # CLAUDE.md
 
-Роутер документации: какой документ открыть под конкретную задачу. Документация
-разбита на маленькие файлы — открывай нужный, не читай всё подряд.
+Роутер документации + правила репозитория. Документация разбита на маленькие файлы —
+открывай нужный под задачу (таблица внизу), не читай всё подряд. Ссылки на `docs/` —
+**обычные markdown-ссылки (грузятся по требованию), а не `@`-импорты** (те
+разворачиваются в контекст при старте и раздувают каждую сессию). Не превращай их в
+`@`-импорты.
 
-## Основные правила
+**Проект:** бот-мост `Mattermost alert → Jira incident`. Python 3.11+, FastAPI +
+async `httpx`, SQLAlchemy 2.0. Один процесс; сервис собран из доменных миксинов
+(см. [docs/architecture.md](docs/architecture.md)).
 
-- **Гейт — два тира (CI нет, всё локально).**
-  - **`/gate` (быстрый)** — на каждой итерации/коммите: ruff + ruff format `--check`
-    + pyright + pytest из `.venv`. Дёшево, гоняй свободно.
-  - **`/gate full`** — перед PR / вливанием в `main`: быстрый тир + `scripts/gen_service_map.py --check`
-    + doc-sync (см. ниже).
+## Команды
 
-  Тяжёлые проверки (service-map, doc-sync) НЕ обязательны на каждой мелкой правке —
-  достаточно привести их в порядок перед PR. Подробности и baseline pyright — в [AGENTS.md](AGENTS.md).
-- **Карта сервиса генерируется, не пишется руками.** [`docs/reference/service-map.md`](docs/reference/service-map.md)
-  собирается из AST. После изменения кода (новые/изменённые публичные сигнатуры,
-  маршруты, миксины, файлы) перегенерируй **перед PR**:
-  `.venv/bin/python scripts/gen_service_map.py && git add docs/reference/service-map.md`.
-  Иначе шаг `--check` в `/gate full` упадёт.
-- **Doc-sync.** При изменении поведения/архитектуры **перед PR** приведи в соответствие
-  нужный документ (см. таблицу ниже) и добавь запись в `[Unreleased]` в
-  [CHANGELOG.md](CHANGELOG.md). Эталон «что генерируется vs что пишется руками» —
-  [docs/architecture.md](docs/architecture.md).
-- **Язык.** `docs/` и `AGENTS.md` — английский; `README.md` и `CHANGELOG.md` — русский.
+- `python -m venv .venv && source .venv/bin/activate` — создать и войти в venv.
+- `pip install -e ".[test]"` — editable-установка с pytest, ruff, pyright.
+- `python -m mm_jira_bot` — локальный запуск на `0.0.0.0:8080`, читает `.env`.
+- `curl http://localhost:8080/healthz` — health-check.
+- `docker compose up --build` — запуск с Postgres.
+
+Тестовые команды и раскладка — [docs/testing.md](docs/testing.md); переменные
+окружения — [docs/config.md](docs/config.md).
+
+## Гейт — два тира (CI нет, всё локально)
+
+Гоняй из локального `.venv` и не останавливайся на первой ошибке — нужен полный срез.
+
+**`/gate` (быстрый)** — на каждой итерации/коммите. Дёшево, гоняй свободно:
+
+```
+.venv/bin/ruff check src tests
+.venv/bin/ruff format --check src tests
+.venv/bin/pyright
+.venv/bin/pytest -q
+```
+
+**`/gate full`** — перед PR / вливанием в `main`. Быстрый тир плюс:
+
+```
+.venv/bin/python scripts/gen_service_map.py --check
+```
+
+…и doc-sync (ниже). Тяжёлые проверки (service-map, doc-sync) НЕ обязательны на каждой
+мелкой правке — достаточно привести их в порядок перед PR. Скилл `/gate` гоняет это
+inline; агент `service-verifier` добавляет адверсари-ревью (полный тир) для
+move-only рефакторов.
+
+**Baseline pyright (не паникуй на known-ошибке).** На чистом дереве pyright стабильно
+даёт **ровно 1 pre-existing ошибку** — `tests/test_postmortem.py`
+(`Cannot access attribute "status" for class "ActionResult"`, `reportAttributeAccessIssue`,
+~стр. 311). Ровно она → pyright **PASS** (0 новых); любая другая → новая, **FAIL**
+(сравни с чистым HEAD: `git stash` или `git show HEAD:<файл>`). Конфиг линта/типов — в
+`pyproject.toml`: ruff `E,F,I,UP,B,SIM`, line length 100; pyright `basic` над
+`src/mm_jira_bot` + `tests`. `debug_admin.py`, `jira_payload.py`, `postmortem.py`,
+`summary.py` игнорируют `E501` (встроенные CSS/HTML/JS и RU-шаблоны PM).
+
+## Карта сервиса генерируется, не пишется руками
+
+[`docs/reference/service-map.md`](docs/reference/service-map.md) собирается из AST.
+После изменения кода (новые/изменённые публичные сигнатуры, маршруты, миксины, файлы)
+перегенерируй **перед PR**:
+`.venv/bin/python scripts/gen_service_map.py && git add docs/reference/service-map.md`.
+Иначе шаг `--check` в `/gate full` упадёт.
+
+## Doc-sync (перед PR)
+
+При изменении поведения/архитектуры приведи в соответствие нужный документ и добавь
+запись в `[Unreleased]` в [CHANGELOG.md](CHANGELOG.md):
+
+- домен/архитектура → нужный файл в [`docs/`](docs/);
+- пользовательское поведение/конфиг → [README.md](README.md) / [docs/config.md](docs/config.md);
+- любое изменение → запись `[Unreleased]` в [CHANGELOG.md](CHANGELOG.md).
+
+`service-map.md` руками НЕ синкается — его держит шаг `--check` в `/gate full`. Эталон
+«что генерируется vs что пишется руками» — [docs/architecture.md](docs/architecture.md).
+
+Пиши доки и `CHANGELOG` сжато и по делу, простым языком — без лишних слов и усложнения
+того, что можно сказать просто.
+
+## Стиль кода
+
+Держись соседнего стиля: 4 пробела, type hints, `from __future__ import annotations`,
+frozen dataclasses для value-объектов, маленькие модули с явной ответственностью.
+`snake_case` для функций/переменных/модулей, `PascalCase` для классов. Чёткие
+async-границы для Mattermost, Jira и методов сервиса. Формат/линт — `ruff`, типы —
+pyright; гоняй перед коммитом, держи диффы узкими.
+
+Меняя/добавляя миксин в `service/`, следуй типовой конвенции из
+[docs/architecture.md](docs/architecture.md): атрибуты состояния — как объявляет
+`__init__`, кросс-доменные вызовы — как `if TYPE_CHECKING:` стабы, `_shared.py`
+остаётся листом графа импортов.
+
+## Тесты
+
+pytest + pytest-asyncio (`asyncio_mode = "auto"` — без `@pytest.mark.asyncio`). Файлы
+`test_*.py`, функции `test_<behavior>`; сьют сервиса разбит по доменам зеркально
+`service/`; общие фейки/фикстуры — `tests/support.py` и `tests/conftest.py` (фейки +
+временная SQLite вместо живых зависимостей). Добавляй/расширяй тесты на любое
+изменение поведения — особенно идемпотентность, retry/recovery, slash-команды, формат
+Jira payload/опций. Полный харнес — [docs/testing.md](docs/testing.md).
+
+## Commit / PR
+
+Краткие императивные сабжекты (напр. `Add debug admin for alert ticket operations`),
+маленькие сфокусированные коммиты. PR описывает изменение поведения, перечисляет
+команды верификации и результат, отмечает влияние на конфиг/миграции, линкует связанные
+задачи. Скриншоты/примеры запросов — только при изменении видимых Mattermost-сообщений
+или HTTP-поведения.
+
+**Перед коммитом/PR с осмысленной правкой кода** спроси, не запустить ли `/code-review`
+и `/simplify`; `/security-review` — раз в несколько коммитов или при изменениях в
+авторизации/секретах/внешнем вводе. Сам не запускай без подтверждения; на doc-only
+правках не дёргай.
+
+## Безопасность и конфиг
+
+Вся конфигурация — из env (`config.py`, читается из `.env`); матрица —
+[docs/config.md](docs/config.md), шаблон — `.env.example`. Никогда не коммить реальные
+токены: Jira/Mattermost токены, channel id, DB URL — секреты. Заметные дефолты:
+`ENABLE_BACKFILL_ON_STARTUP=false` (обрабатывать только новые WS-события, не историю),
+`ENABLE_WEBSOCKET=true`. Меняя схему — держи `migrations/`, SQLAlchemy-модель и
+стартовую инициализацию согласованными ([docs/persistence.md](docs/persistence.md)).
+
+## Язык
+
+`docs/` — английский; `CLAUDE.md`, `README.md`, `CHANGELOG.md` — русский.
 
 ## Куда смотреть под задачу
 
@@ -41,6 +142,5 @@
 | Переменные окружения (матрица required/optional) | [docs/config.md](docs/config.md) |
 | Preflight, ops-канал, метрики, recovery/retry, логи | [docs/operations.md](docs/operations.md) |
 | Тесты, харнес, как запускать | [docs/testing.md](docs/testing.md) |
-| Стиль кода, конвенции тестов, commit/PR, гейт | [AGENTS.md](AGENTS.md) |
 | Пользовательская настройка и поведение | [README.md](README.md) |
 | Хронология изменений | [CHANGELOG.md](CHANGELOG.md) |

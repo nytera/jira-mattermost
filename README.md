@@ -6,12 +6,11 @@
 
 ## Документация
 
-- [`CLAUDE.md`](CLAUDE.md) — роутер «задача → какой документ читать» + правила репозитория.
+- [`CLAUDE.md`](CLAUDE.md) — роутер «задача → какой документ читать» + правила репозитория (стиль, тесты, commit/PR, гейт).
 - [`docs/architecture.md`](docs/architecture.md) — архитектура, сборка миксинов, два идемпотентных потока.
 - [`docs/reference/service-map.md`](docs/reference/service-map.md) — **сгенерированная** карта: дерево файлов, публичные сигнатуры, HTTP-маршруты, MRO.
 - [`docs/domains/`](docs/domains/) — по одному файлу на домен (alerts, incidents, jira-sync, postmortem, thread-summary, debug).
 - [`docs/jira.md`](docs/jira.md), [`docs/persistence.md`](docs/persistence.md), [`docs/config.md`](docs/config.md), [`docs/operations.md`](docs/operations.md), [`docs/testing.md`](docs/testing.md) — cross-cutting темы.
-- [`AGENTS.md`](AGENTS.md) — конвенции (стиль, тесты, commit/PR), гейт.
 
 ## Workflow
 
@@ -334,7 +333,7 @@ DATABASE_URL=postgresql://incident_bot:incident_bot@postgres:5432/incident_bot
 - Старт-preflight, ops-канал, метрики Prometheus, recovery/retry, логи — [`docs/operations.md`](docs/operations.md).
 - Схема БД, миграции, идемпотентность, таймзона — [`docs/persistence.md`](docs/persistence.md).
 - Тесты и харнес — [`docs/testing.md`](docs/testing.md).
-- Линт/формат/типы и конвенции — [`AGENTS.md`](AGENTS.md).
+- Линт/формат/типы и конвенции — [`CLAUDE.md`](CLAUDE.md).
 
 ## API References
 

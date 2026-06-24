@@ -14,7 +14,7 @@ pytest + pytest-asyncio, configured in `pyproject.toml`: `asyncio_mode = "auto"`
 Current baseline: **202 tests, ~81% line coverage** (verified via the `--cov`
 command above; treat the number as approximate and re-measure rather than trusting a
 stale figure). The full pre-commit gate also runs ruff, ruff format `--check`,
-pyright and the service-map `--check` — see [`../AGENTS.md`](../AGENTS.md).
+pyright and the service-map `--check` — see [`../CLAUDE.md`](../CLAUDE.md).
 
 ## Layout (per-domain, mirrors `service/`)
 
@@ -51,4 +51,4 @@ dependencies.
 
 Add or extend tests for any behavior change — especially idempotency, retry/recovery,
 slash commands, and Jira payload/option formatting. Name files `test_*.py` and
-functions `test_<behavior>`. Conventions are in [`../AGENTS.md`](../AGENTS.md).
+functions `test_<behavior>`. Conventions are in [`../CLAUDE.md`](../CLAUDE.md).
