@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from typing import Any, cast
 
 from mm_jira_bot.logging import (
     JsonFormatter,
@@ -27,8 +28,12 @@ def _record(
         args=(),
         exc_info=None,
     )
-    record.extra_fields = {"event": event, **fields}
+    cast(Any, record).extra_fields = {"event": event, **fields}
     return record
+
+
+def _extra_fields(record: logging.LogRecord) -> dict[str, object]:
+    return cast(dict[str, object], cast(Any, record).extra_fields)
 
 
 def test_json_formatter_emits_structured_line() -> None:
@@ -113,7 +118,7 @@ def test_event_logger_passes_fields_through() -> None:
         stdlib_logger.removeHandler(handler)
 
     assert records
-    assert records[0].extra_fields == {"event": "some.event", "key": "value"}
+    assert _extra_fields(records[0]) == {"event": "some.event", "key": "value"}
 
 
 def test_event_logger_attaches_exc_info() -> None:

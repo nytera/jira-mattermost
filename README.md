@@ -567,15 +567,26 @@ pytest --cov=mm_jira_bot --cov-report=term-missing  # с отчётом покр
 
 Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload, Jira option metadata и формат incident-сообщения, а также интерактивную карточку (наличие/отсутствие controls, validity menu, incident, summary и feedback actions), thread summary через LLM и no-op при отсутствии LLM.
 
-## Lint & format
+## Lint, format & type check
 
 ```bash
-ruff check src tests    # линтер (правила E,F,I,UP,B,SIM)
-ruff format src tests   # автоформат (добавь --check для проверки без записи)
+ruff check src tests           # линтер (правила E,F,I,UP,B,SIM)
+ruff format src tests          # автоформат (добавь --check для проверки без записи)
+.venv/bin/python -m pyright    # статическая проверка типов src/mm_jira_bot и tests
 ```
 
-`ruff` и `pytest-cov` ставятся вместе с тестовыми зависимостями
-(`pip install -e ".[test]"`). Конфигурация — в `pyproject.toml`.
+Перед PR локально прогоняйте полный набор:
+
+```bash
+.venv/bin/python -m ruff check src tests
+.venv/bin/python -m ruff format --check src tests
+.venv/bin/python -m pyright
+.venv/bin/python -m pytest
+```
+
+`ruff`, Pyright и `pytest-cov` ставятся вместе с тестовыми зависимостями
+(`pip install -e ".[test]"`). Pyright настроен на локальное окружение `.venv`.
+Конфигурация — в `pyproject.toml`.
 
 ## API References
 

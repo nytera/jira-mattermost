@@ -242,20 +242,22 @@ class AlertTicketRepository:
     def debug_summary(self) -> dict:
         with self._session_factory() as session:
             total = session.scalar(select(func.count(AlertTicket.id))) or 0
-            creation_statuses = dict(
-                session.execute(
+            creation_statuses = {
+                status: count
+                for status, count in session.execute(
                     select(AlertTicket.creation_status, func.count(AlertTicket.id))
                     .group_by(AlertTicket.creation_status)
                     .order_by(AlertTicket.creation_status)
-                ).all()
-            )
-            confirmation_statuses = dict(
-                session.execute(
+                )
+            }
+            confirmation_statuses = {
+                status: count
+                for status, count in session.execute(
                     select(AlertTicket.confirmation_status, func.count(AlertTicket.id))
                     .group_by(AlertTicket.confirmation_status)
                     .order_by(AlertTicket.confirmation_status)
-                ).all()
-            )
+                )
+            }
             pending_jira = (
                 session.scalar(
                     select(func.count(AlertTicket.id)).where(AlertTicket.jira_issue_key.is_(None))

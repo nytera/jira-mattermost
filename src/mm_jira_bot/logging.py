@@ -172,6 +172,8 @@ class LogRingBuffer:
 
 
 class LogBufferHandler(logging.Handler):
+    _exception_formatter = logging.Formatter()
+
     def __init__(self, buffer: LogRingBuffer) -> None:
         super().__init__()
         self._buffer = buffer
@@ -189,7 +191,7 @@ class LogBufferHandler(logging.Handler):
                 "fields": {key: _coerce_field(value) for key, value in fields.items()},
             }
             if record.exc_info:
-                entry["exception"] = self.formatException(record.exc_info)
+                entry["exception"] = self._exception_formatter.formatException(record.exc_info)
             self._buffer.append(entry)
         except Exception:  # pragma: no cover - logging must never raise
             self.handleError(record)

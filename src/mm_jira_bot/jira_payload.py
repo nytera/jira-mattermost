@@ -102,7 +102,11 @@ def build_jira_issue_payload(
     else:
         issue_type = {"name": settings.jira_issue_type}
 
-    created_at = post.created_at_datetime if post.create_at > 0 else backend_now()
+    created_at = (
+        post.created_at_datetime
+        if post.create_at > 0 and post.created_at_datetime is not None
+        else backend_now()
+    )
     alert_date = created_at.astimezone(runtime_timezone()).strftime("%d.%m.%Y")
     alert_title = extract_alert_title(post.message)
 

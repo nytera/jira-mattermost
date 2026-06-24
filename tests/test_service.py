@@ -6,6 +6,7 @@ import logging
 import os
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -20,6 +21,7 @@ from mm_jira_bot.actions import (
 )
 from mm_jira_bot.config import Settings, _csv_env, load_dotenv_file
 from mm_jira_bot.domain import (
+    ConfirmationResult,
     JiraIssue,
     MattermostPost,
     ReactionEvent,
@@ -62,6 +64,10 @@ from mm_jira_bot.summary import (
 from mm_jira_bot.web import create_app, run_startup_preflight
 
 POST_ID = "abcdefghijklmnopqrstuvwx01"
+
+
+def _extra_fields(record: logging.LogRecord) -> dict[str, object]:
+    return cast(dict[str, object], cast(Any, record).extra_fields)
 
 
 class FakeMattermostClient:
@@ -618,6 +624,7 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
     assert ticket.jira_issue_key == f"ADSDEV-12024-{post.id[:12]}"
     assert ticket.jira_issue_url == (f"https://jira.example.com/browse/ADSDEV-12024-{post.id[:12]}")
     assert len(service.jira.created_payloads) == 0
+    assert ticket.jira_issue_key is not None
     reply = _issue_reply(service, post.id, issue_key=ticket.jira_issue_key)
     assert reply["message"] == ""
     attachment = reply["props"]["attachments"][0]
@@ -652,6 +659,8 @@ async def test_reuses_display_stub_jira_issue_without_db_conflict(settings):
     assert second_ticket is not None
     assert first_ticket.jira_issue_key != second_ticket.jira_issue_key
     assert len(service.jira.created_payloads) == 0
+    assert first_ticket.jira_issue_key is not None
+    assert second_ticket.jira_issue_key is not None
     first_reply = _issue_reply(service, first_post.id, issue_key=first_ticket.jira_issue_key)
     second_reply = _issue_reply(service, second_post.id, issue_key=second_ticket.jira_issue_key)
     assert "Создана задача Jira: [ADSDEV-12024]" in _reply_text(first_reply)
@@ -774,9 +783,7 @@ async def test_does_not_create_two_issues_for_same_post_id(service):
 
 
 def test_alert_signature_symmetry_link_vs_plain():
-    firing = (
-        "🔴 [DiskFull](https://grafana.wb.ru/alerting/grafana/abc123/view)\nState: Alerting"
-    )
+    firing = "🔴 [DiskFull](https://grafana.wb.ru/alerting/grafana/abc123/view)\nState: Alerting"
     resolve = "✅ DiskFull"
     assert alert_signature(firing) == alert_signature(resolve)
 
@@ -901,9 +908,7 @@ async def test_resolve_closes_episode_creates_nothing(service):
 @pytest.mark.asyncio
 async def test_refiring_after_resolve_becomes_new_root(service):
     first = make_alert(post_id="firstpost0000000000000001")
-    resolve = make_alert(
-        post_id="resolvepost00000000000003", message="✅ CPU usage is above 95%"
-    )
+    resolve = make_alert(post_id="resolvepost00000000000003", message="✅ CPU usage is above 95%")
     second = make_alert(post_id="secondpost000000000000001")
     for post in (first, resolve, second):
         service.mattermost.posts[post.id] = post
@@ -1398,9 +1403,7 @@ async def test_collect_stream_emits_cumulative_progress(settings):
         seen.append(text)
 
     try:
-        result = await client._collect_stream(
-            _FakeStreamResponse(lines), on_progress=record
-        )
+        result = await client._collect_stream(_FakeStreamResponse(lines), on_progress=record)
     finally:
         await client.aclose()
 
@@ -1706,8 +1709,8 @@ def test_http_error_boundary_returns_500_and_logs(service, settings):
     failures = [r for r in records if r.msg == "http.request.failed"]
     assert failures
     assert failures[0].exc_info is not None
-    assert failures[0].extra_fields["error_type"] == "RuntimeError"
-    assert failures[0].extra_fields["path"] == "/mattermost/dialogs/feedback"
+    assert _extra_fields(failures[0])["error_type"] == "RuntimeError"
+    assert _extra_fields(failures[0])["path"] == "/mattermost/dialogs/feedback"
 
 
 def test_alert_action_rejects_malformed_json(service, settings):
@@ -1745,7 +1748,7 @@ def test_ticket_collector_logs_on_repository_failure():
     failures = [r for r in records if r.msg == "metrics.collect_failed"]
     assert failures
     assert failures[0].exc_info is not None
-    assert failures[0].extra_fields["error_type"] == "RuntimeError"
+    assert _extra_fields(failures[0])["error_type"] == "RuntimeError"
 
 
 def test_debug_admin_routes_are_disabled_by_default(service, settings):
@@ -3410,6 +3413,7 @@ async def test_authorized_user_reaction_is_honored(settings):
         ReactionEvent(post_id=post.id, user_id="u-alice", emoji_name="incident", create_at=1)
     )
 
+    assert isinstance(result, ConfirmationResult)
     assert result.status != "ignored"
     assert service.jira.valid_updates == [("OPS-1", True)]
 
@@ -3427,6 +3431,7 @@ async def test_unauthorized_user_reaction_is_ignored(settings):
         ReactionEvent(post_id=post.id, user_id="u-bob", emoji_name="incident", create_at=1)
     )
 
+    assert isinstance(result, ConfirmationResult)
     assert result.status == "ignored"
     assert service.jira.valid_updates == []
 
@@ -3733,6 +3738,7 @@ async def test_incident_create_task_creates_jira_and_updates_card(settings):
     )
 
     ticket = service.repository.get_by_incident_post_id(post.id)
+    assert ticket is not None
     assert ticket.jira_issue_key == "OPS-1"
     assert result.update_attachments is not None
     card = result.update_attachments[0]
@@ -3822,7 +3828,9 @@ def test_endpoint_routes_incident_create_task(settings):
     assert response.status_code == 200
     body = response.json()
     assert body["update"]["props"]["attachments"][0]["actions"]
-    assert service.repository.get_by_incident_post_id(post.id).jira_issue_key == "OPS-1"
+    ticket = service.repository.get_by_incident_post_id(post.id)
+    assert ticket is not None
+    assert ticket.jira_issue_key == "OPS-1"
 
 
 @pytest.mark.asyncio
@@ -3837,6 +3845,7 @@ async def test_pending_work_ignores_uncreated_manual_card(settings):
     await service.process_pending_work()
 
     ticket = service.repository.get_by_incident_post_id(post.id)
+    assert ticket is not None
     assert ticket.jira_issue_key is None
     assert service.jira.created_payloads == []
 
@@ -3880,7 +3889,7 @@ async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
 
 def _error_record(event: str, level: int = logging.ERROR, **fields) -> logging.LogRecord:
     record = logging.LogRecord("mm_jira_bot.test", level, __file__, 1, event, None, None)
-    record.extra_fields = {"event": event, **fields}
+    cast(Any, record).extra_fields = {"event": event, **fields}
     return record
 
 
@@ -3953,6 +3962,7 @@ async def test_ops_notifier_buffers_startup_errors(service, settings):
     try:
         get_logger("mm_jira_bot.service").error("startup.preflight.check_failed", dependency="jira")
         await asyncio.sleep(0)  # let call_soon_threadsafe enqueue
+        assert notifier._queue is not None
         assert notifier._queue.qsize() == 1
         await notifier._post(notifier._queue.get_nowait())
         assert service.mattermost.created_posts[0]["channel_id"] == "ops-channel"
@@ -3992,6 +4002,7 @@ async def test_confirmed_alert_incident_gets_controls_card(settings):
     )
 
     ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
     assert ticket.incident_post_id is not None
     cards = [
         c
@@ -4019,7 +4030,9 @@ async def test_incident_card_validity_on_alert_incident(settings):
         ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
     )
     ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
     assert ticket.incident_post_id != ticket.mattermost_post_id
+    assert ticket.incident_post_id is not None
 
     result = await service.handle_incident_action(
         action="validity",
@@ -4043,6 +4056,8 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
         ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
     )
     ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.incident_post_id is not None
     incident_post_id = ticket.incident_post_id
 
     def info_text():
@@ -4069,6 +4084,8 @@ async def test_end_button_swaps_to_completed(settings):
         ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
     )
     ticket = service.repository.get_by_post_id(post.id)
+    assert ticket is not None
+    assert ticket.incident_post_id is not None
 
     result = await service.handle_incident_action(
         action="end_incident", incident_post_id=ticket.incident_post_id, user_id="closer"

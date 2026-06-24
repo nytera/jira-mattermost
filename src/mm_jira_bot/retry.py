@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from mm_jira_bot.logging import EventLogger
 
@@ -33,7 +33,7 @@ async def retry_async(
     base_delay_seconds: float,
     logger: EventLogger,
     event: str,
-    **log_fields: object,
+    **log_fields: Any,
 ) -> T:
     last_error: BaseException | None = None
     for attempt in range(1, attempts + 1):

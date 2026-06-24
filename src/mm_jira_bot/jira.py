@@ -406,8 +406,8 @@ class JiraClient(AsyncApiClient):
             if ended_at is not None and self._settings.jira_end_field
             else None
         )
-        fields = {field_id: option_payload}
-        if end_field_id is not None:
+        fields: dict[str, Any] = {field_id: option_payload}
+        if end_field_id is not None and ended_at is not None:
             fields[end_field_id] = format_jira_datetime(ended_at)
         payload = {"fields": fields}
         log.info(

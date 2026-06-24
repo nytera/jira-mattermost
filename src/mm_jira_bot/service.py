@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter
+from typing import Any, cast
 
 from mm_jira_bot.actions import (
     ACTION_CREATE_TASK,
@@ -267,7 +268,7 @@ class IncidentBotService:
             resolved_groups=sorted(resolved_groups),
         )
 
-    def _degrade_authorization(self, event: str, names: list[str], **fields: object) -> None:
+    def _degrade_authorization(self, event: str, names: list[str], **fields: Any) -> None:
         """Handle a failed/empty resolution: keep last-good if already enforced.
 
         Fail-open (disable the gate) only on the very first resolution; once a
@@ -293,6 +294,12 @@ class IncidentBotService:
         entry point.
         """
         return bool(self.settings.service_public_url) and self.settings.interactive_buttons_enabled
+
+    def _action_callback_url(self) -> str:
+        service_public_url = self.settings.service_public_url
+        if service_public_url is None:
+            raise RuntimeError("SERVICE_PUBLIC_URL is required for interactive controls")
+        return alert_action_callback_url(service_public_url)
 
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
@@ -353,7 +360,7 @@ class IncidentBotService:
         if not created:
             return
         if interactive:
-            callback_url = alert_action_callback_url(self.settings.service_public_url)
+            callback_url = self._action_callback_url()
             await self._post_incident_thread_reply(
                 post.id,
                 channel_id=post.channel_id,
@@ -481,9 +488,7 @@ class IncidentBotService:
             # A resolved (✅) repost never creates a ticket or Jira issue — it only
             # closes the open episode so the next firing becomes a fresh root.
             resolved_at = datetime_from_mattermost_ms(post.create_at) or backend_now()
-            root = self.repository.mark_episode_resolved(
-                signature, post.channel_id, resolved_at
-            )
+            root = self.repository.mark_episode_resolved(signature, post.channel_id, resolved_at)
             log.info(
                 "mattermost.episode.resolved",
                 mattermost_post_id=post.id,
@@ -540,7 +545,7 @@ class IncidentBotService:
             return VALID_INCIDENT_EXPECTED_VALUE
         return None
 
-    async def handle_reaction(self, reaction: ReactionEvent) -> ConfirmationResult:
+    async def handle_reaction(self, reaction: ReactionEvent) -> ConfirmationResult | ActionResult:
         log.info(
             "mattermost.reaction.received",
             mattermost_post_id=reaction.post_id,
@@ -682,7 +687,7 @@ class IncidentBotService:
         """
         if not self._interactive_controls_enabled():
             return None
-        callback_url = alert_action_callback_url(self.settings.service_public_url)
+        callback_url = self._action_callback_url()
         return [
             build_alert_controls_attachment(
                 title=title or "Jira",
@@ -827,7 +832,7 @@ class IncidentBotService:
     ) -> dict:
         """Build the incident controls card, picking the task header automatically:
         shown for alert-originated incidents, omitted for manual ones."""
-        callback_url = alert_action_callback_url(self.settings.service_public_url)
+        callback_url = self._action_callback_url()
         ticket = self.repository.get_by_incident_post_id(incident_post_id)
         issue_key = issue_url = None
         if ticket is not None and ticket.incident_post_id != ticket.mattermost_post_id:
@@ -964,7 +969,7 @@ class IncidentBotService:
 
         update_attachments = None
         if self._interactive_controls_enabled():
-            callback_url = alert_action_callback_url(self.settings.service_public_url)
+            callback_url = self._action_callback_url()
             update_attachments = [
                 build_incident_controls_attachment(
                     incident_post_id=incident_post_id,
@@ -984,7 +989,8 @@ class IncidentBotService:
     ) -> ActionResult:
         if not trigger_id:
             return ActionResult(message="Не удалось открыть форму: нет trigger_id.")
-        if not self.settings.service_public_url:
+        service_public_url = self.settings.service_public_url
+        if not service_public_url:
             return ActionResult(message="Не удалось открыть форму: не настроен SERVICE_PUBLIC_URL.")
         state = json.dumps({"alert_post_id": alert_post_id}, ensure_ascii=False)
         dialog = {
@@ -1006,7 +1012,7 @@ class IncidentBotService:
         try:
             await self.mattermost.open_dialog(
                 trigger_id=trigger_id,
-                url=feedback_dialog_callback_url(self.settings.service_public_url),
+                url=feedback_dialog_callback_url(service_public_url),
                 dialog=dialog,
             )
         except ApiError as exc:
@@ -1299,6 +1305,8 @@ class IncidentBotService:
         existing_ticket: AlertTicket | None = None,
         validity_label: str | None = None,
     ) -> ConfirmationResult:
+        llm = self.llm
+        assert llm is not None
         incident_thread_url = self.mattermost.permalink(root_post.id)
         ticket = existing_ticket
         summary_base_props = self._summary_base_props(
@@ -1340,7 +1348,7 @@ class IncidentBotService:
                 base_props=summary_base_props,
                 event=f"{summary_event}.status",
             )
-            report = await self.llm.generate_postmortem(prompt)
+            report = await llm.generate_postmortem(prompt)
             summary = extract_postmortem_summary(
                 report,
                 fallback=extract_alert_title(root_post.message),
@@ -1630,7 +1638,7 @@ class IncidentBotService:
         thread_messages = [
             ThreadMessage(
                 post=post,
-                author_display=display_by_user_id.get(post.user_id, post.user_id),
+                author_display=display_by_user_id[post.user_id],
             )
             for post in posts
         ]
@@ -1855,6 +1863,8 @@ class IncidentBotService:
         the final edit always overwrites the streaming state with the clean format.
         Callers must ensure ``self.llm`` is configured.
         """
+        llm = self.llm
+        assert llm is not None
         prompt = build_incident_report_prompt(
             thread_url=thread_url,
             participants=participants,
@@ -1874,7 +1884,7 @@ class IncidentBotService:
             else None
         )
         try:
-            summary = await self.llm.generate_summary(prompt, on_progress=on_progress)
+            summary = await llm.generate_summary(prompt, on_progress=on_progress)
         except ApiError as exc:
             log.error("summary.failed", mattermost_post_id=root_post_id, error=str(exc))
             await self._finalize_thread_summary_reply(
@@ -2228,6 +2238,7 @@ class IncidentBotService:
                 post_id, user_id=confirmed_by_user_id, confirmed_at=confirmed_at
             )
         except ApiError as exc:
+            assert ticket is not None
             self.repository.mark_confirmation_failed(post_id, str(exc))
             log.error(
                 "incident.confirmation.failed",
@@ -2758,7 +2769,7 @@ class IncidentBotService:
         alert_attachments = await self._alert_attachments(ticket)
         # Incident details go into a gray block above the forwarded alert block.
         info_text = format_incident_message(
-            ticket,
+            cast(Any, ticket),
             confirmed_by=mention_from_display(confirmed_by_display),
             confirmed_at=confirmed_at,
             include_alert_text=not alert_attachments,
@@ -2791,7 +2802,7 @@ class IncidentBotService:
         # Same management controls as a manual incident (validity menu, end,
         # summary), minus "Создать задачу" since the Jira issue already exists.
         if self._interactive_controls_enabled() and ticket.jira_issue_key:
-            callback_url = alert_action_callback_url(self.settings.service_public_url)
+            callback_url = self._action_callback_url()
             await self._post_incident_thread_reply(
                 incident_post.id,
                 channel_id=self.settings.mattermost_incident_channel_id,

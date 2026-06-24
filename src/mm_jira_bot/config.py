@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import overload
 
 from mm_jira_bot.domain import configure_runtime_timezone
 
@@ -25,6 +26,14 @@ def load_dotenv_file(path: str | Path = ".env") -> None:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
         os.environ[key] = value
+
+
+@overload
+def _env(name: str) -> str | None: ...
+
+
+@overload
+def _env(name: str, default: str) -> str: ...
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -157,6 +166,7 @@ class Settings:
     @classmethod
     def from_env(cls, dotenv_path: str | Path = ".env") -> Settings:
         load_dotenv_file(dotenv_path)
+        service_public_url = _env("SERVICE_PUBLIC_URL")
         return cls(
             mattermost_url=_required("MATTERMOST_URL").rstrip("/"),
             mattermost_token=_required("MATTERMOST_TOKEN"),
@@ -185,9 +195,7 @@ class Settings:
             database_url=_required("DATABASE_URL"),
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
             mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
-            service_public_url=(
-                _env("SERVICE_PUBLIC_URL").rstrip("/") if _env("SERVICE_PUBLIC_URL") else None
-            ),
+            service_public_url=service_public_url.rstrip("/") if service_public_url else None,
             interactive_buttons_enabled=_env("INTERACTIVE_BUTTONS_ENABLED", "false") == "true",
             duty_help_enabled=_env("DUTY_HELP_ENABLED", "true") != "false",
             mattermost_false_incident_reaction_name=_env(

@@ -10,7 +10,7 @@ httpx, SQLAlchemy 2.0.
 ## Build, Test, and Development Commands
 
 - `python -m venv .venv && source .venv/bin/activate`: create and enter a local virtual environment.
-- `pip install -e ".[test]"`: editable install with pytest dependencies.
+- `pip install -e ".[test]"`: editable install with pytest, ruff, and Pyright dependencies.
 - `python -m mm_jira_bot`: run the bot locally on `0.0.0.0:8080`, reads `.env`.
 - `curl http://localhost:8080/healthz`: check the local FastAPI health endpoint.
 - `pytest`: full suite (`asyncio_mode=auto`, `pythonpath=src`).
@@ -18,10 +18,12 @@ httpx, SQLAlchemy 2.0.
 - `pytest --cov=mm_jira_bot --cov-report=term-missing`: suite with coverage report (baseline ~78%).
 - `ruff check src tests`: lint (rules `E,F,I,UP,B,SIM`; config in `pyproject.toml`).
 - `ruff format src tests`: apply formatting (`--check` to verify without writing).
+- `pyright`: type-check `src/mm_jira_bot` and `tests` (`basic` mode; config in `pyproject.toml`).
+- `ruff check src tests && ruff format --check src tests && pyright && pytest`: local full check before PRs.
 - `docker compose up --build`: build and run the bot with Postgres.
 
-Lint/format via `ruff`, coverage via `pytest-cov` (both in the `[test]` extra). `ruff`
-config lives in `pyproject.toml`; `debug_admin.py`, `jira_payload.py`, and
+Lint/format via `ruff`, type-check via Pyright, coverage via `pytest-cov` (all in the
+`[test]` extra). Tooling config lives in `pyproject.toml`; `debug_admin.py`, `jira_payload.py`, and
 `postmortem.py` ignore `E501` because they hold long unbreakable literals
 (embedded SPA CSS/HTML/JS and Russian PM templates).
 
@@ -333,8 +335,8 @@ Match nearby style: four-space indentation, type hints,
 small modules with explicit responsibilities. Use snake_case for functions,
 variables, and module names; PascalCase for classes. Keep async boundaries clear
 for Mattermost, Jira, and service methods. Formatting/linting is enforced by
-`ruff` (`ruff format` + `ruff check`, config in `pyproject.toml`, line length
-100); run both before committing and keep diffs focused.
+`ruff` (`ruff format` + `ruff check`, line length 100) and type checking by
+Pyright (`basic` mode); run them before committing and keep diffs focused.
 
 ## Testing Guidelines
 

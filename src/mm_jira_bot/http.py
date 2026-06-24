@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from time import perf_counter
-from typing import Any, TypeVar
+from typing import Any, TypeVar, overload
 
 import httpx
 
@@ -70,6 +70,34 @@ class AsyncApiClient:
             event=event,
             **fields,
         )
+
+    @overload
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        error_message: str,
+        event: str,
+        json: Any = None,
+        params: dict[str, Any] | None = None,
+        parse: Callable[[httpx.Response], T],
+        **fields: Any,
+    ) -> T: ...
+
+    @overload
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        error_message: str,
+        event: str,
+        json: Any = None,
+        params: dict[str, Any] | None = None,
+        parse: None = None,
+        **fields: Any,
+    ) -> None: ...
 
     async def _request(
         self,

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Protocol
 
 import httpx
 
@@ -16,6 +17,11 @@ log = get_logger(__name__)
 # buffer of the current attempt, not a delta) — so a retry that restarts the
 # stream simply replays from an empty buffer and the consumer overwrites cleanly.
 StreamProgress = Callable[[str], Awaitable[None]]
+
+
+class StreamResponse(Protocol):
+    def aiter_lines(self) -> AsyncIterator[str]: ...
+
 
 SYSTEM_PROMPT = """Ты — старший SRE и incident manager. Ты помогаешь дежурным
 инженерам составлять профессиональный постмортем инцидента в духе blameless
@@ -246,7 +252,7 @@ class PostmortemLlmClient(AsyncApiClient):
         )
 
     async def _collect_stream(
-        self, response: httpx.Response, *, on_progress: StreamProgress | None = None
+        self, response: StreamResponse, *, on_progress: StreamProgress | None = None
     ) -> str:
         chunks: list[str] = []
         async for line in response.aiter_lines():

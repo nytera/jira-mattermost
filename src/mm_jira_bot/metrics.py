@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from prometheus_client import REGISTRY, Counter, Histogram
 from prometheus_client.core import GaugeMetricFamily
@@ -18,8 +18,10 @@ from prometheus_client.registry import Collector
 
 from mm_jira_bot.logging import get_logger
 
-if TYPE_CHECKING:
-    from mm_jira_bot.repository import AlertTicketRepository
+
+class TicketSummaryRepository(Protocol):
+    def debug_summary(self) -> dict: ...
+
 
 log = get_logger(__name__)
 
@@ -53,7 +55,7 @@ def observe_http(client: str, method: str, status: str, duration_seconds: float)
 class TicketStatsCollector(Collector):
     """Expose alert-ticket counts as gauges, sampled at scrape time."""
 
-    def __init__(self, repository: AlertTicketRepository) -> None:
+    def __init__(self, repository: TicketSummaryRepository) -> None:
         self._repository = repository
 
     def collect(self) -> Iterable[GaugeMetricFamily]:
@@ -98,7 +100,7 @@ class TicketStatsCollector(Collector):
 _ticket_collector: TicketStatsCollector | None = None
 
 
-def register_ticket_collector(repository: AlertTicketRepository) -> None:
+def register_ticket_collector(repository: TicketSummaryRepository) -> None:
     """Register the ticket-stats collector, replacing any previous one.
 
     Idempotent so repeated ``create_app`` calls (tests) don't duplicate series.

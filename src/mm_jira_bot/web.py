@@ -5,6 +5,7 @@ import json
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from time import perf_counter
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
@@ -62,7 +63,7 @@ def _token_format(token: str | None) -> str:
 
 async def _run_dependency_check(
     dependency: str,
-    check: Callable[[], Awaitable[dict[str, object]]],
+    check: Callable[[], Awaitable[dict[str, Any]]],
 ) -> bool:
     started_at = perf_counter()
     log.info("startup.preflight.check_started", dependency=dependency)
@@ -86,7 +87,7 @@ async def _run_dependency_check(
     return True
 
 
-async def _database_preflight(service: IncidentBotService) -> dict[str, object]:
+async def _database_preflight(service: IncidentBotService) -> dict[str, Any]:
     summary = await asyncio.to_thread(service.repository.debug_summary)
     return {
         "database_url": _redact_database_url(service.settings.database_url),
@@ -131,12 +132,14 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         llm_read_timeout=settings.llm_read_timeout,
     )
 
-    checks: list[tuple[str, Callable[[], Awaitable[dict[str, object]]]]] = [
+    checks: list[tuple[str, Callable[[], Awaitable[dict[str, Any]]]]] = [
         ("database", lambda: _database_preflight(service)),
     ]
     mattermost_preflight = getattr(service.mattermost, "preflight_check", None)
     if callable(mattermost_preflight):
-        checks.append(("mattermost", mattermost_preflight))
+        checks.append(
+            ("mattermost", cast(Callable[[], Awaitable[dict[str, Any]]], mattermost_preflight))
+        )
     else:
         log.info(
             "startup.preflight.check_skipped",
@@ -145,7 +148,7 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         )
     jira_preflight = getattr(service.jira, "preflight_check", None)
     if callable(jira_preflight):
-        checks.append(("jira", jira_preflight))
+        checks.append(("jira", cast(Callable[[], Awaitable[dict[str, Any]]], jira_preflight)))
     else:
         log.info(
             "startup.preflight.check_skipped",
@@ -155,7 +158,7 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
     if service.llm is not None:
         llm_preflight = getattr(service.llm, "preflight_check", None)
         if callable(llm_preflight):
-            checks.append(("llm", llm_preflight))
+            checks.append(("llm", cast(Callable[[], Awaitable[dict[str, Any]]], llm_preflight)))
         else:
             log.info(
                 "startup.preflight.check_skipped",
@@ -370,9 +373,7 @@ def create_app(
                 error=str(exc),
                 exc_info=True,
             )
-            return JSONResponse(
-                {"error": "Internal server error."}, status_code=500
-            )
+            return JSONResponse({"error": "Internal server error."}, status_code=500)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, bool]:
