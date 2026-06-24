@@ -116,7 +116,9 @@ as `root_id`, are guarded once-only by the same early returns that protect issue
 creation / confirmation (no extra DB flag), and swallow `ApiError` so a failed
 notification never breaks the main flow. Both helpers box a plain bot notice into
 a single colored attachment (`_box_thread_reply`, `NOTICE_ATTACHMENT_COLOR`) so
-every bot comment renders as an attachment block, not a bare message. The wrap is
+every bot comment renders as an attachment block, not a bare message; callers can
+override the bar color (the duty cheat-sheet passes `DUTY_HELP_ATTACHMENT_COLOR`,
+white). The wrap is
 skipped when the caller already supplies `attachments` (interactive cards keep
 their own layout, and a `message` carrying an `@mention` stays plain text so the
 ping fires); `fallback` carries the notice text into push/preview.

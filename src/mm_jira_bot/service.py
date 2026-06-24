@@ -17,6 +17,7 @@ from mm_jira_bot.actions import (
     ACTION_SUMMARY,
     ACTION_VALID,
     ACTION_VALIDITY,
+    DUTY_HELP_ATTACHMENT_COLOR,
     INCIDENT_DONE_COLOR,
     INCIDENT_OPEN_COLOR,
     NOTICE_ATTACHMENT_COLOR,
@@ -378,6 +379,7 @@ class IncidentBotService:
                 channel_id=post.channel_id,
                 message=self._incident_duty_help(),
                 event="mattermost.incident_thread.duty_help_published",
+                color=DUTY_HELP_ATTACHMENT_COLOR,
             )
 
     def _incident_duty_help(self) -> str:
@@ -2393,6 +2395,7 @@ class IncidentBotService:
                         summary_emoji=self.settings.mattermost_summary_reaction_name,
                     ),
                     event="mattermost.alert_thread.duty_help_published",
+                    color=DUTY_HELP_ATTACHMENT_COLOR,
                 )
         except ApiError as exc:
             self.repository.mark_jira_create_failed(ticket.mattermost_post_id, str(exc))
@@ -2661,6 +2664,7 @@ class IncidentBotService:
                 channel_id=self.settings.mattermost_incident_channel_id,
                 message=self._incident_duty_help(),
                 event="mattermost.incident_thread.duty_help_published",
+                color=DUTY_HELP_ATTACHMENT_COLOR,
             )
 
     async def _alert_attachments(self, ticket: AlertTicket) -> list[dict]:

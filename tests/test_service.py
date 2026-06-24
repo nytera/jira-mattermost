@@ -13,7 +13,11 @@ from fastapi.testclient import TestClient
 
 import mm_jira_bot.jira as jira_module
 import mm_jira_bot.jira_payload as jira_payload_module
-from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR, OPS_ALERT_COLOR
+from mm_jira_bot.actions import (
+    DUTY_HELP_ATTACHMENT_COLOR,
+    NOTICE_ATTACHMENT_COLOR,
+    OPS_ALERT_COLOR,
+)
 from mm_jira_bot.config import Settings, _csv_env, load_dotenv_file
 from mm_jira_bot.domain import (
     JiraIssue,
@@ -3972,6 +3976,7 @@ async def test_firing_alert_posts_duty_help(service):
     ]
     assert len(help_replies) == 1
     assert ":incident:" in _reply_text(help_replies[0])
+    assert help_replies[0]["props"]["attachments"][0]["color"] == DUTY_HELP_ATTACHMENT_COLOR
 
 
 @pytest.mark.asyncio
