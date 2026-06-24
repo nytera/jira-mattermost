@@ -139,6 +139,15 @@ class IncidentMixin:
             self, issue_key: str, ticket: AlertTicket, ended_at: datetime
         ) -> None: ...
 
+        async def _resolve_incident_end_time(
+            self,
+            root_post: MattermostPost,
+            *,
+            reacted_by_user_id: str,
+            reaction_ended_at: datetime,
+            ticket: AlertTicket | None,
+        ) -> datetime: ...
+
         # --- ThreadSummaryMixin ---
         async def generate_thread_summary(
             self, alert_post: MattermostPost, *, requested_by_user_id: str, source: str
@@ -457,6 +466,18 @@ class IncidentMixin:
                 jira_issue_url=ticket.jira_issue_url,
                 incident_message_url=ticket.incident_message_url,
             )
+
+        # Prefer the real recovery time inferred by the LLM from the thread
+        # chronology over the raw reaction timestamp, and feed that single value
+        # to every downstream END / Time-to-Fix write (both apply_incident_end_time
+        # and the postmortem). Falls back to the reaction time when undeterminable.
+        ended_at = await self._resolve_incident_end_time(
+            post,
+            reacted_by_user_id=reacted_by_user_id,
+            reaction_ended_at=ended_at,
+            ticket=ticket,
+        )
+
         end_result: ConfirmationResult | None = None
         if ticket is not None and ticket.jira_issue_key is not None:
             end_result = await self.apply_incident_end_time(

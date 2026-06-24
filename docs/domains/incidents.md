@@ -69,6 +69,17 @@ incident — set END-time, generate the postmortem, and turn the title green.
 
 Key invariants:
 
+- **END-time is the LLM-inferred recovery moment, not the reaction time.** Before
+  any Jira write, `handle_incident_checkmark` calls `_resolve_incident_end_time`
+  (PostmortemMixin) once and substitutes the result for the reaction `ended_at`, so
+  the single value flows into **both** `apply_incident_end_time` and the postmortem
+  (no per-site injection). The LLM reads the thread chronology (a dedicated, small
+  call — `extract_incident_end_time`) and returns the recovery time; it is accepted
+  only when it parses and lands within `[start, now + margin]` (`set_end_time` has
+  no range guard of its own). On no-LLM / `ApiError` / `UNKNOWN` / unparseable /
+  out-of-range it **falls back to the reaction timestamp** — the previous behavior.
+  This covers all three finalize emojis and manual incidents (same entry point).
+
 - **Validity reactions finalize too.** Unlike the alert channel (where
   `Ложный`/`Ожидаемый` are label-only — see [../domains/alerts.md](../domains/alerts.md)),
   the same reactions on an **incident-thread root** route here with
@@ -97,7 +108,9 @@ this mixin only orchestrates; do not duplicate it here.
 
 ## apply_incident_end_time
 
-Sets `JIRA_END_FIELD` to the reaction/button time and best-effort `set_time_to_fix`.
+Sets `JIRA_END_FIELD` to the `ended_at` passed by `handle_incident_checkmark`
+(the LLM-resolved recovery time, or the reaction/button time as fallback — see
+above) and best-effort `set_time_to_fix` off the same value.
 Ignored (no error) when the post is unknown, the incident is not confirmed
 (`valid_incident` false), or no Jira issue exists. Returns `INCIDENT_ENDED` on
 success, `ERROR` on a failed Jira write (recorded as `last_error`, retried).

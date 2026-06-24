@@ -372,6 +372,88 @@ async def test_time_to_fix_on_manual_incident_close(settings):
     assert service.jira.time_to_fix_updates[0][1] > 0
 
 
+# --- LLM-derived incident end time -----------------------------------------
+# Alert/incident start is 1_700_000_000_000 ms = 2023-11-14T22:13:20Z (tests run
+# in the default UTC runtime timezone). The derived ISO below is start + 10 min.
+
+
+@pytest.mark.asyncio
+async def test_incident_end_time_derived_from_thread(settings):
+    # LLM infers recovery 10 min after the alert; the checkmark lands 15 min in.
+    # END + TTF must use the derived recovery time, not the reaction timestamp.
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+    service.llm.end_time = "2023-11-15T01:23:20"
+    await _confirm_and_close_incident(service, closed_at_ms=1_700_000_900_000)
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_600_000))]
+    assert service.jira.time_to_fix_updates == [("OPS-1", 10)]
+
+
+@pytest.mark.asyncio
+async def test_incident_end_time_unknown_falls_back_to_reaction(settings):
+    # UNKNOWN (the FakeLlm default) → the previous behavior: reaction timestamp.
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+    await _confirm_and_close_incident(service, closed_at_ms=1_700_000_300_000)
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))]
+    assert service.jira.time_to_fix_updates == [("OPS-1", 5)]
+
+
+@pytest.mark.asyncio
+async def test_incident_end_time_out_of_range_falls_back_to_reaction(settings):
+    # A hallucinated far-future date is rejected (set_end_time has no guard of its
+    # own) and the reaction timestamp is used instead.
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+    service.llm.end_time = "2099-01-01T00:00:00"
+    await _confirm_and_close_incident(service, closed_at_ms=1_700_000_300_000)
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))]
+    assert service.jira.time_to_fix_updates == [("OPS-1", 5)]
+
+
+@pytest.mark.asyncio
+async def test_incident_end_time_derived_on_manual_incident(settings):
+    # "ручного тоже": a manual incident closed by checkmark goes through the same
+    # handle_incident_checkmark chokepoint, so the derived time applies there too.
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    service.llm = FakeLlmClient()
+    service.llm.end_time = "2023-11-15T01:23:20"
+    root = MattermostPost(
+        id="manualincidentroot000000077",
+        channel_id="incidents-channel",
+        user_id="author",
+        message="Инцидент по росту 500.",
+        create_at=1_700_000_000_000,
+        channel_name="incidents",
+    )
+    service.mattermost.posts[root.id] = root
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=root.id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_900_000,
+        )
+    )
+    assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_600_000))]
+    assert service.jira.time_to_fix_updates == [("OPS-1", 10)]
+
+
+def test_parse_incident_end_time_validates_bounds(service):
+    start = datetime_from_mattermost_ms(1_700_000_000_000)
+    in_range = datetime_from_mattermost_ms(1_700_000_600_000)
+    parse = service._parse_incident_end_time
+    assert parse("2023-11-15T01:23:20", start=start) == in_range
+    # Extracted even when the model wraps the value in stray text.
+    assert parse("Окончание: 2023-11-15T01:23:20 MSK", start=start) == in_range
+    # Non-answers and out-of-range values → None (caller uses the reaction time).
+    assert parse("UNKNOWN", start=start) is None
+    assert parse("", start=start) is None
+    assert parse("не знаю точно", start=start) is None
+    assert parse("2023-11-15T01:00:00", start=start) is None  # before start
+    assert parse("2099-01-01T00:00:00", start=start) is None  # far future
+
+
 @pytest.mark.asyncio
 async def test_time_to_fix_failure_does_not_block_closure(settings):
     service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))

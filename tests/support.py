@@ -260,10 +260,18 @@ class FakeLlmClient:
         self.prompts: list[str] = []
         self.summary_prompts: list[str] = []
         self.summary = "Суть: всё сломалось.\nСтатус: в работе."
+        # End-time extraction answer; default UNKNOWN so tests keep the legacy
+        # reaction-time behavior unless they opt into a derived value.
+        self.end_time = "UNKNOWN"
+        self.end_time_prompts: list[str] = []
 
     async def generate_postmortem(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self.report
+
+    async def extract_incident_end_time(self, prompt: str) -> str:
+        self.end_time_prompts.append(prompt)
+        return self.end_time
 
     async def generate_summary(self, prompt: str, *, on_progress=None) -> str:
         self.summary_prompts.append(prompt)

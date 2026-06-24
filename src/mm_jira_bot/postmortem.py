@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from mm_jira_bot.domain import MattermostPost, backend_datetime
 from mm_jira_bot.formatting import truncate_for_summary
@@ -252,6 +253,33 @@ def build_incident_report_prompt(
         .replace("{participants}", participant_text)
         .replace("{postmortem_author}", postmortem_author)
         .replace("{transcript}", trimmed_transcript)
+    )
+
+
+def build_incident_end_time_prompt(
+    *,
+    transcript: str,
+    start: datetime | None,
+    max_chars: int,
+) -> str:
+    """Prompt for the dedicated "when did the incident end" extraction call.
+
+    Pairs with ``PostmortemLlmClient.extract_incident_end_time``: gives the LLM
+    the same per-message MSK timestamps the postmortem sees, names the incident
+    start as the lower bound, and asks for a single machine-parseable line.
+    """
+    trimmed_transcript = trim_transcript(transcript, max_chars=max_chars)
+    start_text = (
+        backend_datetime(start).strftime("%Y-%m-%dT%H:%M:%S") if start is not None else "не указано"
+    )
+    return (
+        "Определи время фактического окончания инцидента по хронологии ниже.\n"
+        f"Инцидент начался: {start_text} MSK — время окончания не может быть раньше.\n"
+        "В транскрипте каждое сообщение помечено абсолютным временем "
+        "(`DD.MM.YYYY HH:MM:SS MSK`); используй именно эти таймстампы.\n"
+        "Ответ — ровно одна строка: ISO-8601 `YYYY-MM-DDTHH:MM:SS` (MSK) или `UNKNOWN`.\n\n"
+        "Хронология треда:\n"
+        f"{trimmed_transcript}"
     )
 
 

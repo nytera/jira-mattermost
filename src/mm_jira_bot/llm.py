@@ -62,6 +62,17 @@ SUMMARY_SYSTEM_PROMPT = """Ты — старший SRE и incident manager. Ты
 заданной структуре, первая строка — "[INC] DD.MM.YYYY - …"."""
 
 
+END_TIME_SYSTEM_PROMPT = """Ты — ассистент SRE. По хронологии треда инцидента
+определи момент, когда инцидент фактически завершился (сервис восстановлен,
+объявлен конец инцидента, поставлена галочка завершения). Опирайся ТОЛЬКО на
+абсолютные таймстампы, уже указанные в транскрипте: не выдумывай дату и время.
+
+Верни РОВНО одну строку без каких-либо пояснений, преамбулы, кавычек и code
+fences: либо время окончания в формате ISO-8601 по московскому времени
+(`YYYY-MM-DDTHH:MM:SS`), либо литерал `UNKNOWN`, если момент окончания
+по треду определить нельзя."""
+
+
 def _parse_chat_content(response: httpx.Response) -> str:
     data = response.json()
     choices = data.get("choices")
@@ -160,6 +171,20 @@ class PostmortemLlmClient(AsyncApiClient):
             system_prompt=SYSTEM_PROMPT,
             event="llm.postmortem.generate",
             error_message="Failed to generate postmortem",
+        )
+
+    async def extract_incident_end_time(self, prompt: str) -> str:
+        """Ask the LLM for the incident's recovery time (ISO-8601 or ``UNKNOWN``).
+
+        A small, non-templated call separate from the postmortem: the caller
+        parses and range-validates the single-line answer, falling back to the
+        reaction timestamp on anything unparseable.
+        """
+        return await self._generate(
+            prompt,
+            system_prompt=END_TIME_SYSTEM_PROMPT,
+            event="llm.incident_end_time.extract",
+            error_message="Failed to extract incident end time",
         )
 
     async def generate_summary(
