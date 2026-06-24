@@ -97,6 +97,14 @@
   конвенция типизации миксинов (state-атрибуты не строже `__init__`, инлайновые
   `TYPE_CHECKING`-стабы cross-domain вызовов, фиксированное имя логгера). Поведение
   не изменилось (196 тестов зелёные, pyright/ruff чистые).
+- **Рефакторинг `service/`: вынос домена постмортема в `PostmortemMixin`
+  (move-only).** 5 методов (`generate_incident_postmortem`, проводка Jira-полей
+  `_set_time_to_fix`/`_apply_postmortem_validity`/`_ensure_postmortem_jira_issue`,
+  сбор контекста треда `_postmortem_thread_context`) переехали из `coordinator.py`
+  в `service/_postmortem.py`; собранный класс теперь
+  `IncidentBotService(PostmortemMixin, ThreadSummaryMixin)`. Новых переносов в
+  `_shared.py` не потребовалось (все хелперы — внешние импорты). Поведение не
+  изменилось (202 теста зелёные, pyright/ruff чистые).
 - Бокс «ℹ️ Памятка дежурному SRE» теперь рендерится нейтральной полосой slate-400
   (`DUTY_HELP_ATTACHMENT_COLOR = #94A3B8`) — светлее обычных уведомлений
   (`NOTICE_ATTACHMENT_COLOR = #64748B`), в той же slate-семье, читается как

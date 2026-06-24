@@ -241,9 +241,9 @@ Cross-domain: `_alert_action_attachments`, `_post_alert_thread_reply`,
 
 | # | PR | Содержание | Риск |
 |---|----|-----------|------|
-| 0 | **Скелет** | Создать пакет `service/`, перенести класс БЕЗ изменений в `coordinator.py`, `__init__.py` re-export. Никаких миксинов и shared-переносов. Тесты зелёные. | мин. |
-| 1 | **ПИЛОТ** | thread_summary → ThreadSummaryMixin + `box_thread_reply` в `_shared.py`. Проверить mixin-подход и вывод pyright. | низкий |
-| 2 | postmortem → PostmortemMixin | зависит от thread_summary (вынесен) | средний |
+| 0 | ✅ **Скелет** | Создать пакет `service/`, перенести класс БЕЗ изменений в `coordinator.py`, `__init__.py` re-export. Никаких миксинов и shared-переносов. Тесты зелёные. | мин. |
+| 1 | ✅ **ПИЛОТ** | thread_summary → ThreadSummaryMixin + `box_thread_reply` в `_shared.py`. Проверить mixin-подход и вывод pyright. | низкий |
+| 2 | ✅ postmortem → PostmortemMixin (`_postmortem.py`, 5 методов; shared-переносов не потребовалось) | зависит от thread_summary (вынесен) | средний |
 | 3 | jira_sync → JiraSyncMixin (+ SharedMixin примитивы по мере нужды) | средний |
 | 4a | incidents → IncidentMixin (с `confirm_incident`) | выше |
 | 4b | alerts → AlertMixin | выше |
