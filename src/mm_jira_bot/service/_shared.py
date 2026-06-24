@@ -9,16 +9,36 @@ coordinator (ещё не определённое)».
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
+from mm_jira_bot.domain import ConfirmationResult, ConfirmationStatus
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.retry import ApiError
 
 if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
     from mm_jira_bot.repository import AlertTicketRepository
+
+# Распознавание Mattermost post id в ссылке/тексте (`/incident <permalink>` и
+# debug-панель). Жил в `coordinator`, переехал сюда (лист графа импортов), чтобы
+# `_debug.py` мог импортировать функцию без цикла; `coordinator` ре-импортирует её
+# (ре-экспорт в `service/__init__.py` и тесты продолжают работать без правок).
+POST_ID_PATTERN = re.compile(r"(?:^|/)(?:_redirect/)?pl/([a-z0-9]{20,32})(?:$|[/?#])")
+BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
+
+
+def parse_post_id_from_text(text: str) -> str | None:
+    text = text.strip()
+    if BARE_POST_ID_PATTERN.fullmatch(text):
+        return text
+    match = POST_ID_PATTERN.search(text)
+    if match:
+        return match.group(1)
+    return None
+
 
 # Тексты плейсхолдера/ошибки тредового саммари (используются ThreadSummaryMixin и
 # координатором при публикации саммари из разных потоков).
@@ -30,6 +50,16 @@ SUMMARY_FAILED_TEXT = "Не удалось сгенерировать самма
 # `service/__init__.py` — менять имена нельзя.
 _PROMPT_KEY_SUMMARY = "llm_summary_prompt"
 _PROMPT_KEY_POSTMORTEM = "llm_postmortem_prompt"
+
+
+def _validity_action_message(result: ConfirmationResult, validity_label: str) -> str:
+    if result.status == ConfirmationStatus.VALIDITY_SET:
+        return f"Готово: «Валидность» = {validity_label}."
+    if result.status == ConfirmationStatus.PENDING_JIRA:
+        return "Задача Jira ещё создаётся — обновлю «Валидность» автоматически."
+    if result.status == ConfirmationStatus.ERROR:
+        return "Не удалось обновить «Валидность», попробуйте ещё раз."
+    return result.message
 
 
 @dataclass(frozen=True)

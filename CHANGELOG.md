@@ -11,8 +11,28 @@
 
 ## [Unreleased]
 
+### Изменено
+
+- **Документация реорганизована под LLM-навигацию.** Добавлена папка [`docs/`](docs/)
+  с маленькими файлами по доменам и темам (`architecture.md`, `domains/*.md`,
+  `jira.md`, `persistence.md`, `config.md`, `operations.md`, `testing.md`), а
+  `CLAUDE.md` превращён в роутер «задача → какой документ». `README.md` сжат до
+  пользовательской/ops-части (RU), `AGENTS.md` — до конвенций и гейта (EN);
+  архитектура и эксплуатация вынесены в `docs/`.
+- **Добавлена генерируемая карта сервиса.** `scripts/gen_service_map.py` собирает из
+  AST (`stdlib`, без новых зависимостей) [`docs/reference/service-map.md`](docs/reference/service-map.md):
+  дерево файлов + строки, публичные сигнатуры классов/функций, таблицу HTTP-маршрутов
+  и MRO миксинов. Шаг `gen_service_map.py --check` добавлен в `/gate` и в агент
+  `service-verifier` — гейт падает, если карта устарела относительно кода.
+
 ### Исправлено
 
+- **Актуализирована документация по факту кода.** Описание тестов переведено на
+  per-domain структуру, покрытие обновлено до ~81% (было ~78%), pyright-baseline
+  в `/gate`/`service-verifier` переуказан на `tests/test_postmortem.py` (после
+  разбивки `test_service.py`), убрано устаревшее утверждение о перегенерации
+  постмортема повторной галочкой на ручном инциденте, поправлен список «минимальных»
+  env (`MATTERMOST_INCIDENT_REACTION_NAME`/`JIRA_CONFIRMED_STATUS_ID` опциональны).
 - **`Time to Fix (min)` теперь проставляется и при validity-реакции на алерт.**
   Лёгкий путь (`apply_validity_label`) при реакции `Ложный`/`Ожидаемый` на алерт
   писал только `Валидность` и `END`-поле, но **не** `JIRA_TIME_TO_FIX_FIELD` —
@@ -77,6 +97,31 @@
 
 ### Изменено
 
+- **Рефакторинг тестов: разбивка монолитного `tests/test_service.py` (~4900 строк)
+  по доменам (move-only).** Единый тест-файл разнесён в зеркало `service/`:
+  `test_alerts.py`, `test_incidents.py`, `test_debug.py`, `test_jira_sync.py`,
+  `test_postmortem.py`, `test_thread_summary.py` и `test_service_infra.py`
+  (config/db/auth/роутеры/ops/metrics — у группы нет своего миксина). Общая
+  оснастка вынесена в `tests/conftest.py` (фикстуры `settings`/`service`,
+  авто-инжект) и `tests/support.py` (фейковые клиенты Mattermost/Jira/LLM,
+  `make_alert`, `_build_service`, кросс-доменные flow-хелперы — импорт
+  `from support import …`). Тела тестов перенесены байт-в-байт; страховка — диффинг
+  множества собираемых node-ID до/после (191 node-ID, совпали точь-в-точь, без
+  дублей). Поведение не изменилось (202 теста зелёные, ruff/format чистые; pyright —
+  1 pre-existing ошибка переехала вместе со своим тестом, новых нет).
+
+- **Рефакторинг `service/`: вынос debug-домена в `DebugMixin` (move-only).**
+  2 admin-метода debug-панели (`debug_create_from_link` — создать Jira-задачу по
+  ссылке/post id через `handle_alert_post`; `debug_recreate_jira_issue` — пересоздать
+  задачу) вместе с dataclass'ами `DebugCreateFromLinkResult`/`DebugJiraRecreateResult`
+  переехали из `coordinator.py` в `service/_debug.py`. Парсер `parse_post_id_from_text`
+  (+ `POST_ID_PATTERN`/`BARE_POST_ID_PATTERN`) переехал в `service/_shared.py` (лист
+  графа импортов), чтобы `_debug.py` мог его импортировать без цикла; `coordinator`
+  ре-импортирует имя — ре-экспорт в `service/__init__.py` и тесты не тронуты. Собранный
+  класс теперь `IncidentBotService(SharedMixin, AlertMixin, DebugMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`;
+  `coordinator.py` сократился до ~480 строк (init/auth/роутеры + общие helper'ы —
+  кандидаты в `SharedMixin` опциональным следующим шагом). Поведение не изменилось
+  (202 теста зелёные, ruff/format чистые; pyright — без новых ошибок относительно baseline).
 - **Рефакторинг `service.py` → пакет `service/` (скелет, move-only).** Модуль
   `mm_jira_bot/service.py` (2918 строк, god-класс `IncidentBotService` на 55
   методов) превращается в пакет `service/` с доменными mixin-файлами ради
@@ -117,6 +162,37 @@
   Собранный класс теперь
   `IncidentBotService(SharedMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`.
   Поведение не изменилось (202 теста зелёные, pyright/ruff чистые).
+- **Рефакторинг `service/`: вынос домена алертов в `AlertMixin` (move-only).**
+  7 методов — обработка алерт-поста (`handle_alert_post`: создание Jira-задачи через
+  JiraSync и обработка повторов), интерактивные кнопки и меню (`handle_alert_action`,
+  `_alert_action_attachments`), feedback-диалог (`open_feedback_dialog`,
+  `handle_feedback_dialog_submission`), выставление валидности (`apply_validity_label`)
+  и сбор вложений исходного поста (`_alert_attachments`) — переехали из
+  `coordinator.py` в `service/_alerts.py` вместе с module-level хелперами
+  `_copy_post_attachments` и `_incident_action_message` (единственный потребитель —
+  `handle_alert_action`). Собранный класс теперь
+  `IncidentBotService(SharedMixin, AlertMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`;
+  `coordinator.py` сократился с ~1170 до ~720 строк и держит теперь init/auth/роутеры,
+  ещё не вынесенный debug и общие helper'ы (`_resolve_user_display`,
+  `_interactive_controls_enabled`, `_action_callback_url` и др. — кандидаты в
+  `SharedMixin` на следующем шаге). Поведение не изменилось (202 теста зелёные,
+  ruff/format чистые; pyright — без новых ошибок относительно baseline).
+- **Рефакторинг `service/`: вынос инцидентного домена в `IncidentMixin`
+  (move-only).** 12 методов — полный жизненный цикл инцидента: ручной incident-post
+  (`handle_manual_incident_post`, `_incident_duty_help`,
+  `_post_incident_thread_mention`, `_incident_controls_attachment`),
+  кнопки/чекмарк (`handle_incident_action`, `_incident_create_task`,
+  `handle_incident_checkmark`), валидность/END-время (`_set_incident_validity`,
+  `_mark_incident_post_completed`, `apply_incident_end_time`), подтверждение и
+  публикация в incident-канал (`confirm_incident`,
+  `_publish_incident_message_if_needed`) — переехали из `coordinator.py` в
+  `service/_incidents.py`. Module-level хелпер `_validity_action_message` переехал
+  в `_shared.py` (теперь его зовут оба домена — оставшийся `handle_alert_action` и
+  переехавший `handle_incident_action`). Собранный класс теперь
+  `IncidentBotService(SharedMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`;
+  `coordinator.py` сократился с 1882 до ~1170 строк и держит теперь только
+  init/auth/роутеры + ещё не вынесенные alerts/debug. Поведение не изменилось
+  (202 теста зелёные, pyright/ruff чистые).
 - Бокс «ℹ️ Памятка дежурному SRE» теперь рендерится нейтральной полосой slate-400
   (`DUTY_HELP_ATTACHMENT_COLOR = #94A3B8`) — светлее обычных уведомлений
   (`NOTICE_ATTACHMENT_COLOR = #64748B`), в той же slate-семье, читается как

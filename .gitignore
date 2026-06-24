@@ -23,3 +23,12 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+
+# macOS
+.DS_Store
+
+# uv lock-файл — проект ставится через pip (`pip install -e ".[test]"`), uv.lock не отслеживаем.
+uv.lock
+
+# Claude Code: локальные настройки не коммитим; общие агенты в .claude/agents/ — да.
+.claude/settings.local.json

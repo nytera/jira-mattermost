@@ -2,6 +2,17 @@
 
 Сервис слушает канал алертов в Mattermost, создает Jira issue для каждого нового алерта и позволяет явно подтвердить валидный инцидент реакцией `:incident:` или командой `/incident <mattermost_message_link>`.
 
+Это пользовательская документация: настройка, поведение и конфигурация. Техническая архитектура, доменные модули и эксплуатация вынесены в [`docs/`](docs/) (на английском), а навигация для агентов/разработчиков — в [`CLAUDE.md`](CLAUDE.md).
+
+## Документация
+
+- [`CLAUDE.md`](CLAUDE.md) — роутер «задача → какой документ читать» + правила репозитория.
+- [`docs/architecture.md`](docs/architecture.md) — архитектура, сборка миксинов, два идемпотентных потока.
+- [`docs/reference/service-map.md`](docs/reference/service-map.md) — **сгенерированная** карта: дерево файлов, публичные сигнатуры, HTTP-маршруты, MRO.
+- [`docs/domains/`](docs/domains/) — по одному файлу на домен (alerts, incidents, jira-sync, postmortem, thread-summary, debug).
+- [`docs/jira.md`](docs/jira.md), [`docs/persistence.md`](docs/persistence.md), [`docs/config.md`](docs/config.md), [`docs/operations.md`](docs/operations.md), [`docs/testing.md`](docs/testing.md) — cross-cutting темы.
+- [`AGENTS.md`](AGENTS.md) — конвенции (стиль, тесты, commit/PR), гейт.
+
 ## Workflow
 
 1. Бот подключается к Mattermost WebSocket API и слушает события `posted` и `reaction_added`.
@@ -65,6 +76,8 @@ flowchart LR
 - **Резолв** (`✅`) закрывает эпизод и сам по себе не создаёт ни тикет, ни задачу. Следующая сработка снова становится корневой — цикл повторяется.
 
 Тип связи Jira настраивается через `JIRA_REPEAT_LINK_INWARD` (по умолчанию `is child of`): бот резолвит его в имя типа связи через `GET /rest/api/2/issueLinkType`. Если два разных правила имеют одинаковый заголовок, они попадут в один эпизод (максимум одна лишняя пометка «Ожидаемый», правится вручную).
+
+Технические детали эпизодов и линковки — [`docs/domains/jira-sync.md`](docs/domains/jira-sync.md).
 
 ## Validity Reactions
 
@@ -177,8 +190,9 @@ _Карточка инцидента (инцидентный канал): для
 
 Неразрешённому пользователю кнопка (кроме обратной связи) отвечает эфемерным
 `Недостаточно прав для этого действия.`; запрещённая реакция просто игнорируется.
-Повторные реакции/нажатия идемпотентны (исключение — повторная галочка на ручном
-инциденте перегенерирует постмортем).
+Повторные реакции/нажатия идемпотентны: повторная галочка или validity-реакция на
+уже закрытом инциденте лишь обновляет `Валидность`, постмортем не дублируется
+(флаг `postmortem_comment_added`).
 
 ## Jira Setup
 
@@ -198,20 +212,9 @@ _Карточка инцидента (инцидентный канал): для
 - `JIRA_CREATE_ENABLED=false`, тестовый режим без создания задач в Jira, опционально;
 - `JIRA_STUB_ISSUE_KEY=ADSDEV-12024`, ключ задачи, который бот покажет в Mattermost в тестовом режиме; если не задан, бот сгенерирует ключ вида `PROJECT-12345`.
 
-Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. Если передано имя, он сам один раз находит соответствующий Jira field id через REST API и дальше использует его.
+Бот умеет принимать как имя поля, в том числе на русском, так и старый `customfield_*` id. `JIRA_SOURCE_FIELD` должен иметь option `Crit alert`, а `JIRA_IS_CRIT_ALERT_FIELD` — option `Да`. `JIRA_VALID_INCIDENT_FIELD` при создании issue не отправляется (дефолт ставит Jira); при подтверждении бот обновляет его в `Валидный`.
 
-Для Jira 9.x on-prem/Data Center используется REST API v2 и `Authorization: Bearer ...`. Для option-полей (`select`, `radiobuttons`) бот берет допустимые значения из issue-type create metadata:
-
-- `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes`;
-- `GET /rest/api/2/issue/createmeta/{projectKey}/issuetypes/{issueTypeId}`.
-
-`JIRA_SOURCE_FIELD` должен иметь option `Crit alert`, а `JIRA_IS_CRIT_ALERT_FIELD` должен иметь option `Да` для выбранных `JIRA_PROJECT_KEY` и `JIRA_ISSUE_TYPE`. `JIRA_VALID_INCIDENT_FIELD` при создании issue не отправляется, потому что дефолт выставляет сама Jira; при подтверждении бот обновляет это поле в option `Валидный`.
-
-Если `JIRA_CREATE_ENABLED=false`, бот не вызывает Jira create issue: он сразу сохраняет stub-ключ как связанную задачу и публикует обычный ответ в Mattermost. Для фиксированного `JIRA_STUB_ISSUE_KEY` в БД хранится уникальный технический ключ с suffix от Mattermost post id, чтобы несколько тестовых алертов не конфликтовали по уникальному индексу, а в Mattermost показывается чистый ключ вроде `ADSDEV-12024`. Остальные Jira-действия после этого, например обновление `Валидность`, комментарии и transition при подтверждении, остаются включены и будут обращаться к Jira по сохранённому stub-ключу.
-
-`JIRA_START_FIELD` (если задано) — date-time picker поле, которое заполняется временем прихода алерта при создании issue. Значение отправляется в формате ISO 8601 с offset вида `+0300` и обязательной дробной частью секунд (например, `2026-06-16T14:30:00.000+0300`); `dd.MM.yyyy HH:mm` — это только формат отображения в Jira UI. Время приводится к `INCIDENT_TIMEZONE`.
-
-`JIRA_END_FIELD` (если задано) — date-time picker поле, которое заполняется временем нажатия lightweight реакции `Ложный`/`Ожидаемый`. Для валидного инцидента (`:incident:` или `/incident`) это поле при подтверждении не обновляется; оно заполняется позже, когда на корневом сообщении incident-треда нажимают галочку (`:white_check_mark:`, `:heavy_check_mark:` или `:ballot_box_with_check:`). Галочки на replies игнорируются. Формат для Jira REST API такой же, как у `JIRA_START_FIELD`.
+Механика резолва полей/опций, формат date-time и тестовый режим подробно описаны в [`docs/jira.md`](docs/jira.md).
 
 ## LLM Postmortems
 
@@ -222,28 +225,14 @@ _Карточка инцидента (инцидентный канал): для
 - передает тред в OpenAI-compatible endpoint `LLM_BASE_URL` (`https://corellm.wb.ru/deepseek/v1` по умолчанию);
 - обновляет Jira description PM-шаблоном и детерминированными полями: основное сообщение инцидента, участники, автор постмортема;
 - добавляет Jira comment с полным LLM-отчетом (Markdown → Jira-wiki, `@username → [~username]`);
-- публикует в incident-тред фактологическое саммари-инцидентный отчёт (тот же шаблон-отчёт, что и постмортем, но отдельный вызов LLM и без записи в Jira; в треде `@`-меншены убираются, чтобы не пинговать). Плейсхолдер при этом показывает поэтапный статус («⏳ Шаг 1/3: генерирую постмортем…» → «Шаг 2/3: отправляю постмортем в Jira…» → «Шаг 3/3: генерирую саммари…»), а текст саммари при `LLM_STREAM=true` дописывается в тред по мере генерации (LLM-стрим), затем заменяется финальным отчётом;
-- по завершению (переход в конечный статус) постит **отдельным сообщением** зелёный бокс «🟢 Инцидент закрыт» со строкой «ПМ: [название задачи](ссылка)» — ссылка на постмортем больше не висит футером внутри саммари.
+- публикует в incident-тред фактологическое саммари-инцидентный отчёт (тот же шаблон-отчёт, что и постмортем, но отдельный вызов LLM и без записи в Jira; в треде `@`-меншены убираются, чтобы не пинговать). Плейсхолдер показывает поэтапный статус, а при `LLM_STREAM=true` текст дописывается в тред по мере генерации, затем заменяется финальным отчётом;
+- по завершению постит **отдельным сообщением** зелёный бокс «🟢 Инцидент закрыт» со строкой «ПМ: [название задачи](ссылка)».
 
 Для ручного incident-треда без исходного алерта новая Jira issue не получает alert-only поля `Источник = Crit alert` и `Был ли крит алерт? = Да`.
 
-Настройки:
+Основные настройки LLM (`LLM_BASE_URL`, `LLM_API_TOKEN` и алиасы `CORELLM_API_TOKEN`/`OPENAI_API_KEY`, `LLM_MODEL`, `LLM_MAX_TOKENS`, `LLM_THREAD_MAX_CHARS`, `LLM_STREAM` и троттлинг правок, `LLM_POSTMORTEM_PROMPT`/`LLM_SUMMARY_PROMPT` + `_FILE`) перечислены в [`docs/config.md`](docs/config.md).
 
-- `LLM_BASE_URL`
-- `LLM_API_TOKEN` (также поддерживаются `CORELLM_API_TOKEN` и `OPENAI_API_KEY`)
-- `LLM_MODEL`
-- `LLM_MAX_TOKENS` — потолок длины ответа LLM (токены). При подробных отчётах поднимай, иначе отчёт обрежется.
-- `LLM_THREAD_MAX_CHARS` — лимит входного текста треда (символы); длиннее — обрезается голова+хвост.
-- `LLM_STREAM` (по умолчанию `true`) — стримить ответ LLM по SSE. При `true` саммари дописывается в тред по мере генерации; при `false` (или если прокси отдаёт buffered-JSON) плейсхолдер остаётся статичным до готового ответа.
-- `LLM_STREAM_EDIT_INTERVAL_SECONDS` (1.5) и `LLM_STREAM_EDIT_MIN_CHARS` (80) — троттлинг live-правок сообщения при стриминге: сообщение перерисовывается не чаще раза в интервал ИЛИ каждые N новых символов (что наступит раньше). Действуют только при `LLM_STREAM=true`.
-- `LLM_POSTMORTEM_PROMPT` / `LLM_POSTMORTEM_PROMPT_FILE` — переопределяют промпт постмортема (это он формирует Jira-комментарий). Плейсхолдеры: `{thread_url}`, `{participants}`, `{postmortem_author}`, `{transcript}`. Не задано — используется встроенный шаблон.
-- `LLM_SUMMARY_PROMPT` / `LLM_SUMMARY_PROMPT_FILE` — переопределяют промпт саммари в тред. Те же плейсхолдеры.
-
-  **Единый шаблон.** Постмортем (в Jira) и саммари (в тред) собираются из **одного** богатого шаблона-отчёта (Мета, Сводка + Описание влияния инфра/деньги/репутация, Решение, Извлечённые уроки, Action Items как предложения «на обсудить», Хронология, Риски рецидива, Открытые вопросы; первая строка `[INC] DD.MM.YYYY - …` нужна для заголовка Jira-задачи). LLM пишет Markdown с участниками как `@username`; в **Jira** разметка конвертится в wiki, а `@username → [~username]` (кликабельные меншены, при условии что username в MM и Jira совпадают), в **треде** `@` убирается — саммари никого не пингует.
-
-  Для обоих промптов используй вариант `*_FILE` (путь к файлу): загрузчик `.env` построчный и из inline-значения сохранит лишь первую строку. Если заданы оба, `*_FILE` важнее. Системные промпты (роль/гайдлайны качества) задаются в коде и не выносятся в env.
-
-  **Правка без рестарта.** Оба промпта можно переопределить в рантайме через дебаг-панель (вкладка **Настройки**, требует `DEBUG_ADMIN_ENABLED=true`): правки сохраняются в БД и применяются на следующей генерации. Приоритет: **панель (БД) → env (`LLM_*_PROMPT`/`_FILE`) → встроенный дефолт**. Кнопка «Сбросить к дефолту» удаляет оверрайд из БД.
+**Единый шаблон.** Постмортем (в Jira) и саммари (в тред) собираются из **одного** богатого шаблона-отчёта; первая строка `[INC] DD.MM.YYYY - …` нужна для заголовка Jira-задачи. Плейсхолдеры промптов: `{thread_url}`, `{participants}`, `{postmortem_author}`, `{transcript}`. Для больших промптов используйте вариант `*_FILE` (загрузчик `.env` построчный). Оба промпта можно переопределить в рантайме через дебаг-панель (вкладка **Настройки**, требует `DEBUG_ADMIN_ENABLED=true`) без рестарта; приоритет: **панель (БД) → env → встроенный дефолт**. Детали — [`docs/domains/postmortem.md`](docs/domains/postmortem.md).
 
 ## Ручные инциденты (кнопки в инцидентном канале)
 
@@ -263,36 +252,19 @@ _Карточка инцидента (инцидентный канал): для
   (один раз на инцидент), чтобы дежурного позвали; действия — через чекмарк-флоу.
 - По клику **➕ Создать задачу** создаётся Jira issue (без alert-only полей), а
   карточка сменяется на контролы: **меню валидности** (`Ложный`/`Ожидаемый`/
-  `Валидный` → пишет в поле, как в алерте), **🏁 Завершить** и
-  **📝 Саммари**.
-- **🏁 Завершить** = тот же полный постмортем в Jira, что и галочка (PM-шаблон
-  с участниками/автором/ссылкой, отчёт комментарием в Jira, название через LLM,
-  end-time), плюс фактологическое саммари-отчёт в incident-тред (отдельный
-  LLM-промпт, плейсхолдер → замена). Выбранную валидность **не перетирает**: если
-  стоит `Ложный`, он таким и останется.
-- **📝 Саммари** — фактологическое саммари-отчёт треда в тред (плейсхолдер →
-  замена), Jira не трогает (это не текст постмортема из Jira; промпт — общий с
-  саммари при завершении).
+  `Валидный` → пишет в поле, как в алерте), **🏁 Завершить** и **📝 Саммари**.
+- **🏁 Завершить** = тот же полный постмортем в Jira, что и галочка, плюс
+  фактологическое саммари-отчёт в incident-тред. Выбранную валидность **не
+  перетирает**: если стоит `Ложный`, он таким и останется.
+- **📝 Саммари** — фактологическое саммари-отчёт треда в тред, Jira не трогает.
 - Старая **галочка** на корне треда продолжает работать параллельно.
 
 **Инциденты из алертов** (подтверждённые через `:incident:` / кнопку 🚨) получают
-в инцидентном канале **ту же карточку контролов** — меню валидности, 🏁 Завершить
-и 📝 Саммари — но **без** «Создать задачу», т.к. Jira-задача уже создана. Сверху
-карточка показывает блок **«Создана задача: <ссылка>»** (как в алертах). Карточка
-постится ответом под сообщением инцидента сразу при подтверждении.
+в инцидентном канале **ту же карточку контролов** — без «Создать задачу» (задача
+уже создана), со строкой **«Создана задача: <ссылка>»** сверху.
 
-Под allowlist (`MATTERMOST_AUTHORIZED_USERNAMES`) попадают все эти кнопки.
-
-## Startup Preflight
-
-На старте бот логирует конфигурацию без секретов и запускает non-fatal проверки зависимостей:
-
-- `database` — проверяет доступ к БД и пишет счетчики тикетов;
-- `mattermost` — проверяет `/users/me`, `MATTERMOST_ALERT_CHANNEL_ID` и `MATTERMOST_INCIDENT_CHANNEL_ID`;
-- `jira` — заранее резолвит field ids, issue type, createmeta и options `Валидный`, `Ложный`, `Ожидаемый`, `Crit alert`, `Да`;
-- `llm` — если настроен `LLM_API_TOKEN`, делает маленький smoke request в `chat/completions`.
-
-В `LOG_FORMAT=json` пишутся все startup-события: `startup.configuration`, `startup.preflight.check_started`, `startup.preflight.check_ok`, `startup.preflight.check_failed`, `startup.preflight.completed`. В `LOG_FORMAT=text` шумные `check_started`/`check_ok` скрываются, остается короткий итог preflight и ошибки. Ошибка preflight не останавливает приложение, но сразу показывает проблему с доступом, токеном, моделью или Jira metadata.
+Под allowlist (`MATTERMOST_AUTHORIZED_USERNAMES`) попадают все эти кнопки. Детали
+жизненного цикла инцидента — [`docs/domains/incidents.md`](docs/domains/incidents.md).
 
 ## Configuration
 
@@ -302,24 +274,13 @@ _Карточка инцидента (инцидентный канал): для
 cp .env.example .env
 ```
 
-Минимальные переменные:
+Обязательные переменные (без них бот не стартует):
 
-- `MATTERMOST_URL`
-- `MATTERMOST_TOKEN`
-- `MATTERMOST_ALERT_CHANNEL_ID`
-- `MATTERMOST_INCIDENT_CHANNEL_ID`
-- `MATTERMOST_INCIDENT_REACTION_NAME=incident`
-- `MATTERMOST_BOT_USER_ID`
-- `JIRA_BASE_URL`
-- `JIRA_API_TOKEN`
-- `JIRA_PROJECT_KEY`
-- `JIRA_ISSUE_TYPE`
-- `JIRA_VALID_INCIDENT_FIELD`
-- `JIRA_SOURCE_FIELD`
-- `JIRA_IS_CRIT_ALERT_FIELD`
-- `JIRA_CONFIRMED_STATUS_ID`
-- `DATABASE_URL`
-- `INCIDENT_TIMEZONE=Europe/Moscow`, timezone для backend-времени в Jira payload, incident-сообщениях и логах
+- `MATTERMOST_URL`, `MATTERMOST_TOKEN`, `MATTERMOST_ALERT_CHANNEL_ID`, `MATTERMOST_INCIDENT_CHANNEL_ID`, `MATTERMOST_BOT_USER_ID`;
+- `JIRA_BASE_URL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE`, `JIRA_VALID_INCIDENT_FIELD`, `JIRA_SOURCE_FIELD`, `JIRA_IS_CRIT_ALERT_FIELD`;
+- `DATABASE_URL`.
+
+Остальные переменные (реакции, таймзона, LLM, ops-канал, метрики, дебаг-панель, поведение кнопок и т.д.) — опциональны и имеют значения по умолчанию. **Полная матрица env с дефолтами и разбивкой required/optional — [`docs/config.md`](docs/config.md).**
 
 Для SQLite локально:
 
@@ -350,92 +311,12 @@ curl http://localhost:8080/healthz
 
 ## Debug Admin
 
-По умолчанию debug-админка выключена. Чтобы включить ее локально или в
-закрытом контуре, задайте:
-
-```env
-DEBUG_ADMIN_ENABLED=true
-```
-
-После этого будут доступны:
-
-- `http://localhost:8080/debug/admin` при локальном запуске;
-- `GET /debug/admin` — простая HTML-страница со списком алертов и действиями;
-- `GET /debug/admin/api/summary` — счетчики по статусам;
-- `GET /debug/admin/api/alerts?limit=50&status=failed_jira` — список тикетов;
-- `GET /debug/admin/api/alerts/{post_id}` — полная карточка тикета, включая сохраненное название алерта и обратную связь;
-- `POST /debug/admin/api/alerts/{post_id}/jira/recreate` — создать Jira issue для тикета без `jira_issue_key`;
-- `POST /debug/admin/api/alerts/{post_id}/jira/recreate?force=true` — создать новую Jira issue и заменить локальную связь;
-- `POST /debug/admin/api/alerts/create-from-link` — создать Jira issue из вставленной Mattermost/Band ссылки или `post_id`;
-- `GET /debug/admin/api/logs` — последние записи из in-memory log buffer;
-- вкладка **Настройки** — редактирование LLM-промптов (саммари и постмортем) с сохранением и применением без рестарта: `GET /debug/admin/api/settings` (эффективный промпт + источник `db`/`env`/`default`), `POST /debug/admin/api/settings/{key}` (сохранить оверрайд), `POST /debug/admin/api/settings/{key}/reset` (сбросить к дефолту).
-
-Важно: у debug-админки нет отдельной авторизации, кроме флага
-`DEBUG_ADMIN_ENABLED`, и она использует тот же HTTP-порт, что и бот
-(`8080` в текущем `uvicorn.run`). Не выставляйте ее наружу без firewall/reverse proxy.
-Force recreate не удаляет и не закрывает старую Jira issue; он только создает
-новую задачу и обновляет локальную связь. Если алерт уже был подтвержден, бот
-повторно применит Jira confirmation к новой задаче, но не создаст второй
-incident-post в Mattermost.
-
-## Ops-канал и метрики Prometheus
-
-Наблюдаемость за здоровьем самого бота. Обе поверхности независимы и по
-умолчанию: канал — выключен, метрики — включены.
-
-### Канал ops-алертов (`MATTERMOST_OPS_CHANNEL_ID`)
-
-Отдельный канал для жизни самого бота — это **не** канал алертов Grafana
-(`MATTERMOST_ALERT_CHANNEL_ID`). Туда идут два потока:
-
-1. **Ошибки** — каждое `ERROR`-событие (обрыв websocket, падение фонового
-   `pending_work`, ошибки Jira/LLM, провал preflight) постится красной плашкой.
-2. **Лента созданных задач** — при создании любой Jira-задачи (firing-алерт,
-   ручной инцидент, постмортем-инцидент, пересоздание из дебаг-панели) в канал
-   уходит синяя плашка «Создана задача» с ключом задачи и ссылкой на
-   тред/сообщение-источник, откуда она заведена.
-
-Включается опционально:
-
-```env
-MATTERMOST_OPS_CHANNEL_ID=ops-channel-id
-MATTERMOST_OPS_COOLDOWN_SECONDS=300
-```
-
-- Бот должен состоять в канале с правом записи.
-- Антишторм (только для ошибок): повтор того же события глушится в окне
-  `…_COOLDOWN_SECONDS` (по умолчанию 300 с). Лента задач не дросселируется.
-- При `JIRA_CREATE_ENABLED=false` заглушки-задачи в ленту не постятся.
-- Доставка best-effort: если пост не удался, ошибка уходит в лог `warning`, а
-  бот продолжает работу. При незаданном канале — только логи.
-
-### Метрики Prometheus (`/metrics`)
-
-По умолчанию эндпоинт `GET http://localhost:8080/metrics` включён (Prometheus
-рассчитан на скрейпинг). Отключить:
-
-```env
-METRICS_ENABLED=false
-```
-
-Основные серии:
-
-- `bot_http_requests_total{client,method,status}` и
-  `bot_http_request_duration_seconds{client,method}` — внешние HTTP-вызовы
-  (`client` = `jira` / `mattermost` / `llm`). Примечание: стриминговые
-  LLM-вызовы (`LLM_STREAM=true`, по умолчанию) идут мимо общей точки
-  инструментации и в HTTP-метрики не попадают;
-- `bot_errors_total{event}` — количество `ERROR`-событий по имени события;
-- `bot_ops_alerts_dropped_total` — сброшенные из-за переполнения очереди
-  ops-алерты;
-- `bot_tickets_total`, `bot_tickets_pending_jira`, `bot_tickets_failed`,
-  `bot_tickets_confirmed`, `bot_tickets_by_creation_status{status}`,
-  `bot_tickets_by_confirmation_status{status}` — состояние очереди тикетов
-  (снимается на скрейпе через `repository.debug_summary()`).
-
-Важно: у `/metrics`, как и у debug-админки, нет отдельной авторизации и он
-использует тот же HTTP-порт (`8080`). Не выставляйте наружу без firewall/reverse
-proxy.
+Дебаг-панель по умолчанию выключена. Включается флагом `DEBUG_ADMIN_ENABLED=true`,
+после чего доступна на `http://localhost:8080/debug/admin` (список алертов, счётчики,
+логи, пересоздание Jira-задач, вкладка **Настройки** с правкой LLM-промптов без
+рестарта). У неё нет отдельной авторизации и она использует тот же порт `8080` — не
+выставляйте наружу без firewall/reverse proxy. Подробности и список API —
+[`docs/domains/debug.md`](docs/domains/debug.md).
 
 ## Docker
 
@@ -449,152 +330,12 @@ docker compose up --build
 DATABASE_URL=postgresql://incident_bot:incident_bot@postgres:5432/incident_bot
 ```
 
-## Database Schema
+## Эксплуатация и разработка
 
-Модель хранится в SQLAlchemy, а SQL-миграции лежат в `migrations/`: базовая таблица тикетов, таблица обратной связи и добавление названия алерта. При старте сервис вызывает `create_all` и выполняет небольшие совместимые `ALTER TABLE`, поэтому для локального запуска отдельный мигратор не нужен.
-
-Основная таблица: `alert_tickets`.
-
-Ключевые поля:
-
-- `mattermost_post_id` с уникальным индексом;
-- `mattermost_alert_title`, короткое название алерта из первой строки сообщения;
-- `jira_issue_key`;
-- `valid_incident`;
-- `incident_post_id`;
-- `jira_confirmation_comment_added`;
-- `creation_status` и `confirmation_status` для retry.
-
-Обратная связь хранится в таблице `alert_feedback`: `mattermost_post_id`, `user_id`, отображаемое имя пользователя, текст сообщения и время создания.
-
-## Idempotency
-
-- Jira issue создается только после успешной вставки строки с уникальным `mattermost_post_id`.
-- Повторное событие `posted` видит существующий `jira_issue_key` и пропускает создание.
-- Повторная реакция или slash-команда возвращает уже существующий Jira issue и не публикует второй incident post.
-- Jira comment добавляется один раз, флаг хранится в `jira_confirmation_comment_added`.
-- Если Jira уже вернула `Valid Incident = Валидный`, локальный `valid_incident` синхронизируется.
-
-## Recovery and Retry
-
-Для временных ошибок Mattermost и Jira используются retries с exponential backoff. Если создание Jira issue не удалось, строка остается с `creation_status=failed_jira`, и фоновый worker повторит попытку.
-
-Если подтверждение пришло до создания Jira issue, бот сохраняет `pending_confirmation_*`, а после успешного создания issue продолжит публикацию в канал инцидентов и обновление Jira.
-
-После перезапуска сервис:
-
-- поднимает pending worker;
-- обрабатывает незавершенные Jira creation и confirmation из таблицы `alert_tickets`;
-- по умолчанию не делает backfill старых сообщений из канала алертов и создает задачи только по новым WebSocket событиям после запуска;
-- если нужно намеренно обработать последние сообщения из канала, включите `ENABLE_BACKFILL_ON_STARTUP=true` и задайте `BACKFILL_RECENT_POSTS_LIMIT`.
-
-Если в БД уже есть старые строки без `jira_issue_key`, pending worker будет пытаться создать Jira issue для них каждые `PENDING_WORK_INTERVAL_SECONDS`. Чтобы полностью остановить ретраи старых алертов, очистите такие строки вручную после проверки:
-
-```sql
-SELECT id, mattermost_post_id, creation_status, confirmation_status, created_at, last_error
-FROM alert_tickets
-WHERE jira_issue_key IS NULL
-ORDER BY created_at;
-
-DELETE FROM alert_tickets
-WHERE jira_issue_key IS NULL
-  AND creation_status IN ('pending_jira', 'failed_jira');
-```
-
-## Logs
-
-Логи пишутся в stdout. Формат выбирается переменной `LOG_FORMAT`:
-
-- `LOG_FORMAT=json` (по умолчанию) — по одному JSON-объекту на событие, удобно для сбора в Loki/ELK и т.п.; сохраняет полную детализацию.
-- `LOG_FORMAT=text` — компактные читаемые строки вида `время УРОВЕНЬ событие key=value …`, удобно при локальном запуске. На `INFO` stdout показывает только важные бизнес-события, а технические `check_ok`, skip/no-op, Jira metadata/cache и низкоуровневые Mattermost notice-события скрываются. `WARNING` и `ERROR` проходят всегда.
-
-Уровень логирования задаётся `LOG_LEVEL` (по умолчанию `INFO`).
-
-Важные события:
-
-- `mattermost.alert.received`;
-- `jira.issue.created`;
-- `jira.issue.create_stubbed`;
-- `jira.issue.create_failed`;
-- `mattermost.alert_thread.reply_failed`;
-- `mattermost.user.lookup_failed`;
-- `jira.client.configured`;
-- `jira.field.resolved`;
-- `jira.issue_type.resolved`;
-- `jira.create_metadata.loaded`;
-- `jira.option.resolved`;
-- `jira.issue.payload_prepared`;
-- `jira.http.error`;
-- `mattermost.reaction.received`;
-- `mattermost.slash_command.received`;
-- `mattermost.action.received`;
-- `mattermost.action.post_lookup_failed`;
-- `mattermost.action.unknown`;
-- `feedback.received`;
-- `incident.confirmed`;
-- `mattermost.incident_message.published`;
-- `jira.valid_incident.updated`;
-- `jira.comment.added`;
-- `jira.issue.transitioned`;
-- `mattermost.alert_thread.summary_published`;
-- `summary.skipped_llm_not_configured`;
-- `summary.failed`;
-- `summary.completed`;
-- `postmortem.completed`;
-- `http.request.failed` (необработанное исключение в HTTP-эндпоинте → ответ 500);
-- `http.request.bad_json` / `http.request.bad_body` (битое тело запроса → 400);
-- skip-события идемпотентности.
-
-Ошибки и трейсбеки: неожиданные исключения (в фоновых циклах, обработчике
-websocket-событий, startup-backfill и HTTP-эндпоинтах) логируются на уровне
-`ERROR` со стеком (`exc_info`) и полем `error_type` — в `LOG_FORMAT=json` стек
-лежит в ключе `exception`, в `text` печатается отдельной строкой под событием.
-Ожидаемые ошибки интеграций (`ApiError`) логируются компактно, без стека. Сбой
-сбора ticket-gauge'ов на скрейпе `/metrics` логируется как `metrics.collect_failed`
-(WARNING, со стеком) — `/metrics` при этом не падает.
-
-Логи самого `uvicorn` унифицированы: `__main__.py` запускает сервер с
-`log_config=None`, поэтому `uvicorn.access`/`uvicorn.error`/lifecycle-сообщения
-идут через тот же `LOG_FORMAT` (в `json` — JSON-строкой с `logger="uvicorn.access"`)
-и попадают в in-memory ring buffer debug-admin (`GET …/api/logs`). В `LOG_FORMAT=text`
-чужие INFO-записи (например `Uvicorn running on …` и access-лог) видны, а наши
-шумные INFO-события (`check_ok`, skip/no-op и т.п.) по-прежнему скрыты.
-
-В Docker:
-
-```bash
-docker compose logs -f bot
-```
-
-## Tests
-
-```bash
-pytest                                              # весь набор
-pytest --cov=mm_jira_bot --cov-report=term-missing  # с отчётом покрытия (~78%)
-```
-
-Тесты покрывают создание Jira issue, защиту от дублей, confirmation через reaction и slash command, повторное подтверждение, невалидную slash-ссылку, отсутствие локальной связи, Jira payload, Jira option metadata и формат incident-сообщения, а также интерактивную карточку (наличие/отсутствие controls, validity menu, incident, summary и feedback actions), thread summary через LLM и no-op при отсутствии LLM.
-
-## Lint, format & type check
-
-```bash
-ruff check src tests           # линтер (правила E,F,I,UP,B,SIM)
-ruff format src tests          # автоформат (добавь --check для проверки без записи)
-.venv/bin/python -m pyright    # статическая проверка типов src/mm_jira_bot и tests
-```
-
-Перед PR локально прогоняйте полный набор:
-
-```bash
-.venv/bin/python -m ruff check src tests
-.venv/bin/python -m ruff format --check src tests
-.venv/bin/python -m pyright
-.venv/bin/python -m pytest
-```
-
-`ruff`, Pyright и `pytest-cov` ставятся вместе с тестовыми зависимостями
-(`pip install -e ".[test]"`). Pyright настроен на локальное окружение `.venv`.
-Конфигурация — в `pyproject.toml`.
+- Старт-preflight, ops-канал, метрики Prometheus, recovery/retry, логи — [`docs/operations.md`](docs/operations.md).
+- Схема БД, миграции, идемпотентность, таймзона — [`docs/persistence.md`](docs/persistence.md).
+- Тесты и харнес — [`docs/testing.md`](docs/testing.md).
+- Линт/формат/типы и конвенции — [`AGENTS.md`](AGENTS.md).
 
 ## API References
 

@@ -390,5 +390,3 @@ class ThreadSummaryMixin:
             transcript=transcript,
             event=event,
         )
-
-
