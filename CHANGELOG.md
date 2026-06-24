@@ -117,6 +117,21 @@
   Собранный класс теперь
   `IncidentBotService(SharedMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`.
   Поведение не изменилось (202 теста зелёные, pyright/ruff чистые).
+- **Рефакторинг `service/`: вынос домена алертов в `AlertMixin` (move-only).**
+  7 методов — обработка алерт-поста (`handle_alert_post`: создание Jira-задачи через
+  JiraSync и обработка повторов), интерактивные кнопки и меню (`handle_alert_action`,
+  `_alert_action_attachments`), feedback-диалог (`open_feedback_dialog`,
+  `handle_feedback_dialog_submission`), выставление валидности (`apply_validity_label`)
+  и сбор вложений исходного поста (`_alert_attachments`) — переехали из
+  `coordinator.py` в `service/_alerts.py` вместе с module-level хелперами
+  `_copy_post_attachments` и `_incident_action_message` (единственный потребитель —
+  `handle_alert_action`). Собранный класс теперь
+  `IncidentBotService(SharedMixin, AlertMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`;
+  `coordinator.py` сократился с ~1170 до ~720 строк и держит теперь init/auth/роутеры,
+  ещё не вынесенный debug и общие helper'ы (`_resolve_user_display`,
+  `_interactive_controls_enabled`, `_action_callback_url` и др. — кандидаты в
+  `SharedMixin` на следующем шаге). Поведение не изменилось (202 теста зелёные,
+  ruff/format чистые; pyright — без новых ошибок относительно baseline).
 - **Рефакторинг `service/`: вынос инцидентного домена в `IncidentMixin`
   (move-only).** 12 методов — полный жизненный цикл инцидента: ручной incident-post
   (`handle_manual_incident_post`, `_incident_duty_help`,
