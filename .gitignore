@@ -24,6 +24,9 @@ build/
 .coverage
 htmlcov/
 
+# macOS
+.DS_Store
+
 # uv lock-файл — проект ставится через pip (`pip install -e ".[test]"`), uv.lock не отслеживаем.
 uv.lock
 

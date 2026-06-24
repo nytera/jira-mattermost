@@ -20,7 +20,12 @@ tools: Bash, Read, Grep, Glob
 .venv/bin/ruff format --check src tests
 .venv/bin/pyright
 .venv/bin/pytest -q
+.venv/bin/python scripts/gen_service_map.py --check
 ```
+
+Последний шаг (`--check`) проверяет, что сгенерированная карта `docs/reference/service-map.md`
+не устарела относительно кода. Расхождение (exit 1 + дифф) → FAIL; фикс автору:
+`.venv/bin/python scripts/gen_service_map.py && git add docs/reference/service-map.md`.
 
 - Если `.venv` отсутствует: `python -m venv .venv && .venv/bin/pip install -e ".[test]"`,
   затем повтори. Конфиг линта/типов — в `pyproject.toml` (ruff rules `E,F,I,UP,B,SIM`,
@@ -31,8 +36,8 @@ tools: Bash, Read, Grep, Glob
 ## 2. Baseline pyright (КРИТИЧНО — не паникуй на known-ошибке)
 
 На чистом HEAD pyright даёт **1 известную pre-existing ошибку**:
-`tests/test_service.py` — `Cannot access attribute "status" for class "ActionResult"`
-(`reportAttributeAccessIssue`, ~строка 4532; следствие более строгого union-возврата
+`tests/test_postmortem.py` — `Cannot access attribute "status" for class "ActionResult"`
+(`reportAttributeAccessIssue`, ~строка 311; следствие более строгого union-возврата
 `handle_reaction` в новых версиях pyright, НЕ связана с текущими изменениями).
 
 Правило: считай ошибки pyright. Если их **ровно 1** и это та самая — гейт по pyright
@@ -72,14 +77,18 @@ HEAD (`git stash` рабочих изменений ИЛИ проверь тот
 
 ## 4. Doc-sync (перед коммитом — требование CLAUDE.md)
 
-Если в диффе менялся код, но НЕ тронуты `AGENTS.md` (таблица Module responsibilities) /
-`README.md` / `CHANGELOG.md` (`[Unreleased]`) там, где этого требует изменение —
-флагни как предупреждение (не блокер, но к коммиту довести до соответствия).
+Если в диффе менялся код, но НЕ тронуты соответствующие доки там, где этого требует
+изменение, — флагни как предупреждение (не блокер, но к коммиту довести до соответствия):
+- архитектура/поведение домена → `docs/architecture.md` или `docs/domains/<домен>.md`;
+- пользовательское поведение/конфиг → `README.md` / `docs/config.md`;
+- любое изменение → запись в `CHANGELOG.md` (`[Unreleased]`).
+Карта `docs/reference/service-map.md` сюда НЕ относится — она проверяется жёстко шагом
+`--check` в гейте (см. §1), а не doc-sync.
 
 ## 5. Вердикт (формат вывода)
 
 Верни структурно:
-- **Gate:** ruff PASS/FAIL · format PASS/FAIL · pyright «1 pre-existing + 0 new» · pytest «N passed».
+- **Gate:** ruff PASS/FAIL · format PASS/FAIL · pyright «1 pre-existing + 0 new» · pytest «N passed» · service-map PASS/FAIL.
 - **Move-only:** по 7 пунктам PASS/FAIL + конкретные находки (имя/файл/строка).
 - **Doc-sync:** OK / нужно обновить <файлы>.
 - **ИТОГ:** SAFE TO COMMIT / NOT SAFE — одной строкой, с причиной если NOT SAFE.
