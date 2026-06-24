@@ -22,6 +22,7 @@ from mm_jira_bot.actions import (
     INCIDENT_DONE_COLOR,
     INCIDENT_OPEN_COLOR,
     NOTICE_ATTACHMENT_COLOR,
+    OPS_ISSUE_CREATED_COLOR,
     alert_action_callback_url,
     build_alert_controls_attachment,
     build_alert_feedback_attachment,
@@ -46,6 +47,7 @@ from mm_jira_bot.formatting import (
     format_alert_duty_help,
     format_incident_duty_help,
     format_incident_message,
+    format_ops_issue_created,
     format_thread_issue_created,
     format_thread_linked_to_root,
     format_thread_status_changed,
@@ -324,7 +326,7 @@ class IncidentBotService(ThreadSummaryMixin):
             return
         if post.root_id:  # only channel root posts, not thread replies
             return
-        if post.post_type:
+        if post.is_system_message:
             return
         if self._is_bot_post(post):
             return
@@ -449,7 +451,7 @@ class IncidentBotService(ThreadSummaryMixin):
             )
             return None
 
-        if post.post_type:
+        if post.is_system_message:
             log.info(
                 "mattermost.post.skipped_system_message",
                 mattermost_post_id=post.id,
@@ -957,6 +959,7 @@ class IncidentBotService(ThreadSummaryMixin):
                 return ActionResult(message="Не удалось создать задачу, попробуйте ещё раз.")
             self.repository.attach_jira_issue(ticket.mattermost_post_id, issue.key, issue.url)
             ticket = self.repository.get_by_post_id(ticket.mattermost_post_id) or ticket
+            await self._announce_issue_to_ops(ticket, issue, source="manual_incident")
 
         update_attachments = None
         if self._interactive_controls_enabled():
@@ -1517,6 +1520,7 @@ class IncidentBotService(ThreadSummaryMixin):
             issue.key,
             issue.url,
         )
+        await self._announce_issue_to_ops(ticket, issue, source="incident_postmortem")
         await self._apply_postmortem_validity(
             ticket.mattermost_post_id, issue.key, validity_label=validity_label
         )
@@ -1763,6 +1767,9 @@ class IncidentBotService(ThreadSummaryMixin):
             )
 
         self.repository.set_validity_label(post_id, validity_label)
+        await self._set_time_to_fix(
+            ticket.jira_issue_key, ticket, validity_set_at or backend_now()
+        )
         log.info(
             "incident.validity.updated",
             mattermost_post_id=post_id,
@@ -2102,6 +2109,7 @@ class IncidentBotService(ThreadSummaryMixin):
         )
         updated_ticket = self.repository.get_by_post_id(post_id)
         assert updated_ticket is not None
+        await self._announce_issue_to_ops(updated_ticket, issue, source="recreate")
         if updated_ticket.valid_incident and updated_ticket.incident_post_id:
             confirmed_by = updated_ticket.confirmed_by_user_id or "debug-admin"
             confirmed_by_display = await self._resolve_user_display(confirmed_by)
@@ -2173,6 +2181,7 @@ class IncidentBotService(ThreadSummaryMixin):
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=issue.key,
             )
+            await self._announce_issue_to_ops(ticket, issue, source="alert")
             display_issue = self._display_jira_issue(issue)
             issue_message = format_thread_issue_created(
                 jira_issue_key=display_issue.key,
@@ -2336,6 +2345,50 @@ class IncidentBotService(ThreadSummaryMixin):
             jira_issue_url=issue.url,
         )
         return issue
+
+    async def _announce_issue_to_ops(
+        self, ticket: AlertTicket, issue: JiraIssue, *, source: str
+    ) -> None:
+        """Best-effort: post every newly created Jira issue to the ops channel with
+        a link back to its source thread/message. Shares ``MATTERMOST_OPS_CHANNEL_ID``
+        with the error-alert feed; skips stub issues (``jira_create_enabled=false``)
+        and never breaks issue creation (a failed post is logged, not propagated).
+        """
+        channel_id = self.settings.mattermost_ops_channel_id
+        if not channel_id or not self.settings.jira_create_enabled:
+            return
+        message = format_ops_issue_created(
+            jira_issue_key=issue.key,
+            jira_issue_url=issue.url,
+            source_title=ticket.mattermost_alert_title,
+            source_message_url=ticket.mattermost_message_url,
+            channel_name=ticket.mattermost_channel_name,
+            incident_message_url=ticket.incident_message_url,
+        )
+        try:
+            await self.mattermost.create_post(
+                channel_id=channel_id,
+                message="",
+                props={
+                    "jira_issue_key": issue.key,
+                    "attachments": [
+                        {"fallback": message, "color": OPS_ISSUE_CREATED_COLOR, "text": message}
+                    ],
+                },
+            )
+            log.info(
+                "ops.issue_created.published",
+                jira_issue_key=issue.key,
+                mattermost_post_id=ticket.mattermost_post_id,
+                source=source,
+            )
+        except ApiError as exc:
+            log.warning(
+                "ops.issue_created.failed",
+                jira_issue_key=issue.key,
+                mattermost_post_id=ticket.mattermost_post_id,
+                error=str(exc),
+            )
 
     def _display_jira_issue(self, issue: JiraIssue) -> JiraIssue:
         if self.settings.jira_create_enabled or not self.settings.jira_stub_issue_key:

@@ -372,6 +372,7 @@ def make_alert(
     message: str = "CPU usage is above 95%",
     props: dict | None = None,
     is_bot: bool = True,
+    post_type: str = "",
 ) -> MattermostPost:
     post_props = {"from_webhook": "true"} if is_bot else {}
     if props:
@@ -384,6 +385,7 @@ def make_alert(
         create_at=1_700_000_000_000,
         channel_name="alerts",
         props=post_props,
+        post_type=post_type,
     )
 
 
@@ -578,6 +580,31 @@ async def test_creates_jira_issue_for_new_mattermost_message(service):
 @pytest.mark.asyncio
 async def test_ignores_human_message_in_alert_channel(service):
     post = make_alert(post_id="humanalertpost00000000001", is_bot=False)
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is None
+    assert service.repository.get_by_post_id(post.id) is None
+    assert service.jira.created_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_processes_webhook_slack_attachment_alert(service):
+    # Grafana posts via incoming webhook with type "slack_attachment"; this is a
+    # real alert and must be processed, not skipped as a system message.
+    post = make_alert(post_type="slack_attachment")
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is not None
+    assert ticket.jira_issue_key == "OPS-1"
+
+
+@pytest.mark.asyncio
+async def test_skips_system_message_in_alert_channel(service):
+    post = make_alert(post_id="systemmsgpost000000000001", post_type="system_join_channel")
     service.mattermost.posts[post.id] = post
 
     ticket = await service.handle_alert_post(post)
@@ -4395,6 +4422,58 @@ def test_debug_settings_endpoints_roundtrip(settings):
         )
 
 
+# --- Ops channel: created-issue feed ----------------------------------------
+
+
+def _ops_posts(service):
+    return [c for c in service.mattermost.created_posts if c["channel_id"] == "ops-channel"]
+
+
+@pytest.mark.asyncio
+async def test_ops_channel_receives_created_issue_from_alert(settings):
+    service = _build_service(replace(settings, mattermost_ops_channel_id="ops-channel"))
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    ops_posts = _ops_posts(service)
+    assert len(ops_posts) == 1
+    text = ops_posts[0]["props"]["attachments"][0]["text"]
+    assert "OPS-1" in text
+    assert service.mattermost.permalink(post.id) in text
+    assert ops_posts[0]["root_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_ops_channel_silent_when_unconfigured(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    assert _ops_posts(service) == []
+
+
+@pytest.mark.asyncio
+async def test_ops_channel_receives_manual_incident_issue(settings):
+    service = _build_service(
+        replace(
+            settings,
+            service_public_url="https://bot.example.com",
+            interactive_buttons_enabled=True,
+            mattermost_ops_channel_id="ops-channel",
+        )
+    )
+    service.llm = FakeLlmClient()
+    post = _manual_post()
+    service.mattermost.posts[post.id] = post
+    await service.handle_manual_incident_post(post)
+    await service.handle_incident_action(
+        action="create_task", incident_post_id=post.id, user_id="opener"
+    )
+    ops_posts = _ops_posts(service)
+    assert len(ops_posts) == 1
+    assert "OPS-1" in ops_posts[0]["props"]["attachments"][0]["text"]
+
+
 # --- Time to fix ------------------------------------------------------------
 
 
@@ -4432,6 +4511,27 @@ async def test_time_to_fix_skipped_when_end_before_start(settings):
     # Checkmark timestamped before the alert was created → non-positive duration.
     await _confirm_and_close_incident(service, closed_at_ms=1_699_999_000_000)
     assert service.jira.time_to_fix_updates == []
+
+
+@pytest.mark.asyncio
+async def test_time_to_fix_set_on_alert_validity_reaction(settings):
+    # Ложный/Ожидаемый на алерт (лёгкий путь) тоже пишет длительность, не только End.
+    service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    # Alert at 1_700_000_000_000; validity reaction 300_000 ms (5 min) later.
+    result = await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="man_gesturing_no",
+            create_at=1_700_000_300_000,
+        )
+    )
+    assert result.status == "validity_set"
+    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
+    assert service.jira.time_to_fix_updates == [("OPS-1", 5)]
 
 
 @pytest.mark.asyncio

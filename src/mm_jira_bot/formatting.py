@@ -132,6 +132,32 @@ def format_thread_issue_created(*, jira_issue_key: str, jira_issue_url: str | No
     return f"Создана задача Jira: {_jira_link(jira_issue_key, jira_issue_url)}"
 
 
+def format_ops_issue_created(
+    *,
+    jira_issue_key: str,
+    jira_issue_url: str | None,
+    source_title: str | None,
+    source_message_url: str | None,
+    channel_name: str | None,
+    incident_message_url: str | None = None,
+) -> str:
+    """Ops-channel feed line for a newly created Jira issue with a link back to
+    the source Mattermost thread/message."""
+    lines = [f":page_facing_up: **Создана задача** {_jira_link(jira_issue_key, jira_issue_url)}"]
+    if source_title:
+        lines.append(source_title)
+    source_bits: list[str] = []
+    if source_message_url:
+        source_bits.append(f"[сообщение-источник]({source_message_url})")
+    if channel_name:
+        source_bits.append(f"канал «{channel_name}»")
+    if source_bits:
+        lines.append(" · ".join(source_bits))
+    if incident_message_url and incident_message_url != source_message_url:
+        lines.append(f"[Тред инцидента]({incident_message_url})")
+    return "\n".join(lines)
+
+
 def format_thread_linked_to_root(
     *,
     root_issue_key: str | None,

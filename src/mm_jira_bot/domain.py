@@ -110,6 +110,16 @@ class MattermostPost:
     def created_at_datetime(self) -> datetime | None:
         return datetime_from_mattermost_ms(self.create_at)
 
+    @property
+    def is_system_message(self) -> bool:
+        """True only for Mattermost system notifications (join/leave/header…).
+
+        These carry a ``system_*`` post type. Webhook posts (e.g. Grafana alerts)
+        use ``slack_attachment`` and regular user posts use ``""`` — both must
+        still be processed, so we match the ``system_`` prefix, not "any type".
+        """
+        return self.post_type.startswith("system_")
+
 
 @dataclass(frozen=True)
 class ReactionEvent:

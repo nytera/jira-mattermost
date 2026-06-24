@@ -84,7 +84,7 @@ Runnable entry point is `src/mm_jira_bot/__main__.py`.
 | `logging.py` | `JsonFormatter` / `TextFormatter` + text-only INFO filtering (gates only our own `event` records; foreign INFO like uvicorn passes) + `EventLogger` (`get_logger(__name__)` → `log.info(event, **fields)`, optional `exc_info=` for tracebacks); format chosen by `LOG_FORMAT`. `__main__.py` runs uvicorn with `log_config=None` so `uvicorn.*` loggers propagate to root and share these formatters + the ring buffer. |
 | `web.py` | FastAPI app factory (`create_app`), HTTP error-boundary middleware (`http.request.failed` with traceback → 500 JSON; `http.request.bad_json`/`bad_body` → 400), background loops, `/healthz` + `/incident` slash. |
 | `debug_admin.py` | Optional debug-admin UI/API (`register_debug_admin`), gated by `DEBUG_ADMIN_ENABLED`. |
-| `ops.py` | `OpsNotifier` + `OpsLogHandler`: forward `ERROR` events from `mm_jira_bot.*` to the `MATTERMOST_OPS_CHANNEL_ID` channel (best-effort, per-event cooldown, `_posting` contextvar recursion guard, bounded queue). Counts `bot_errors_total` even without a channel. |
+| `ops.py` | `OpsNotifier` + `OpsLogHandler`: forward `ERROR` events from `mm_jira_bot.*` to the `MATTERMOST_OPS_CHANNEL_ID` channel (best-effort, per-event cooldown, `_posting` contextvar recursion guard, bounded queue). Counts `bot_errors_total` even without a channel. The "issue created" feed to the **same** channel is separate: `coordinator._announce_issue_to_ops` posts a normal Mattermost message (not via logging, so no cooldown/recursion guard) after every `attach_jira_issue`/`replace_jira_issue`; skipped when `jira_create_enabled=false`. |
 | `metrics.py` | Prometheus definitions (HTTP counters/histogram, `bot_errors_total`, ticket gauges via `TicketStatsCollector`) on the default `REGISTRY`. HTTP metrics observed in `AsyncApiClient._request`; gauges sampled lazily on scrape (a `debug_summary` failure logs `metrics.collect_failed` at WARNING and returns no gauges instead of blanking `/metrics`). |
 | `config.py` | `.env` loader + `Settings.from_env()`. |
 
@@ -255,9 +255,10 @@ interval after the "Шаг 3/3" status edit. The buffered-JSON fallback and
 `LLM_STREAM=false` never invoke the callback (static placeholder, no failure).
 
 `JIRA_TIME_TO_FIX_FIELD` (optional) is a **numeric** field set to the incident
-duration in **minutes** whenever the end time is written at closure (`_set_time_to_fix`,
-mirrored at all three `set_end_time` sites — `apply_incident_end_time` and both
-branches of `_ensure_postmortem_jira_issue`). Start is `ticket.mattermost_message_created_at`
+duration in **minutes** at any closing action (`_set_time_to_fix`): the three
+incident-end sites (`apply_incident_end_time` and both branches of
+`_ensure_postmortem_jira_issue`) **and** the alert-channel validity reaction
+(`apply_validity_label`, end = reaction time). Start is `ticket.mattermost_message_created_at`
 (same instant as `JIRA_START_FIELD`); a naive persisted value is localized to the
 runtime timezone (not assumed UTC) before subtraction. It is best-effort and
 **must not break closure**: unlike `set_end_time`, the call is wrapped in

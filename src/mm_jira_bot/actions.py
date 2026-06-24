@@ -39,6 +39,8 @@ INCIDENT_OPEN_COLOR = "#EF4444"
 INCIDENT_DONE_COLOR = "#22C55E"
 # Deep red accent for bot self-health alerts posted to the ops channel.
 OPS_ALERT_COLOR = "#DC2626"
+# Blue accent for the "issue created" feed posted to the ops channel.
+OPS_ISSUE_CREATED_COLOR = "#2563EB"
 
 
 @dataclass(frozen=True)
