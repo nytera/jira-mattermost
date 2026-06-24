@@ -122,9 +122,26 @@ class ThreadSummaryMixin:
 
 ---
 
-## 3. `_shared.py` — общие примитивы (выносим вместе с первым потребителем)
+## 3. `_shared.py` / `SharedMixin` — общие примитивы
 
-Используются ≥2 доменами (по карте вызовов):
+`SharedMixin` **рождается в PR #3** и наполняется методами с **доказанным
+дублированием**: триггер переноса — не «первый потребитель» и не «всё разом», а
+факт, что метод прямо сейчас шарится (на него ссылаются ≥2 уже вынесенных
+миксина — реальное дублирование `if TYPE_CHECKING`-стабов — либо он нужен самому
+переносимому домену). Методы, чьи вызыватели ещё сидят в `coordinator`, остаются
+там и уезжают со своим доменом. Добавление метода в существующий `SharedMixin` —
+чистый append, поэтому он спокойно растёт по PR #3/#4a/#4b; батчить «всё разом»
+не нужно (это лишь front-load'ит move-only-риск чужого домена в jira_sync-PR).
+
+⚠️ **Состав `SharedMixin` определять grep'ом по реальным call-site'ам, а НЕ по
+таблице ниже.** Таблица — карта-ориентир; кто именно вызывает метод и кто из
+вызывателей уже в вынесенных файлах, решает только grep (таблица §3 уже один раз
+подвела в PR #2 — «попадание» оказалось текстом в docstring). Якорь: на старте
+PR #3 `_resolve_prompt_template` застаблен и в postmortem, и в thread_summary →
+дублирование доказано, едет в `SharedMixin`. `_resolve_user_display` пока
+застаблен только в postmortem → пограничный, решает grep.
+
+Карта-ориентир (потребители по статической разведке, ≥2 домена):
 
 | метод | потребители | куда |
 |---|---|---|
@@ -145,7 +162,7 @@ module-level free-функции. Дёргающие `self.mattermost/repository
 внешний доступ `service._prompt_env_default(...)` сохраняется без изменений.
 
 ⚠️ Перенос shared-примитивов — это извлечение с cross-domain последствиями, **не**
-часть скелета. Переносить вместе с первым доменом-потребителем (пилот), а не в PR #0.
+часть скелета: не в PR #0. `SharedMixin` стартует в PR #3 (см. правило выше).
 
 ---
 
@@ -244,7 +261,7 @@ Cross-domain: `_alert_action_attachments`, `_post_alert_thread_reply`,
 | 0 | ✅ **Скелет** | Создать пакет `service/`, перенести класс БЕЗ изменений в `coordinator.py`, `__init__.py` re-export. Никаких миксинов и shared-переносов. Тесты зелёные. | мин. |
 | 1 | ✅ **ПИЛОТ** | thread_summary → ThreadSummaryMixin + `box_thread_reply` в `_shared.py`. Проверить mixin-подход и вывод pyright. | низкий |
 | 2 | ✅ postmortem → PostmortemMixin (`_postmortem.py`, 5 методов; shared-переносов не потребовалось) | зависит от thread_summary (вынесен) | средний |
-| 3 | jira_sync → JiraSyncMixin (+ SharedMixin примитивы по мере нужды) | средний |
+| 3 | ✅ jira_sync → JiraSyncMixin (`_jira_sync.py`, 8 методов, 5 стабов); **рождение `SharedMixin`** (4 метода: `_resolve_prompt_template`/`_prompt_env_default`/`_post_alert_thread_reply`/`_box_thread_reply`, состав по grep call-site'ов; `_resolve_user_display`/`_post_incident_thread_reply`/`_interactive_controls_enabled`/`_action_callback_url` уезжают со своим доменом #4a/#4b) | средний |
 | 4a | incidents → IncidentMixin (с `confirm_incident`) | выше |
 | 4b | alerts → AlertMixin | выше |
 | 5 | debug → DebugMixin; финальная зачистка `coordinator.py` | низкий |

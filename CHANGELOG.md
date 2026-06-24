@@ -105,6 +105,18 @@
   `IncidentBotService(PostmortemMixin, ThreadSummaryMixin)`. Новых переносов в
   `_shared.py` не потребовалось (все хелперы — внешние импорты). Поведение не
   изменилось (202 теста зелёные, pyright/ruff чистые).
+- **Рефакторинг `service/`: вынос домена синхронизации с Jira в `JiraSyncMixin` +
+  рождение `SharedMixin` (move-only).** 8 методов (`_ensure_jira_issue`/
+  `_create_jira_issue`/`_stub_jira_issue`/`_display_jira_issue`,
+  `_handle_expected_repeat`, `_update_jira_for_confirmation`, фоновые
+  `process_pending_work`/`backfill_recent_alerts`) переехали из `coordinator.py` в
+  `service/_jira_sync.py`. В `_shared.py` родился `SharedMixin` — база собранного
+  класса с методами, доказанно нужными нескольким доменам сразу
+  (`_resolve_prompt_template`/`_prompt_env_default`, `_post_alert_thread_reply`,
+  `_box_thread_reply`); состав определён по grep call-site'ов, а не по таблице.
+  Собранный класс теперь
+  `IncidentBotService(SharedMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`.
+  Поведение не изменилось (202 теста зелёные, pyright/ruff чистые).
 - Бокс «ℹ️ Памятка дежурному SRE» теперь рендерится нейтральной полосой slate-400
   (`DUTY_HELP_ATTACHMENT_COLOR = #94A3B8`) — светлее обычных уведомлений
   (`NOTICE_ATTACHMENT_COLOR = #64748B`), в той же slate-семье, читается как
