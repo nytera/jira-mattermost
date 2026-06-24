@@ -2633,6 +2633,7 @@ class IncidentBotService:
             message=format_thread_linked_to_root(
                 root_issue_key=root.jira_issue_key,
                 root_issue_url=root.jira_issue_url,
+                root_message_url=root.mattermost_message_url,
             ),
             event="mattermost.alert_thread.linked_to_root",
             props={"jira_issue_key": ticket.jira_issue_key},

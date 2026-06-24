@@ -809,9 +809,17 @@ async def test_repeat_firing_marked_expected(service):
     assert "OPS-1" in description
     # A real Jira "is child of" link from repeat to root.
     assert ("OPS-2", "OPS-1") in service.jira.links
-    # And a "Прилинковано к" notice in the thread.
+    # And a repeat-alert notice in the thread.
     assert any(
-        "Прилинковано к" in _reply_text(reply) for reply in service.mattermost.created_posts
+        _reply_text(reply)
+        == (
+            ":arrows_counterclockwise: **Повторный алерт**\n"
+            "Тикет прилинкован к [корневой задаче]"
+            "(https://jira.example.com/browse/OPS-1) "
+            "(корневая задача первого алерта).\n"
+            f"[Корневой алерт]({root.mattermost_message_url})"
+        )
+        for reply in service.mattermost.created_posts
     )
 
 
@@ -908,7 +916,7 @@ async def test_repeat_redelivery_no_duplicate_link(service):
     notices = [
         reply
         for reply in service.mattermost.created_posts
-        if "Прилинковано к" in _reply_text(reply)
+        if "Повторный алерт" in _reply_text(reply)
     ]
     assert len(notices) == 1
 

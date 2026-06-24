@@ -133,9 +133,23 @@ def format_thread_issue_created(*, jira_issue_key: str, jira_issue_url: str | No
 
 
 def format_thread_linked_to_root(
-    *, root_issue_key: str | None, root_issue_url: str | None
+    *,
+    root_issue_key: str | None,
+    root_issue_url: str | None,
+    root_message_url: str | None,
 ) -> str:
-    return f"Прилинковано к корневой задаче: {_jira_link(root_issue_key, root_issue_url)}"
+    if root_issue_url:
+        root_issue_link = f"[корневой задаче]({root_issue_url})"
+    else:
+        root_issue_link = _jira_link(root_issue_key, root_issue_url)
+
+    lines = [
+        ":arrows_counterclockwise: **Повторный алерт**",
+        f"Тикет прилинкован к {root_issue_link} (корневая задача первого алерта).",
+    ]
+    if root_message_url:
+        lines.append(f"[Корневой алерт]({root_message_url})")
+    return "\n".join(lines)
 
 
 def format_thread_status_changed(*, incident_message_url: str | None) -> str:
