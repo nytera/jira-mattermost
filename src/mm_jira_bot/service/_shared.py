@@ -9,6 +9,7 @@ coordinator (ещё не определённое)».
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,24 @@ from mm_jira_bot.retry import ApiError
 if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
     from mm_jira_bot.repository import AlertTicketRepository
+
+# Распознавание Mattermost post id в ссылке/тексте (`/incident <permalink>` и
+# debug-панель). Жил в `coordinator`, переехал сюда (лист графа импортов), чтобы
+# `_debug.py` мог импортировать функцию без цикла; `coordinator` ре-импортирует её
+# (ре-экспорт в `service/__init__.py` и тесты продолжают работать без правок).
+POST_ID_PATTERN = re.compile(r"(?:^|/)(?:_redirect/)?pl/([a-z0-9]{20,32})(?:$|[/?#])")
+BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
+
+
+def parse_post_id_from_text(text: str) -> str | None:
+    text = text.strip()
+    if BARE_POST_ID_PATTERN.fullmatch(text):
+        return text
+    match = POST_ID_PATTERN.search(text)
+    if match:
+        return match.group(1)
+    return None
+
 
 # Тексты плейсхолдера/ошибки тредового саммари (используются ThreadSummaryMixin и
 # координатором при публикации саммари из разных потоков).

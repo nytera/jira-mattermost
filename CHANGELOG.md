@@ -77,6 +77,18 @@
 
 ### Изменено
 
+- **Рефакторинг `service/`: вынос debug-домена в `DebugMixin` (move-only).**
+  2 admin-метода debug-панели (`debug_create_from_link` — создать Jira-задачу по
+  ссылке/post id через `handle_alert_post`; `debug_recreate_jira_issue` — пересоздать
+  задачу) вместе с dataclass'ами `DebugCreateFromLinkResult`/`DebugJiraRecreateResult`
+  переехали из `coordinator.py` в `service/_debug.py`. Парсер `parse_post_id_from_text`
+  (+ `POST_ID_PATTERN`/`BARE_POST_ID_PATTERN`) переехал в `service/_shared.py` (лист
+  графа импортов), чтобы `_debug.py` мог его импортировать без цикла; `coordinator`
+  ре-импортирует имя — ре-экспорт в `service/__init__.py` и тесты не тронуты. Собранный
+  класс теперь `IncidentBotService(SharedMixin, AlertMixin, DebugMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`;
+  `coordinator.py` сократился до ~480 строк (init/auth/роутеры + общие helper'ы —
+  кандидаты в `SharedMixin` опциональным следующим шагом). Поведение не изменилось
+  (202 теста зелёные, ruff/format чистые; pyright — без новых ошибок относительно baseline).
 - **Рефакторинг `service.py` → пакет `service/` (скелет, move-only).** Модуль
   `mm_jira_bot/service.py` (2918 строк, god-класс `IncidentBotService` на 55
   методов) превращается в пакет `service/` с доменными mixin-файлами ради
