@@ -11,6 +11,22 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Тесты на границы надёжности и HTTP-контракт.** Сьют вырос с 209 до 346 тестов
+  (покрытие ~81% → ~87%), только тесты, `src/` не менялся. Новые файлы: `test_retry.py`
+  (бэкофф/классификация статусов `retry.py`), `test_http.py` (wire-уровень через
+  `httpx.MockTransport`: retry-then-recover и exhaust), `test_repository.py`
+  (идемпотентность, партиальный индекс `uq_active_root`, таймзоны, бэкфилл `init_db` на
+  legacy-схеме), `test_migrations.py` (сверка `migrations/*.sql` с `Base.metadata`),
+  `test_websocket_loop.py` (реконнект websocket, изоляция хэндлера, pending-work петля,
+  парсеры событий) и `test_parsers_properties.py` (property-based на Hypothesis).
+  Расширены `test_service_infra.py` (валидация конфига, slash-токен auth, редакция
+  пароля БД, lifespan), `test_jira_sync.py`/`test_incidents.py` (восстановление
+  pending-work, идемпотентность подтверждения), `test_postmortem.py` (локализация naive
+  времени в MSK), `test_alerts.py` и `test_debug.py` (роуты debug-панели). Добавлена
+  зависимость `hypothesis` в `[test]`.
+
 ### Изменено
 
 - **Напоминание о ревью перед коммитом.** Хук на `git commit` и правило в `CLAUDE.md`

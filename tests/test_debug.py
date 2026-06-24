@@ -15,6 +15,8 @@ from mm_jira_bot.domain import (
 from mm_jira_bot.postmortem import (
     DEFAULT_SUMMARY_PROMPT,
 )
+from mm_jira_bot.retry import ApiError
+from mm_jira_bot.service._shared import _PROMPT_KEY_SUMMARY
 from mm_jira_bot.web import create_app
 
 
@@ -179,3 +181,253 @@ def test_debug_settings_endpoints_roundtrip(settings):
         assert (
             client.post("/debug/admin/api/settings/bogus", json={"value": "x"}).status_code == 404
         )
+
+
+# --- recreate: unknown post + fatal Jira failure ---------------------------
+
+
+def test_debug_admin_recreate_unknown_post_id_returns_404(service, settings):
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post("/debug/admin/api/alerts/doesnotexist00000000000001/jira/recreate")
+
+    assert response.status_code == 404
+    assert response.json()["status"] == "not_found"
+
+
+def test_debug_admin_recreate_fatal_jira_failure_returns_502(service, settings):
+    post = make_alert()
+    service.repository.create_or_get_alert(
+        post,
+        message_url=service.mattermost.permalink(post.id),
+        channel_name="alerts",
+    )
+
+    async def boom(ticket):
+        raise ApiError("jira is down")
+
+    service._create_jira_issue = boom
+
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post(f"/debug/admin/api/alerts/{post.id}/jira/recreate")
+
+    assert response.status_code == 502
+    assert response.json()["status"] == "error"
+    assert response.json()["jira_issue_key"] is None
+
+
+async def test_debug_admin_force_recreate_failure_preserves_old_key(service, settings):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="validator",
+            emoji_name="incident",
+            create_at=1,
+        )
+    )
+
+    async def boom(ticket):
+        raise ApiError("jira create exploded")
+
+    service._create_jira_issue = boom
+
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post(f"/debug/admin/api/alerts/{post.id}/jira/recreate?force=true")
+
+    body = response.json()
+    ticket = service.repository.get_by_post_id(post.id)
+    assert response.status_code == 502
+    assert body["status"] == "error"
+    assert body["previous_jira_issue_key"] == "OPS-1"
+    assert ticket is not None
+    assert ticket.jira_issue_key == "OPS-1"
+
+
+# --- create-from-link: always HTTP 200, status carries the outcome ---------
+
+
+def test_debug_admin_create_from_link_invalid_is_http_200_status(service, settings):
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/debug/admin/api/alerts/create-from-link", json={"link": "not a link"}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["status"] == "invalid_link"
+
+
+def test_debug_admin_create_from_link_created_then_exists_both_http_200(service, settings):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    link = service.mattermost.permalink(post.id)
+
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        first = client.post("/debug/admin/api/alerts/create-from-link", json={"link": link})
+        second = client.post("/debug/admin/api/alerts/create-from-link", json={"link": link})
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "created"
+    assert first.json()["ok"] is True
+    assert second.status_code == 200
+    assert second.json()["status"] == "exists"
+    assert second.json()["ok"] is True
+    assert len(service.jira.created_payloads) == 1
+
+
+# --- logs: no buffer + clamping --------------------------------------------
+
+
+def test_debug_admin_logs_no_buffer(service, settings, monkeypatch):
+    import mm_jira_bot.debug_admin as debug_admin
+
+    monkeypatch.setattr(debug_admin, "get_log_buffer", lambda: None)
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.get("/debug/admin/api/logs")
+
+    assert response.status_code == 200
+    assert response.json() == {"logs": [], "available": False}
+
+
+def test_debug_admin_logs_limit_clamped(service, settings, monkeypatch):
+    import mm_jira_bot.debug_admin as debug_admin
+
+    captured: list[int] = []
+
+    class _FakeBuffer:
+        def records(self, *, limit: int, min_levelno: int = 0):
+            captured.append(limit)
+            return []
+
+    monkeypatch.setattr(debug_admin, "get_log_buffer", lambda: _FakeBuffer())
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        high = client.get("/debug/admin/api/logs?limit=99999")
+        low = client.get("/debug/admin/api/logs?limit=0")
+
+    assert high.status_code == 200
+    assert low.status_code == 200
+    assert high.json()["available"] is True
+    assert captured == [2000, 1]
+
+
+# --- alerts limit footgun: response clamped, underlying call unclamped -----
+
+
+def test_debug_admin_alerts_limit_response_clamped_but_query_unclamped(service, settings):
+    captured: dict[str, int] = {}
+
+    def fake_list_alerts(*, limit, status=None, validity=None):
+        captured["limit"] = limit
+        return []
+
+    service.repository.list_alerts = fake_list_alerts
+
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.get("/debug/admin/api/alerts?limit=9999")
+
+    assert response.status_code == 200
+    # Response advertises the clamped ceiling …
+    assert response.json()["limit"] == 200
+    # … but the repository was queried with the raw unclamped value (footgun).
+    assert captured["limit"] == 9999
+
+
+# --- settings validation errors --------------------------------------------
+
+
+def test_debug_admin_reset_unknown_key_returns_404(service, settings):
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post("/debug/admin/api/settings/bogus/reset")
+
+    assert response.status_code == 404
+
+
+def test_debug_admin_save_without_value_returns_422(service, settings):
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        response = client.post(f"/debug/admin/api/settings/{_PROMPT_KEY_SUMMARY}", json={})
+
+    assert response.status_code == 422
+
+
+def test_debug_admin_alerts_bad_query_coercion_returns_422(service, settings):
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        bad_limit = client.get("/debug/admin/api/alerts?limit=abc")
+        bad_force = client.post("/debug/admin/api/alerts/anypost/jira/recreate?force=maybe")
+
+    assert bad_limit.status_code == 422
+    assert bad_force.status_code == 422
+
+
+# --- debug_create_from_link guards (service level) -------------------------
+
+
+async def test_debug_create_from_link_fresh_creates(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    result = await service.debug_create_from_link(service.mattermost.permalink(post.id))
+
+    assert result.ok is True
+    assert result.status == "created"
+    assert result.jira_issue_key == "OPS-1"
+
+
+async def test_debug_create_from_link_repeat_returns_exists_without_second_issue(service):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    link = service.mattermost.permalink(post.id)
+
+    await service.debug_create_from_link(link)
+    result = await service.debug_create_from_link(link)
+
+    assert result.ok is True
+    assert result.status == "exists"
+    assert result.jira_issue_key == "OPS-1"
+    assert len(service.jira.created_payloads) == 1
+
+
+async def test_debug_create_from_link_resolved_repost_skipped(service):
+    post = make_alert(message="**✅ CPU usage is above 95%**")
+    service.mattermost.posts[post.id] = post
+
+    result = await service.debug_create_from_link(service.mattermost.permalink(post.id))
+
+    assert result.ok is False
+    assert result.status == "skipped"
+    assert len(service.jira.created_payloads) == 0
+
+
+async def test_debug_create_from_link_garbage_returns_invalid_link(service):
+    result = await service.debug_create_from_link("just some words")
+
+    assert result.ok is False
+    assert result.status == "invalid_link"
+
+
+async def test_debug_create_from_link_post_lookup_failure_returns_post_not_found(service):
+    post = make_alert()
+
+    async def boom(post_id):
+        raise ApiError("mattermost 500")
+
+    service.mattermost.get_post = boom
+
+    result = await service.debug_create_from_link(service.mattermost.permalink(post.id))
+
+    assert result.ok is False
+    assert result.status == "post_not_found"
+    assert result.mattermost_post_id == post.id

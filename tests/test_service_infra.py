@@ -5,7 +5,9 @@ import json
 import logging
 import os
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, cast
+from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
 import pytest
@@ -38,7 +40,7 @@ from mm_jira_bot.repository import (
 )
 from mm_jira_bot.retry import ApiError
 from mm_jira_bot.service import parse_post_id_from_text
-from mm_jira_bot.web import create_app, run_startup_preflight
+from mm_jira_bot.web import _redact_database_url, create_app, run_startup_preflight
 
 
 def test_loads_russian_jira_field_name_with_spaces(tmp_path, monkeypatch):
@@ -895,3 +897,335 @@ async def test_group_lookup_failure_keeps_login_allowlist(settings):
     # Group failure (e.g. missing license) must not brick the login allowlist.
     assert service._authorization_enforced is True
     assert service._authorized_user_ids == frozenset({"u-alice"})
+
+
+# --- Config: required vars, numeric knobs, tz, prompt file, dotenv -----------
+
+
+def _full_valid_env() -> dict[str, str]:
+    """A complete env that makes ``Settings.from_env`` succeed."""
+    return {
+        "MATTERMOST_URL": "https://mattermost.example.com",
+        "MATTERMOST_TOKEN": "mm-token",
+        "MATTERMOST_ALERT_CHANNEL_ID": "alerts-channel",
+        "MATTERMOST_INCIDENT_CHANNEL_ID": "incidents-channel",
+        "MATTERMOST_BOT_USER_ID": "bot-user",
+        "JIRA_BASE_URL": "https://jira.example.com",
+        "JIRA_API_TOKEN": "jira-token",
+        "JIRA_PROJECT_KEY": "OPS",
+        "JIRA_ISSUE_TYPE": "Incident",
+        "JIRA_VALID_INCIDENT_FIELD": "Валидность",
+        "JIRA_SOURCE_FIELD": "Источник",
+        "JIRA_IS_CRIT_ALERT_FIELD": "Был ли крит алерт?",
+        "DATABASE_URL": "sqlite:///./bot.db",
+    }
+
+
+def _set_env(monkeypatch, env: dict[str, str]) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "MATTERMOST_URL",
+        "MATTERMOST_TOKEN",
+        "DATABASE_URL",
+        "JIRA_BASE_URL",
+        "MATTERMOST_BOT_USER_ID",
+        "JIRA_PROJECT_KEY",
+        "JIRA_ISSUE_TYPE",
+        "JIRA_SOURCE_FIELD",
+        "JIRA_IS_CRIT_ALERT_FIELD",
+    ],
+)
+def test_missing_single_required_var_raises_runtime_error(tmp_path, monkeypatch, missing):
+    env = _full_valid_env()
+    _set_env(monkeypatch, env)
+    monkeypatch.delenv(missing, raising=False)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        Settings.from_env(tmp_path / "missing.env")
+
+    assert str(exc_info.value) == f"Missing required environment variable: {missing}"
+
+
+@pytest.mark.parametrize(
+    "var",
+    [
+        "API_RETRY_ATTEMPTS",
+        "MATTERMOST_AUTHORIZED_REFRESH_SECONDS",
+        "PENDING_WORK_INTERVAL_SECONDS",
+        "BACKFILL_RECENT_POSTS_LIMIT",
+        "LLM_MAX_TOKENS",
+        "LLM_THREAD_MAX_CHARS",
+        "LLM_STREAM_EDIT_MIN_CHARS",
+    ],
+)
+def test_int_env_rejects_non_numeric(tmp_path, monkeypatch, var):
+    _set_env(monkeypatch, _full_valid_env())
+    monkeypatch.setenv(var, "four")
+
+    with pytest.raises(ValueError):
+        Settings.from_env(tmp_path / "missing.env")
+
+
+def test_invalid_timezone_raises_zoneinfo_not_found(tmp_path, monkeypatch):
+    _set_env(monkeypatch, _full_valid_env())
+    monkeypatch.setenv("INCIDENT_TIMEZONE", "Mars/Phobos")
+
+    with pytest.raises(ZoneInfoNotFoundError):
+        Settings.from_env(tmp_path / "missing.env")
+
+
+def test_missing_postmortem_prompt_file_raises(tmp_path, monkeypatch):
+    _set_env(monkeypatch, _full_valid_env())
+    monkeypatch.setenv("LLM_POSTMORTEM_PROMPT_FILE", str(tmp_path / "does-not-exist.txt"))
+
+    with pytest.raises(FileNotFoundError):
+        Settings.from_env(tmp_path / "missing.env")
+
+
+def test_load_dotenv_skips_comments_blank_and_no_equals(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# a comment\n\n   \nNOEQUALSLINE\nDOTENV_REAL_KEY=real-value\n",
+        encoding="utf-8",
+    )
+    for key in ("NOEQUALSLINE", "DOTENV_REAL_KEY", "a comment"):
+        monkeypatch.delenv(key, raising=False)
+
+    load_dotenv_file(env_file)
+
+    assert os.environ["DOTENV_REAL_KEY"] == "real-value"
+    assert "NOEQUALSLINE" not in os.environ
+
+
+def test_load_dotenv_strips_symmetric_quotes_and_splits_on_first_equals(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        'DOTENV_DQ="double quoted"\n'
+        "DOTENV_SQ='single quoted'\n"
+        "DOTENV_FIRST_EQ=a=b=c\n"
+        'DOTENV_MISMATCH="only-leading\n',
+        encoding="utf-8",
+    )
+    for key in ("DOTENV_DQ", "DOTENV_SQ", "DOTENV_FIRST_EQ", "DOTENV_MISMATCH"):
+        monkeypatch.delenv(key, raising=False)
+
+    load_dotenv_file(env_file)
+
+    assert os.environ["DOTENV_DQ"] == "double quoted"
+    assert os.environ["DOTENV_SQ"] == "single quoted"
+    # Split on the first '=' only — the value keeps its own '=' characters.
+    assert os.environ["DOTENV_FIRST_EQ"] == "a=b=c"
+    # Asymmetric quoting is left untouched (only matching first/last char strips).
+    assert os.environ["DOTENV_MISMATCH"] == '"only-leading'
+
+
+def test_load_dotenv_never_overrides_existing_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOTENV_PRESET", "from-process")
+    env_file = tmp_path / ".env"
+    env_file.write_text("DOTENV_PRESET=from-file\n", encoding="utf-8")
+
+    load_dotenv_file(env_file)
+
+    assert os.environ["DOTENV_PRESET"] == "from-process"
+
+
+# --- _redact_database_url ----------------------------------------------------
+
+
+def test_redact_database_url_masks_password():
+    assert _redact_database_url("postgresql://user:s3cret@db/bot") == "postgresql://user:***@db/bot"
+
+
+def test_redact_database_url_no_password_unchanged():
+    url = "sqlite:///./bot.db"
+    assert _redact_database_url(url) == url
+
+
+def test_redact_database_url_invalid_returns_placeholder():
+    assert _redact_database_url("http://[::1") == "<invalid>"
+
+
+@pytest.mark.asyncio
+async def test_startup_configuration_log_carries_no_plaintext_password(service):
+    service.settings = replace(service.settings, database_url="postgresql://user:s3cret@db/bot")
+    records: list[logging.LogRecord] = []
+    logger, handler = _capture_bot_logs(records)
+    try:
+        await run_startup_preflight(service)
+    finally:
+        logger.removeHandler(handler)
+
+    config_logs = [r for r in records if r.msg == "startup.configuration"]
+    assert config_logs
+    redacted = _extra_fields(config_logs[0])["database_url"]
+    assert redacted == "postgresql://user:***@db/bot"
+    assert "s3cret" not in cast(str, redacted)
+
+
+# --- Slash route: token enforcement & malformed body ------------------------
+
+
+def test_slash_command_rejects_wrong_token(service, settings):
+    app = create_app(settings, service=service)
+    records: list[logging.LogRecord] = []
+    logger, handler = _capture_bot_logs(records)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/mattermost/slash/incident",
+                data={"token": "wrong-token", "user_id": "u", "text": "x"},
+            )
+    finally:
+        logger.removeHandler(handler)
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "response_type": "ephemeral",
+        "text": "Invalid slash command token.",
+    }
+    assert "mattermost.slash_command.invalid_token" in [r.msg for r in records]
+
+
+def test_slash_command_skips_token_check_when_unconfigured(service, settings):
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    app = create_app(replace(settings, mattermost_slash_token=None), service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/mattermost/slash/incident",
+            data={
+                "token": "anything-goes",
+                "user_id": "validator",
+                "text": f"https://mattermost.example.com/_redirect/pl/{post.id}",
+            },
+        )
+
+    assert response.status_code == 200
+    assert "Incident confirmed" in response.json()["text"]
+
+
+def test_slash_command_rejects_non_utf8_body(service, settings):
+    app = create_app(settings, service=service)
+    records: list[logging.LogRecord] = []
+    logger, handler = _capture_bot_logs(records)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/mattermost/slash/incident",
+                content=b"\xff\xfe\x00",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+    finally:
+        logger.removeHandler(handler)
+
+    assert response.status_code == 400
+    assert response.json()["text"] == "Malformed request body."
+    assert "http.request.bad_body" in [r.msg for r in records]
+
+
+# --- Feedback route: broken JSON & validation rejection ---------------------
+
+
+def test_feedback_rejects_broken_json(service, settings):
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/mattermost/dialogs/feedback",
+            content="{not json",
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"error": "Malformed request body."}
+
+
+def test_feedback_validation_rejection_returns_200_with_error(service, settings):
+    async def reject(**_kwargs):
+        return SimpleNamespace(message="Пустая форма")
+
+    service.handle_feedback_dialog_submission = reject
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/mattermost/dialogs/feedback",
+            json={"user_id": "u", "state": "s", "submission": {}},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"error": "Пустая форма"}
+
+
+# --- Alert-action: list/empty bodies & /healthz -----------------------------
+
+
+def test_alert_action_accepts_list_body(service, settings):
+    app = create_app(settings, service=service)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/mattermost/actions/alert", json=[])
+
+    assert response.status_code == 200
+    assert "ephemeral_text" in response.json()
+
+
+def test_alert_action_accepts_empty_object_body(service, settings):
+    app = create_app(settings, service=service)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/mattermost/actions/alert", json={})
+
+    assert response.status_code == 200
+    assert "ephemeral_text" in response.json()
+
+
+def test_healthz_returns_ok(service, settings):
+    app = create_app(settings, service=service)
+    with TestClient(app) as client:
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+# --- Lifespan: backfill failure tolerated; loops launched & cancelled -------
+
+
+def test_lifespan_continues_when_backfill_raises(service, settings):
+    async def boom():
+        raise RuntimeError("backfill kaboom")
+
+    service.backfill_recent_alerts = boom
+    app = create_app(
+        replace(settings, enable_backfill_on_startup=True, enable_websocket=False),
+        service=service,
+    )
+    records: list[logging.LogRecord] = []
+    logger, handler = _capture_bot_logs(records)
+    try:
+        with TestClient(app) as client:
+            response = client.get("/healthz")
+            assert response.status_code == 200
+            assert response.json() == {"ok": True}
+    finally:
+        logger.removeHandler(handler)
+
+    assert "startup.backfill_failed" in [r.msg for r in records]
+
+
+def test_lifespan_launches_and_cancels_background_loops(service, settings):
+    app = create_app(
+        replace(settings, enable_websocket=True, enable_backfill_on_startup=False),
+        service=service,
+    )
+    with TestClient(app) as client:
+        client.get("/healthz")
+        tasks = app.state.background_tasks
+        # websocket_loop + pending_work_loop launched (no ops channel, no allowlist).
+        assert len(tasks) == 2
+        assert all(not task.done() for task in tasks)
+
+    # After shutdown the lifespan cancels every background task.
+    assert all(task.cancelled() or task.done() for task in tasks)

@@ -16,6 +16,7 @@ from mm_jira_bot.actions import (
     NOTICE_ATTACHMENT_COLOR,
 )
 from mm_jira_bot.domain import (
+    ConfirmationStatus,
     ReactionEvent,
     datetime_from_mattermost_ms,
 )
@@ -23,6 +24,8 @@ from mm_jira_bot.formatting import (
     alert_signature,
     is_resolved_alert,
 )
+from mm_jira_bot.jira import VALID_INCIDENT_FALSE_VALUE
+from mm_jira_bot.retry import ApiError
 
 
 @pytest.mark.asyncio
@@ -674,3 +677,104 @@ async def test_feedback_dialog_submission_stores_feedback_and_posts_notice(servi
         and "Получили обратную связь от @clicker" in _reply_text(created)
     ]
     assert len(notices) == 1
+
+
+@pytest.mark.asyncio
+async def test_service_marks_ticket_error_on_permanent_jira_create_failure(service):
+    # A non-retryable Jira create failure must not invent an issue: the ticket is
+    # left without a key, and the thread gets no "Создана задача" reply pointing at
+    # a nonexistent issue. (Mirrors the TTF-failure characterization pattern: a
+    # raising fake client method, asserting the side effect is suppressed.)
+    async def _boom(post, *, message_url, channel_name):
+        raise ApiError("jira down", retryable=False)
+
+    service.jira.create_issue = _boom
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+
+    ticket = await service.handle_alert_post(post)
+
+    assert ticket is not None
+    # No Jira issue was created and none was attached to the ticket.
+    assert service.jira.created_payloads == []
+    assert ticket.jira_issue_key is None
+    # Actual behavior: the create-failure path records the failure on
+    # ``creation_status``/``last_error`` (NOT ``confirmation_status``, which stays
+    # at its default "none"). See caveat in the return summary.
+    assert ticket.creation_status == "failed_jira"
+    assert ticket.last_error
+    assert ticket.confirmation_status == "none"
+    assert ticket.confirmation_status != ConfirmationStatus.ERROR
+    # The except branch posts nothing, so there is no thread reply at all and in
+    # particular none announcing a (nonexistent) issue.
+    assert service.mattermost.created_posts == []
+    assert not any(
+        "Создана задача" in _reply_text(created) for created in service.mattermost.created_posts
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_validity_label_pending_vs_error(service):
+    # PENDING branch: a ticket without a Jira key yet → PENDING_JIRA, and
+    # apply_validity_label itself must not touch set_last_error.
+    real_create_issue = service.jira.create_issue
+
+    async def _boom(post, *, message_url, channel_name):
+        raise ApiError("jira down", retryable=False)
+
+    service.jira.create_issue = _boom
+    pending_post = make_alert(
+        post_id="pendingvaliditypost0000001", message="Pending disk above 90%"
+    )
+    service.mattermost.posts[pending_post.id] = pending_post
+    await service.handle_alert_post(pending_post)
+
+    pending_ticket = service.repository.get_by_post_id(pending_post.id)
+    assert pending_ticket.jira_issue_key is None
+
+    # Spy on set_last_error from this point on, isolating the apply path. (The
+    # create-failure setup above already wrote last_error via mark_jira_create_failed,
+    # so we count fresh calls rather than assert the field is None.)
+    last_error_calls: list[tuple] = []
+    real_set_last_error = service.repository.set_last_error
+
+    def _spy(post_id, error):
+        last_error_calls.append((post_id, error))
+        return real_set_last_error(post_id, error)
+
+    service.repository.set_last_error = _spy
+
+    pending_result = await service.apply_validity_label(
+        pending_post.id, validity_label=VALID_INCIDENT_FALSE_VALUE, source="action"
+    )
+
+    assert pending_result.status == ConfirmationStatus.PENDING_JIRA
+    assert last_error_calls == []
+    assert service.jira.validity_updates == []
+
+    # ERROR branch: a successfully created ticket (last_error reset to None on
+    # attach), then set_validity raises → ERROR, last_error persisted, and the
+    # validity_label is NOT written.
+    ok_post = make_alert(post_id="errorvaliditypost000000001", message="Error memory above 80%")
+    service.mattermost.posts[ok_post.id] = ok_post
+    service.jira.create_issue = real_create_issue
+    await service.handle_alert_post(ok_post)
+
+    ok_ticket = service.repository.get_by_post_id(ok_post.id)
+    assert ok_ticket.jira_issue_key is not None
+    assert ok_ticket.last_error is None
+
+    async def _validity_boom(issue_key, option_value, *, ended_at=None):
+        raise ApiError("validity field rejected", retryable=False)
+
+    service.jira.set_validity = _validity_boom
+
+    error_result = await service.apply_validity_label(
+        ok_post.id, validity_label=VALID_INCIDENT_FALSE_VALUE, source="action"
+    )
+
+    assert error_result.status == ConfirmationStatus.ERROR
+    refreshed = service.repository.get_by_post_id(ok_post.id)
+    assert refreshed.last_error == "validity field rejected"
+    assert refreshed.validity_label is None
+    assert service.jira.validity_updates == []
