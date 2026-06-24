@@ -4,12 +4,43 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from mm_jira_bot.logging import LEVEL_NAME_TO_NUMBER, get_log_buffer
+from mm_jira_bot.postmortem import DEFAULT_POSTMORTEM_PROMPT, DEFAULT_SUMMARY_PROMPT
 from mm_jira_bot.repository import AlertTicket
-from mm_jira_bot.service import IncidentBotService
+from mm_jira_bot.service import (
+    _PROMPT_KEY_POSTMORTEM,
+    _PROMPT_KEY_SUMMARY,
+    IncidentBotService,
+)
+
+# Runtime-editable prompt templates surfaced in the "Настройки" tab. Each entry
+# binds a DB-override key to its UI label and built-in default.
+_EDITABLE_PROMPTS: tuple[tuple[str, str, str], ...] = (
+    (_PROMPT_KEY_SUMMARY, "Саммари треда (Mattermost)", DEFAULT_SUMMARY_PROMPT),
+    (_PROMPT_KEY_POSTMORTEM, "Постмортем (Jira)", DEFAULT_POSTMORTEM_PROMPT),
+)
 
 
 def _datetime_iso(value) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _prompt_settings_payload(service: IncidentBotService) -> dict:
+    """Effective prompt per editable key plus its source (db/env/default) so the
+    UI can show where the value comes from and offer a reset-to-default."""
+    prompts = []
+    for key, label, default in _EDITABLE_PROMPTS:
+        db_value = service.repository.get_setting(key)
+        env_value = service._prompt_env_default(key)
+        if db_value is not None:
+            value, source = db_value, "db"
+        elif env_value:
+            value, source = env_value, "env"
+        else:
+            value, source = default, "default"
+        prompts.append(
+            {"key": key, "label": label, "value": value, "source": source, "default": default}
+        )
+    return {"prompts": prompts}
 
 
 def _message_preview(message: str, *, limit: int = 160) -> str:
@@ -179,6 +210,19 @@ DEBUG_ADMIN_HTML = """
     .kvtable td.k { color: var(--muted); width: 240px; font-family: var(--mono); }
     .kvtable td.v { font-family: var(--mono); word-break: break-word; }
     label.inline { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+    /* settings */
+    .settings { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 22px; }
+    .prompt-card { display: flex; flex-direction: column; gap: 8px; }
+    .prompt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .prompt-head h3 { margin: 0; font-size: 14px; }
+    .prompt-card textarea {
+      width: 100%; min-height: 320px; resize: vertical; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
+    }
+    .prompt-card textarea:focus { outline: none; border-color: var(--accent); }
+    .prompt-actions { display: flex; gap: 8px; align-items: center; }
+    .src { font-family: var(--mono); }
   </style>
 </head>
 <body>
@@ -200,6 +244,7 @@ DEBUG_ADMIN_HTML = """
     <div class="tabs">
       <div class="tab active" data-tab="alerts" onclick="switchTab('alerts')">Алерты</div>
       <div class="tab" data-tab="logs" onclick="switchTab('logs')">Логи</div>
+      <div class="tab" data-tab="settings" onclick="switchTab('settings')">Настройки</div>
     </div>
 
     <!-- ALERTS -->
@@ -245,6 +290,17 @@ DEBUG_ADMIN_HTML = """
         <span id="logsNotice" class="notice muted"></span>
       </div>
       <div class="logs" id="logs"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="panel" id="tab-settings" style="display:none">
+      <div class="panel-head">
+        <h2>Промпты LLM</h2>
+        <span class="muted" style="color:var(--muted)">приоритет: панель → env → дефолт; применяется без рестарта</span>
+        <span class="grow"></span>
+        <span id="settingsNotice" class="notice muted"></span>
+      </div>
+      <div id="settings" class="settings"></div>
     </section>
   </div>
 
@@ -340,14 +396,17 @@ DEBUG_ADMIN_HTML = """
 
     function switchTab(name) {
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-      document.getElementById("tab-alerts").style.display = name === "alerts" ? "" : "none";
-      document.getElementById("tab-logs").style.display = name === "logs" ? "" : "none";
+      ["alerts", "logs", "settings"].forEach((t) => {
+        document.getElementById("tab-" + t).style.display = t === name ? "" : "none";
+      });
       window._tab = name;
       refreshActive();
     }
     function refreshActive() {
       loadSummary();
-      if (window._tab === "logs") loadLogs(); else loadAlerts();
+      if (window._tab === "logs") loadLogs();
+      else if (window._tab === "settings") loadSettings();
+      else loadAlerts();
     }
 
     async function loadSummary() {
@@ -507,6 +566,70 @@ DEBUG_ADMIN_HTML = """
       if (document.getElementById("logTail").checked) box.scrollTop = box.scrollHeight;
     }
 
+    let settingsCache = [];
+    function settingsSourceBadge(p) {
+      const map = { db: ["ok", "панель"], env: ["warn", "env"], default: ["", "дефолт"] };
+      const [cls, label] = map[p.source] || ["", p.source];
+      return `<span class="badge ${cls} src" id="src-${escapeHtml(p.key)}">${label}</span>`;
+    }
+    async function loadSettings() {
+      const notice = document.getElementById("settingsNotice");
+      notice.className = "notice muted"; notice.textContent = "Загрузка…";
+      try {
+        const r = await getJson("/debug/admin/api/settings");
+        settingsCache = r.prompts;
+        renderSettings();
+        notice.textContent = "";
+      } catch (e) { notice.className = "notice err"; notice.textContent = e.message; }
+    }
+    function renderSettings() {
+      document.getElementById("settings").innerHTML = settingsCache.map((p) => `
+        <div class="prompt-card" data-key="${escapeHtml(p.key)}">
+          <div class="prompt-head">
+            <h3>${escapeHtml(p.label)}</h3>
+            ${settingsSourceBadge(p)}
+            <span class="grow"></span>
+            <span class="notice muted" id="note-${escapeHtml(p.key)}"></span>
+          </div>
+          <textarea id="ta-${escapeHtml(p.key)}" spellcheck="false">${escapeHtml(p.value)}</textarea>
+          <div class="prompt-actions">
+            <button class="primary" onclick="saveSetting('${escapeHtml(p.key)}')">Сохранить</button>
+            <button class="ghost" onclick="resetSetting('${escapeHtml(p.key)}')">Сбросить к дефолту</button>
+          </div>
+        </div>`).join("");
+    }
+    function applySettingUpdate(key, prompts, okText) {
+      const p = prompts.find((x) => x.key === key);
+      if (!p) return;
+      const badge = document.getElementById("src-" + key);
+      if (badge) badge.outerHTML = settingsSourceBadge(p);
+      const ta = document.getElementById("ta-" + key);
+      if (ta) ta.value = p.value;
+      const note = document.getElementById("note-" + key);
+      if (note) { note.className = "notice ok"; note.textContent = okText; }
+    }
+    async function saveSetting(key) {
+      const note = document.getElementById("note-" + key);
+      note.className = "notice muted"; note.textContent = "Сохраняю…";
+      try {
+        const value = document.getElementById("ta-" + key).value;
+        const r = await getJson("/debug/admin/api/settings/" + encodeURIComponent(key),
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value }) });
+        settingsCache = r.prompts;
+        applySettingUpdate(key, r.prompts, "Сохранено");
+      } catch (e) { note.className = "notice err"; note.textContent = e.message; }
+    }
+    async function resetSetting(key) {
+      const note = document.getElementById("note-" + key);
+      note.className = "notice muted"; note.textContent = "Сбрасываю…";
+      try {
+        const r = await getJson("/debug/admin/api/settings/" + encodeURIComponent(key) + "/reset",
+          { method: "POST" });
+        settingsCache = r.prompts;
+        applySettingUpdate(key, r.prompts, "Сброшено к дефолту");
+      } catch (e) { note.className = "notice err"; note.textContent = e.message; }
+    }
+
     function setupTimer() {
       if (timer) clearInterval(timer);
       if (document.getElementById("autoRefresh").checked) {
@@ -565,6 +688,26 @@ def register_debug_admin(app: FastAPI, service: IncidentBotService) -> None:
             "logs": buffer.records(limit=limit, min_levelno=min_levelno),
             "available": True,
         }
+
+    @app.get("/debug/admin/api/settings")
+    async def debug_admin_settings() -> dict:
+        return _prompt_settings_payload(service)
+
+    @app.post("/debug/admin/api/settings/{key}")
+    async def debug_admin_save_setting(
+        key: str, value: str = Body(..., embed=True)
+    ) -> JSONResponse:
+        if key not in {prompt_key for prompt_key, _, _ in _EDITABLE_PROMPTS}:
+            raise HTTPException(status_code=404, detail="Unknown setting key.")
+        service.repository.set_setting(key, value)
+        return JSONResponse(_prompt_settings_payload(service))
+
+    @app.post("/debug/admin/api/settings/{key}/reset")
+    async def debug_admin_reset_setting(key: str) -> JSONResponse:
+        if key not in {prompt_key for prompt_key, _, _ in _EDITABLE_PROMPTS}:
+            raise HTTPException(status_code=404, detail="Unknown setting key.")
+        service.repository.delete_setting(key)
+        return JSONResponse(_prompt_settings_payload(service))
 
     @app.post("/debug/admin/api/alerts/create-from-link")
     async def debug_admin_create_from_link(

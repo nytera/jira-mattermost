@@ -115,6 +115,19 @@ class AlertFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=backend_now)
 
 
+class AppSetting(Base):
+    """Runtime-editable key/value overrides (e.g. LLM prompt templates edited in
+    the debug panel). Overrides win over env config; absence ⇒ fall back to env."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=backend_now, onupdate=backend_now
+    )
+
+
 def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
     _ensure_alert_ticket_columns(engine)
@@ -284,6 +297,25 @@ class AlertTicketRepository:
                 "confirmed": confirmed,
                 "empty_validity": empty_validity,
             }
+
+    def get_setting(self, key: str) -> str | None:
+        with self._session_factory() as session:
+            row = session.get(AppSetting, key)
+            return row.value if row is not None else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._session_factory() as session, session.begin():
+            existing = session.get(AppSetting, key)
+            if existing is None:
+                session.add(AppSetting(key=key, value=value))
+            else:
+                existing.value = value
+
+    def delete_setting(self, key: str) -> None:
+        with self._session_factory() as session, session.begin():
+            existing = session.get(AppSetting, key)
+            if existing is not None:
+                session.delete(existing)
 
     def create_or_get_alert(
         self,

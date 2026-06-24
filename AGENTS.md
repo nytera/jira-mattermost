@@ -52,8 +52,12 @@ feedback and replies in the alert thread). When
 `DEBUG_ADMIN_ENABLED`, `register_debug_admin` also mounts the SPA at
 `GET /debug/admin` plus its JSON API: `summary`, `alerts`, `alerts/{post_id}`,
 `POST alerts/{post_id}/jira/recreate`, `POST alerts/create-from-link` (create a
-Jira issue from a pasted Band link/post id), and `GET api/logs` (reads the
-in-memory `LogRingBuffer` installed by `configure_logging`).
+Jira issue from a pasted Band link/post id), `GET api/logs` (reads the
+in-memory `LogRingBuffer` installed by `configure_logging`), and the
+**Настройки** tab: `GET api/settings` (effective LLM prompt per key + its
+`source` db/env/default), `POST api/settings/{key}` (save a DB override) and
+`POST api/settings/{key}/reset` (drop it). Edits apply on the next generation —
+no restart — because `_resolve_prompt_template` reads the DB each run.
 
 `create_app(service=...)` accepts an injected service — tests pass fakes and a
 temp SQLite DB instead of live clients.
@@ -203,18 +207,26 @@ someone adds a Mattermost checkmark reaction (`white_check_mark`,
 When `LLM_API_TOKEN` is configured, the same checkmark also generates a
 postmortem from the full incident thread through the OpenAI-compatible
 `LLM_BASE_URL`, keeps Jira description as a PM template with the incident root
-(the postmortem user-prompt is `DEFAULT_POSTMORTEM_PROMPT` in `postmortem.py`,
-overridable via `LLM_POSTMORTEM_PROMPT`/`_FILE`; the in-thread summary uses
-`DEFAULT_SUMMARY_PROMPT` in `summary.py`, overridable via `LLM_SUMMARY_PROMPT`/`_FILE`.
-Both substitute placeholders by ordered `str.replace` with `{transcript}` last so
-thread text is never re-scanned; the two `SYSTEM_PROMPT`s in `llm.py` stay in code)
-link, postmortem author, and participants, adds the generated report as a Jira
-comment (the LLM's Markdown is converted to Jira **wiki markup** via
-`markdown_to_jira_wiki` before posting, since the v2 comment endpoint renders
-wiki, not Markdown), and posts a fact-based incident-report summary back to the incident
-thread (a separate `build_thread_summary_prompt` call — not derived from the Jira
-postmortem — published as a "Генерация саммари…" placeholder that is then edited
-into the final reply). During the completion flow the placeholder shows stepwise
+link, postmortem author, and participants. The postmortem **and** the in-thread
+summary share **one** user-prompt template — `DEFAULT_INCIDENT_REPORT_PROMPT` in
+`postmortem.py` (aliased as `DEFAULT_POSTMORTEM_PROMPT`/`DEFAULT_SUMMARY_PROMPT`),
+rendered by the single `build_incident_report_prompt` with placeholders
+`{thread_url}`/`{participants}`/`{postmortem_author}`/`{transcript}` (ordered
+`str.replace`, `{transcript}` last so thread text is never re-scanned). It carries
+the rich structure (Мета, Сводка + Описание влияния, Решение, Извлечённые уроки,
+Action Items as discussion suggestions, Хронология, Риски рецидива, Открытые
+вопросы) and the mandatory `[INC] DD.MM.YYYY - …` first line (read by
+`extract_postmortem_summary` for the Jira issue title). The effective template per
+channel is resolved at call time by `_resolve_prompt_template`: **DB override
+(debug panel) → env (`LLM_POSTMORTEM_PROMPT`/`LLM_SUMMARY_PROMPT`, plus `_FILE`) →
+built-in default**. The two `SYSTEM_PROMPT`s in `llm.py` stay in code. The LLM
+always emits Markdown; the chronology attributes participants as `@username`. The
+**Jira** path converts the Markdown to wiki markup *and* `@username → [~username]`
+via `markdown_to_jira_wiki` (the v2 comment endpoint renders wiki, not Markdown);
+the **Mattermost** summary path strips the `@` via `summary.neutralize_mentions`
+so it never pings. The summary is posted back to the incident thread (same builder,
+its own LLM call — not derived from the Jira postmortem — published as a
+"Генерация саммари…" placeholder that is then edited into the final reply). During the completion flow the placeholder shows stepwise
 status (`_set_summary_status`: "Шаг 1/3 … 3/3"), and the summary text is streamed
 into it live (throttled) as the LLM generates. On closure a **standalone green box**
 "🟢 Инцидент закрыт" with a "ПМ: [title](url)" line is posted as a *separate* reply
@@ -306,7 +318,9 @@ confirmed paths).
 `init_db()` runs `Base.metadata.create_all` at startup and applies small
 backward-compatible `ALTER TABLE` additions, so no migration step is needed
 locally; files in `migrations/` are the reference schema, kept aligned with the
-model by hand. `normalize_database_url` rewrites
+model by hand. Besides `alert_tickets`/`alert_feedback`, `app_settings` is a
+`key`/`value` store for runtime-editable config (the debug-panel LLM prompt
+overrides); `repository.get_setting`/`set_setting`/`delete_setting` manage it. `normalize_database_url` rewrites
 `postgres://`/`postgresql://` to `postgresql+psycopg://`. All persisted/displayed
 times go through `domain.backend_now()` / `backend_datetime()`, which use the
 `INCIDENT_TIMEZONE` (default `Europe/Moscow`) configured once in

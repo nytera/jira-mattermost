@@ -13,6 +13,11 @@ _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
 _MD_HEADING = re.compile(r"^(#{1,6})[ \t]*", re.MULTILINE)
 _MD_BULLET = re.compile(r"^[ \t]*[-+] ", re.MULTILINE)
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+# ``@username`` (the form the LLM emits from the transcript) → Jira mention
+# ``[~username]``. The look-behind skips emails (``user@host``); the charset
+# matches Mattermost/Jira account names and tolerates internal dots/hyphens
+# (``aminov.pavel3``) without swallowing a trailing sentence period.
+_MD_MENTION = re.compile(r"(?<![\w.@])@([A-Za-z0-9_]+(?:[.-][A-Za-z0-9_]+)*)")
 
 
 def markdown_to_jira_wiki(text: str) -> str:
@@ -26,6 +31,7 @@ def markdown_to_jira_wiki(text: str) -> str:
     text = _MD_HEADING.sub(lambda m: f"h{len(m.group(1))}. ", text)
     text = _MD_BULLET.sub("* ", text)
     text = _MD_LINK.sub(r"[\1|\2]", text)
+    text = _MD_MENTION.sub(r"[~\1]", text)
     return text
 
 
@@ -125,80 +131,124 @@ def trim_transcript(transcript: str, *, max_chars: int) -> str:
     )
 
 
-# User-prompt template for the Jira postmortem comment. Overridable via
-# ``LLM_POSTMORTEM_PROMPT`` / ``LLM_POSTMORTEM_PROMPT_FILE`` (see config.py).
-# Supported placeholders, substituted by ``build_postmortem_prompt``:
-# ``{incident_thread_url}``, ``{participants}``, ``{postmortem_author}``,
-# ``{transcript}`` (the trimmed thread; always substituted last so thread text
-# can safely contain brace-looking tokens).
-DEFAULT_POSTMORTEM_PROMPT = """Создай инцидентный отчет по треду Mattermost/Band.
+# Single source-of-truth user-prompt template for BOTH the Jira postmortem
+# comment and the in-thread Mattermost summary — one structure, two renderings.
+# Overridable per channel via ``LLM_POSTMORTEM_PROMPT`` / ``LLM_SUMMARY_PROMPT``
+# (and their ``*_FILE`` / debug-panel overrides). Supported placeholders,
+# substituted by ``build_incident_report_prompt``: ``{thread_url}``,
+# ``{participants}``, ``{postmortem_author}``, ``{transcript}`` (the trimmed
+# thread; always substituted last so thread text can safely contain
+# brace-looking tokens).
+#
+# The LLM always emits Markdown. The Jira path converts it to wiki markup and
+# turns ``@username`` into ``[~username]`` (``markdown_to_jira_wiki``); the
+# Mattermost path strips the ``@`` so the summary never pings participants
+# (``summary.neutralize_mentions``).
+DEFAULT_INCIDENT_REPORT_PROMPT = """Составь инцидентный отчёт по треду Mattermost строго по фактам из треда и метаданных.
 
-Обязательные правила:
-- Верни отчет строго по шаблону ниже.
-- Первая строка должна быть: [INC] DD.MM.YYYY - Короткое название.
-- Короткое название в первой строке: до 10 слов и до 80 символов; вся первая строка до 120 символов.
-- Дата в заголовке должна соответствовать дате инцидента по московскому времени.
-- "Участники инцидента" бери из списка участников ниже; не добавляй людей, которых нет в треде.
-- Автор постмортема: {postmortem_author}. Укажи его в отчете, если это уместно, но не добавляй в участники без оснований.
-- Хронологию строй по сообщениям треда, времена указывай в московском времени HH:MM.
-- "Извлеченные уроки" и "Action Items" выводи только из того, что явно обсуждалось в треде.
-- В "Action Items" добавляй только договоренности, задачи или TODO, которые реально звучали в треде; если их нет, напиши "- не указано".
-- Не выдумывай подробности. Если причина, влияние или решение не ясны, так и напиши.
-- Не пиши, что ты не можешь создать Jira-задачу или отправить сообщение: это сделает бот.
+Правила:
+- Опирайся только на факты из треда. Не выдумывай причины, метрики, имена, сервисы и времена. Если данных нет — пиши "не указано" или TBD.
+- Первая строка обязана быть: [INC] DD.MM.YYYY - Короткое название (до 10 слов и до 80 символов; вся первая строка до 120 символов; дата — по московскому времени).
+- Явно отделяй подтверждённые факты от гипотез. Для неподтверждённой причины помечай [Гипотеза] с уровнем уверенности (high/medium/low).
+- Blameless: фокус на процессах, системах и решениях, не на вине людей.
+- Все времена указывай по московскому времени в формате HH:MM.
+- Участников бери только из списка ниже; не добавляй людей, которых нет в треде. В хронологии указывай участника как @username из транскрипта.
+- Где возможно, количественно описывай влияние: длительность, доля затронутых запросов/клиентов, метрики до/после.
+- Action Items — это предложения на обсуждение, а не финальные задачи; если из треда ничего конкретного не следует, напиши "- не указано".
+- Не пиши, что не можешь создать Jira-задачу или отправить сообщение: это сделает бот.
+- Не добавляй преамбулу, code fences и служебные пояснения. Верни только отчёт по структуре ниже.
 
-Тред инцидента: {incident_thread_url}
-Участники инцидента: {participants}
-Автор постмортема: {postmortem_author}
+Тред инцидента: {thread_url}
+Участники: {participants}
+Автор отчёта: {postmortem_author}
 
-Шаблон:
+Структура отчёта:
 [INC] DD.MM.YYYY - Короткое название
 Участники инцидента: фамилия имя через запятую
-Автор постмортема: фамилия имя
-##Сводка
-Описание того, что случилось и почему.
-##Решение
+Автор отчёта: фамилия имя
+
+**Мета**
+- Сервис
+- Начало инцидента / начало влияния
+- Восстановление / завершение
+- Длительность
+- Текущий статус
+- Как обнаружено (сотрудник / алерт / клиент)
+
+## Сводка
+Что случилось и почему. Если root cause подтверждён — укажи; если нет — перечисли гипотезы с уровнем уверенности.
+
+### Описание влияния
+- Инфраструктурное: например, 3 млн запросов отдали ошибку 503
+- Денежное: например, потеряли N рублей на бонусах клиентам
+- Репутационное: например, упоминания в СМИ
+Если в треде есть ссылки на графики метрик / BI / логи — приложи их здесь.
+
+## Решение
 Как решили инцидент: что фиксили, что откатывали, какие действия помогли.
-##Извлеченные уроки
-###Что было сделано хорошо / В чем повезло
- - Быстро подключились к звонку
- - Быстро нашли проблему и сделали фикс
- - Влияние было ограничено, так как было 3 часа ночи
- - За день до этого сделали индексы в БД, которые помогли в этом инциденте убрать влияние гораздо быстрее
-###Что пошло не так / В чем не повезло
- - Не было алертов, узнали спустя час от клиентов
-##Action Items
- - Сформулируй только те action items, которые обсуждались в треде. Если action items не обсуждались, напиши "- не указано".
-##Хронология
-12:04 - Начали катить релиз с фичей X
-12:06 - Начало влияния. Пришел алерт о пятисотках на ручке N
-12:10 - Начало инцидента. Поняли, что проблема затрагивает клиентов, отписали в канал инцидентов, создали мит
-12:12 - petuhov.sergey15 заметил, что <> не <>, и предложил сделать роллбэк
-12:14 - Решение. aminov.pavel3 запустил роллбэк сервиса Y в k8s
-12:18 - Устранение влияния. По метрикам пятисоток видим снижение до стабильных обычных значений
-12:20 - aminov.pavel3 проверил остальные метрики, ожидаем 15 минут и если ок - инцидент завершаем
-12:30 - Завершение инцидента. Влияние снято, проблем нет
+
+## Извлечённые уроки
+### Что было сделано хорошо / В чём повезло
+- ...
+### Что пошло не так / В чём не повезло
+- ...
+
+## Action Items (на обсуждение)
+- Предложи возможные action items по итогам инцидента. Если из треда ничего конкретного не следует — напиши "- не указано".
+
+## Хронология
+- 12:04 — Начали катить релиз с фичей X
+- 12:06 — **Начало влияния.** Пришёл алерт о пятисотках на ручке N
+- 12:10 — **Начало инцидента.** Поняли, что затрагивает клиентов, отписали в канал инцидентов, создали мит
+- 12:12 — @petuhov.sergey15 заметил проблему и предложил роллбэк
+- 12:14 — **Решение.** @aminov.pavel3 запустил роллбэк сервиса Y в k8s
+- 12:18 — **Устранение влияния.** По метрикам пятисоток видим снижение до нормы
+- 12:30 — **Завершение инцидента.** Влияние снято, проблем не наблюдается
+
+## Риски рецидива
+- Что может повториться в ближайшее время и почему.
+
+## Открытые вопросы / недостающие данные
+- Какие факты не указаны или требуют подтверждения, чтобы закрыть анализ.
+
+## Дополнительная информация
+Всё значимое, что не вошло в блоки выше.
 
 Тред:
 {transcript}
 """
 
+# Both channels default to the same template (the override paths differ only in
+# which env var / DB key they read). Kept as named aliases so existing imports
+# and the debug panel can address each channel's default explicitly.
+DEFAULT_POSTMORTEM_PROMPT = DEFAULT_INCIDENT_REPORT_PROMPT
+DEFAULT_SUMMARY_PROMPT = DEFAULT_INCIDENT_REPORT_PROMPT
 
-def build_postmortem_prompt(
+
+def build_incident_report_prompt(
     *,
-    incident_thread_url: str,
+    thread_url: str,
     participants: list[str],
     postmortem_author: str,
     transcript: str,
     max_chars: int,
     template: str | None = None,
 ) -> str:
+    """Render the incident-report prompt for either channel.
+
+    The Jira postmortem and the Mattermost summary share this one builder; they
+    differ only in the ``template`` override passed in and in how the LLM output
+    is later rendered (wiki vs Markdown).
+    """
     trimmed_transcript = trim_transcript(transcript, max_chars=max_chars)
     participant_text = ", ".join(participants) if participants else "не указано"
-    body = template or DEFAULT_POSTMORTEM_PROMPT
+    body = template or DEFAULT_INCIDENT_REPORT_PROMPT
     # Metadata first, transcript last: arbitrary thread text never gets re-scanned
-    # for placeholder tokens.
+    # for placeholder tokens. ``{incident_thread_url}`` is the legacy postmortem
+    # alias for ``{thread_url}`` — kept so pre-existing override files keep working.
     return (
-        body.replace("{incident_thread_url}", incident_thread_url)
+        body.replace("{thread_url}", thread_url)
+        .replace("{incident_thread_url}", thread_url)
         .replace("{participants}", participant_text)
         .replace("{postmortem_author}", postmortem_author)
         .replace("{transcript}", trimmed_transcript)

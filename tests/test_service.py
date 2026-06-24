@@ -39,8 +39,9 @@ from mm_jira_bot.metrics import TicketStatsCollector, errors_total
 from mm_jira_bot.ops import OpsLogHandler, OpsNotifier
 from mm_jira_bot.postmortem import (
     DEFAULT_POSTMORTEM_PROMPT,
+    DEFAULT_SUMMARY_PROMPT,
+    build_incident_report_prompt,
     build_postmortem_comment,
-    build_postmortem_prompt,
     extract_postmortem_summary,
     format_incident_closed_notice,
     markdown_to_jira_wiki,
@@ -54,9 +55,9 @@ from mm_jira_bot.repository import (
 from mm_jira_bot.retry import ApiError
 from mm_jira_bot.service import IncidentBotService, parse_post_id_from_text
 from mm_jira_bot.summary import (
-    DEFAULT_SUMMARY_PROMPT,
-    build_thread_summary_prompt,
+    format_thread_summary_reply,
     format_thread_summary_streaming,
+    neutralize_mentions,
 )
 from mm_jira_bot.web import create_app, run_startup_preflight
 
@@ -1132,13 +1133,12 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
     assert "Откатили релиз" in prompt
     assert "Иван Иванов (@ivanov.ivan)" in prompt
     assert "Петр Петров (@petrov.petr)" in prompt
-    assert "##Извлеченные уроки" in prompt
-    assert "###Что было сделано хорошо / В чем повезло" in prompt
-    assert "###Что пошло не так / В чем не повезло" in prompt
-    assert "##Action Items" in prompt
-    assert "только те action items, которые обсуждались в треде" in prompt
-    assert "до 10 слов" in prompt
-    assert "до 80 символов" in prompt
+    assert "## Извлечённые уроки" in prompt
+    assert "### Что было сделано хорошо / В чём повезло" in prompt
+    assert "### Что пошло не так / В чём не повезло" in prompt
+    assert "## Action Items (на обсуждение)" in prompt
+    assert "Action Items — это предложения на обсуждение" in prompt
+    assert "до 10 слов и до 80 символов" in prompt
     assert "до 120 символов" in prompt
     issue_key, description = service.jira.descriptions[-1]
     assert issue_key == "OPS-1"
@@ -4198,11 +4198,28 @@ def test_markdown_to_jira_wiki_headings_bullets_bold_links():
     assert markdown_to_jira_wiki("[OPS-1](https://j/OPS-1)") == "[OPS-1|https://j/OPS-1]"
 
 
+def test_markdown_to_jira_wiki_converts_mentions_but_not_emails():
+    assert markdown_to_jira_wiki("12:14 — @aminov.pavel3 откат") == "12:14 — [~aminov.pavel3] откат"
+    assert markdown_to_jira_wiki("@ivanov и @petrov") == "[~ivanov] и [~petrov]"
+    # A trailing sentence period is not swallowed into a dotted username.
+    assert markdown_to_jira_wiki("откатил @aminov.pavel3.") == "откатил [~aminov.pavel3]."
+    # Emails must stay intact (the char before @ is a word char).
+    assert markdown_to_jira_wiki("write to user@host.ru") == "write to user@host.ru"
+
+
 def test_markdown_to_jira_wiki_is_idempotent_on_wiki():
-    already = "h2. Сводка\n* пункт\n*жирный*\n[OPS-1|https://j/OPS-1]"
+    already = "h2. Сводка\n* пункт\n*жирный*\n[OPS-1|https://j/OPS-1]\n[~ivanov]"
     assert markdown_to_jira_wiki(already) == already
-    once = markdown_to_jira_wiki("## X\n- y\n**z**")
+    once = markdown_to_jira_wiki("## X\n- y\n**z**\n@ivanov")
     assert markdown_to_jira_wiki(once) == once
+
+
+def test_thread_summary_strips_mentions_so_it_never_pings():
+    assert neutralize_mentions("12:14 — @aminov.pavel3 откат") == "12:14 — aminov.pavel3 откат"
+    assert "@" not in format_thread_summary_reply("сделал @ivanov")
+    assert "@" not in format_thread_summary_streaming("сделал @ivanov")
+    # Emails are left untouched.
+    assert neutralize_mentions("user@host.ru") == "user@host.ru"
 
 
 def test_postmortem_comment_is_jira_wiki_without_disturbing_summary():
@@ -4218,68 +4235,123 @@ def test_postmortem_comment_is_jira_wiki_without_disturbing_summary():
     assert extract_postmortem_summary(report, fallback="f").startswith("[INC] 01.01.2026 - Сбой")
 
 
-def test_default_postmortem_prompt_fills_placeholders_without_leftovers():
-    prompt = build_postmortem_prompt(
-        incident_thread_url="https://t/1",
+def test_incident_report_prompt_fills_placeholders_without_leftovers():
+    prompt = build_incident_report_prompt(
+        thread_url="https://t/1",
         participants=["Иван Иванов", "Пётр Петров"],
         postmortem_author="Сидор Сидоров",
         transcript="тело треда",
         max_chars=24000,
     )
-    # Built from the default template when no override is given.
-    assert prompt.startswith("Создай инцидентный отчет по треду Mattermost/Band.")
+    # Built from the unified default template when no override is given.
+    assert prompt.startswith("Составь инцидентный отчёт по треду Mattermost")
     assert prompt.endswith("Тред:\nтело треда\n")
     assert "Тред инцидента: https://t/1" in prompt
-    assert "Участники инцидента: Иван Иванов, Пётр Петров" in prompt
-    assert "Автор постмортема: Сидор Сидоров" in prompt
-    # No placeholder token survives substitution.
-    for token in ("{incident_thread_url}", "{participants}", "{postmortem_author}", "{transcript}"):
+    assert "Участники: Иван Иванов, Пётр Петров" in prompt
+    assert "Автор отчёта: Сидор Сидоров" in prompt
+    for token in ("{thread_url}", "{participants}", "{postmortem_author}", "{transcript}"):
         assert token not in prompt
 
 
-def test_default_summary_prompt_fills_placeholders_without_leftovers():
-    prompt = build_thread_summary_prompt(
+def test_incident_report_prompt_empty_participants_placeholder():
+    prompt = build_incident_report_prompt(
         thread_url="https://t/1",
         participants=[],
-        transcript="тело треда",
+        postmortem_author="Автор",
+        transcript="тело",
         max_chars=24000,
     )
-    assert prompt.startswith("Составь саммари этого треда как инцидентный отчёт по фактам.")
-    assert prompt.endswith("Тред:\nтело треда\n")
-    assert "Тред: https://t/1" in prompt
-    assert "Участники: не указано" in prompt  # empty list → placeholder
-    for token in ("{thread_url}", "{participants}", "{transcript}"):
-        assert token not in prompt
+    assert "Участники: не указано" in prompt
 
 
-def test_prompt_templates_are_overridable_and_do_not_rescan_transcript():
+def test_incident_report_prompt_overridable_and_does_not_rescan_transcript():
     # A custom template wins, and brace-looking tokens inside the thread text are
     # never re-substituted (transcript is filled last).
     transcript = "юзер написал {participants} и {transcript}"
-    pm = build_postmortem_prompt(
-        incident_thread_url="https://t/1",
+    rendered = build_incident_report_prompt(
+        thread_url="https://t/1",
         participants=["Иван Иванов"],
         postmortem_author="Автор",
         transcript=transcript,
         max_chars=24000,
-        template="ПМ {incident_thread_url} | {participants} | {postmortem_author} | {transcript}",
+        template="X {thread_url} | {participants} | {postmortem_author} | {transcript}",
     )
-    assert pm == "ПМ https://t/1 | Иван Иванов | Автор | юзер написал {participants} и {transcript}"
-    sm = build_thread_summary_prompt(
+    assert rendered == (
+        "X https://t/1 | Иван Иванов | Автор | юзер написал {participants} и {transcript}"
+    )
+
+
+def test_incident_report_prompt_keeps_legacy_thread_url_placeholder():
+    # Pre-existing LLM_POSTMORTEM_PROMPT files used {incident_thread_url}; the
+    # builder still substitutes that alias so they don't emit a literal token.
+    rendered = build_incident_report_prompt(
         thread_url="https://t/1",
         participants=["Иван Иванов"],
-        transcript=transcript,
+        postmortem_author="Автор",
+        transcript="тело",
         max_chars=24000,
-        template="СМ {thread_url} | {participants} | {transcript}",
+        template="ПМ {incident_thread_url} :: {transcript}",
     )
-    assert sm == "СМ https://t/1 | Иван Иванов | юзер написал {participants} и {transcript}"
+    assert rendered == "ПМ https://t/1 :: тело"
 
 
-def test_default_prompt_constants_carry_every_placeholder():
-    for token in ("{incident_thread_url}", "{participants}", "{postmortem_author}", "{transcript}"):
+def test_summary_and_postmortem_share_one_default_template():
+    assert DEFAULT_SUMMARY_PROMPT is DEFAULT_POSTMORTEM_PROMPT
+    for token in ("{thread_url}", "{participants}", "{postmortem_author}", "{transcript}"):
         assert token in DEFAULT_POSTMORTEM_PROMPT
-    for token in ("{thread_url}", "{participants}", "{transcript}"):
-        assert token in DEFAULT_SUMMARY_PROMPT
+
+
+# --- Runtime-editable prompt settings ---------------------------------------
+
+
+def test_repository_setting_crud(service):
+    repo = service.repository
+    assert repo.get_setting("llm_summary_prompt") is None
+    repo.set_setting("llm_summary_prompt", "custom")
+    assert repo.get_setting("llm_summary_prompt") == "custom"
+    repo.set_setting("llm_summary_prompt", "custom2")  # upsert overwrites
+    assert repo.get_setting("llm_summary_prompt") == "custom2"
+    repo.delete_setting("llm_summary_prompt")
+    assert repo.get_setting("llm_summary_prompt") is None
+
+
+def test_resolve_prompt_template_precedence(settings):
+    service = _build_service(replace(settings, llm_summary_prompt="env-template"))
+    # env override applies when there is no DB override
+    assert service._resolve_prompt_template("llm_summary_prompt") == "env-template"
+    # DB override (debug-panel edit) beats env
+    service.repository.set_setting("llm_summary_prompt", "db-template")
+    assert service._resolve_prompt_template("llm_summary_prompt") == "db-template"
+    # reset → falls back to env again
+    service.repository.delete_setting("llm_summary_prompt")
+    assert service._resolve_prompt_template("llm_summary_prompt") == "env-template"
+    # neither env nor DB → None (builder uses the built-in default)
+    assert service._resolve_prompt_template("llm_postmortem_prompt") is None
+
+
+def test_debug_settings_endpoints_roundtrip(settings):
+    service = _build_service(replace(settings, debug_admin_enabled=True))
+    app = create_app(replace(settings, debug_admin_enabled=True), service=service)
+    with TestClient(app) as client:
+        by_key = {p["key"]: p for p in client.get("/debug/admin/api/settings").json()["prompts"]}
+        assert by_key["llm_summary_prompt"]["source"] == "default"
+        assert by_key["llm_summary_prompt"]["value"] == DEFAULT_SUMMARY_PROMPT
+
+        saved = client.post(
+            "/debug/admin/api/settings/llm_summary_prompt", json={"value": "мой промпт"}
+        ).json()
+        summary = next(p for p in saved["prompts"] if p["key"] == "llm_summary_prompt")
+        assert summary["source"] == "db" and summary["value"] == "мой промпт"
+        assert service.repository.get_setting("llm_summary_prompt") == "мой промпт"
+
+        reset = client.post("/debug/admin/api/settings/llm_summary_prompt/reset").json()
+        summary = next(p for p in reset["prompts"] if p["key"] == "llm_summary_prompt")
+        assert summary["source"] == "default"
+        assert service.repository.get_setting("llm_summary_prompt") is None
+
+        assert (
+            client.post("/debug/admin/api/settings/bogus", json={"value": "x"}).status_code == 404
+        )
 
 
 # --- Time to fix ------------------------------------------------------------

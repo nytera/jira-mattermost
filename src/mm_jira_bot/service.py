@@ -70,8 +70,8 @@ from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.postmortem import (
     ThreadMessage,
+    build_incident_report_prompt,
     build_postmortem_comment,
-    build_postmortem_prompt,
     extract_postmortem_summary,
     format_incident_closed_notice,
     format_thread_transcript,
@@ -79,7 +79,6 @@ from mm_jira_bot.postmortem import (
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
 from mm_jira_bot.retry import ApiError
 from mm_jira_bot.summary import (
-    build_thread_summary_prompt,
     format_thread_summary_reply,
     format_thread_summary_streaming,
 )
@@ -95,6 +94,10 @@ INCIDENT_END_REACTION_NAMES = {
 }
 SUMMARY_PENDING_TEXT = "⏳ Генерация саммари…"
 SUMMARY_FAILED_TEXT = "Не удалось сгенерировать саммари, попробуйте позже."
+
+# DB-override keys for the runtime-editable LLM prompt templates (debug panel).
+_PROMPT_KEY_SUMMARY = "llm_summary_prompt"
+_PROMPT_KEY_POSTMORTEM = "llm_postmortem_prompt"
 
 
 def _copy_post_attachments(post: MattermostPost) -> list[dict]:
@@ -391,6 +394,23 @@ class IncidentBotService:
             expected_emoji=self.settings.mattermost_expected_incident_reaction_name,
             summary_emoji=self.settings.mattermost_summary_reaction_name,
         )
+
+    def _prompt_env_default(self, key: str) -> str | None:
+        """Env-configured override for a prompt key (``None`` ⇒ built-in default)."""
+        if key == _PROMPT_KEY_SUMMARY:
+            return self.settings.llm_summary_prompt
+        if key == _PROMPT_KEY_POSTMORTEM:
+            return self.settings.llm_postmortem_prompt
+        return None
+
+    def _resolve_prompt_template(self, key: str) -> str | None:
+        """Effective prompt override: DB (debug-panel edit) → env → ``None``.
+
+        ``None`` lets ``build_incident_report_prompt`` fall back to the built-in
+        default. The DB read runs only on summary/postmortem generation, so edits
+        from the debug panel apply on the next run with no restart.
+        """
+        return self.repository.get_setting(key) or self._prompt_env_default(key)
 
     async def _post_incident_thread_mention(
         self,
@@ -1065,7 +1085,7 @@ class IncidentBotService:
                 root_post = alert_post
 
         try:
-            thread_messages, participants, _ = await self._postmortem_thread_context(
+            thread_messages, participants, summary_author = await self._postmortem_thread_context(
                 root_post,
                 reacted_by_user_id=requested_by_user_id,
             )
@@ -1083,6 +1103,7 @@ class IncidentBotService:
             channel_id=root_post.channel_id,
             thread_url=self.mattermost.permalink(root_post.id),
             participants=participants,
+            postmortem_author=summary_author,
             transcript=format_thread_transcript(thread_messages),
             requested_by_user_id=requested_by_user_id,
             thread_id_key="mattermost_alert_post_id",
@@ -1296,13 +1317,13 @@ class IncidentBotService:
                 base_props=summary_base_props,
                 event=summary_event,
             )
-            prompt = build_postmortem_prompt(
-                incident_thread_url=incident_thread_url,
+            prompt = build_incident_report_prompt(
+                thread_url=incident_thread_url,
                 participants=participants,
                 postmortem_author=postmortem_author,
                 transcript=transcript,
                 max_chars=self.settings.llm_thread_max_chars,
-                template=self.settings.llm_postmortem_prompt,
+                template=self._resolve_prompt_template(_PROMPT_KEY_POSTMORTEM),
             )
             await self._set_summary_status(
                 placeholder_id,
@@ -1406,6 +1427,7 @@ class IncidentBotService:
             base_props=summary_base_props,
             thread_url=incident_thread_url,
             participants=participants,
+            postmortem_author=postmortem_author,
             transcript=transcript,
             event=summary_event,
         )
@@ -1814,6 +1836,7 @@ class IncidentBotService:
         base_props: dict,
         thread_url: str,
         participants: list[str],
+        postmortem_author: str,
         transcript: str,
         event: str,
     ) -> bool:
@@ -1824,12 +1847,13 @@ class IncidentBotService:
         the final edit always overwrites the streaming state with the clean format.
         Callers must ensure ``self.llm`` is configured.
         """
-        prompt = build_thread_summary_prompt(
+        prompt = build_incident_report_prompt(
             thread_url=thread_url,
             participants=participants,
+            postmortem_author=postmortem_author,
             transcript=transcript,
             max_chars=self.settings.llm_thread_max_chars,
-            template=self.settings.llm_summary_prompt,
+            template=self._resolve_prompt_template(_PROMPT_KEY_SUMMARY),
         )
         on_progress = (
             self._make_summary_stream_callback(
@@ -1871,6 +1895,7 @@ class IncidentBotService:
         channel_id: str,
         thread_url: str,
         participants: list[str],
+        postmortem_author: str,
         transcript: str,
         requested_by_user_id: str,
         thread_id_key: str,
@@ -1896,6 +1921,7 @@ class IncidentBotService:
             base_props=base_props,
             thread_url=thread_url,
             participants=participants,
+            postmortem_author=postmortem_author,
             transcript=transcript,
             event=event,
         )
