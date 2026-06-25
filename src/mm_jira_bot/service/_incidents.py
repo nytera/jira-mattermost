@@ -438,6 +438,7 @@ class IncidentMixin:
         ended_at: datetime,
         source: str,
         validity_label: str | None = None,
+        override_end_time: bool = False,
     ) -> ConfirmationResult:
         if post.root_id:
             log.info(
@@ -471,12 +472,15 @@ class IncidentMixin:
         # chronology over the raw reaction timestamp, and feed that single value
         # to every downstream END / Time-to-Fix write (both apply_incident_end_time
         # and the postmortem). Falls back to the reaction time when undeterminable.
-        ended_at = await self._resolve_incident_end_time(
-            post,
-            reacted_by_user_id=reacted_by_user_id,
-            reaction_ended_at=ended_at,
-            ticket=ticket,
-        )
+        # ``override_end_time`` skips this: an admin who typed an explicit END time
+        # in the UI gets that exact value, not the model's guess.
+        if not override_end_time:
+            ended_at = await self._resolve_incident_end_time(
+                post,
+                reacted_by_user_id=reacted_by_user_id,
+                reaction_ended_at=ended_at,
+                ticket=ticket,
+            )
 
         end_result: ConfirmationResult | None = None
         if ticket is not None and ticket.jira_issue_key is not None:

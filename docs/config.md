@@ -81,7 +81,7 @@ Field/option resolution mechanics and the date-time format are in [`jira.md`](ji
 | `LLM_SUMMARY_PROMPT` / `_FILE` | — | Override the summary prompt |
 
 Prompt resolution order (DB override → env → built-in default) and placeholders are in
-[`domains/postmortem.md`](domains/postmortem.md). Runtime overrides via the debug panel.
+[`domains/postmortem.md`](domains/postmortem.md). Runtime overrides via the admin UI (Settings page).
 
 ## Service / behavior (optional)
 
@@ -91,7 +91,9 @@ Prompt resolution order (DB override → env → built-in default) and placehold
 | `INTERACTIVE_BUTTONS_ENABLED` | `false` | Buttons on (needs `SERVICE_PUBLIC_URL` too); default = emoji-only |
 | `DUTY_HELP_ENABLED` | `true` | Post the duty cheat-sheet reply |
 | `METRICS_ENABLED` | `true` | Expose `GET /metrics` |
-| `DEBUG_ADMIN_ENABLED` | `false` | Mount the debug admin SPA/API; see [`domains/debug.md`](domains/debug.md) |
+| `ADMIN_UI_ENABLED` | `false` | Mount the admin UI + API; see [`admin-ui.md`](admin-ui.md) |
+| `ADMIN_UI_TOKEN` | — | Bearer token for `/admin/api/*`; required when `ADMIN_UI_ENABLED` |
+| `ADMIN_MM_USER_ID` | — | Mattermost user id used to attribute UI-driven lifecycle actions (fallback label `admin-ui`) |
 | `ENABLE_WEBSOCKET` | `true` | Connect to the Mattermost WS |
 | `ENABLE_BACKFILL_ON_STARTUP` | `false` | Process recent channel history on start |
 | `BACKFILL_RECENT_POSTS_LIMIT` | `0` | How many recent posts to backfill |

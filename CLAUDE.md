@@ -96,7 +96,7 @@ Jira payload/опций. Полный харнес — [docs/testing.md](docs/te
 
 ## Commit / PR
 
-Краткие императивные сабжекты (напр. `Add debug admin for alert ticket operations`),
+Краткие императивные сабжекты (напр. `Add admin API for alert ticket operations`),
 маленькие сфокусированные коммиты. PR описывает изменение поведения, перечисляет
 команды верификации и результат, отмечает влияние на конфиг/миграции, линкует связанные
 задачи. Скриншоты/примеры запросов — только при изменении видимых Mattermost-сообщений
@@ -131,7 +131,8 @@ Jira payload/опций. Полный харнес — [docs/testing.md](docs/te
 | Создание Jira-задачи по алерту, эпизоды/повторы, pending work (`_jira_sync.py`) | [docs/domains/jira-sync.md](docs/domains/jira-sync.md) |
 | Генерация постмортема, LLM-поля Jira, стриминг (`_postmortem.py`) | [docs/domains/postmortem.md](docs/domains/postmortem.md) |
 | Саммари треда (`_thread_summary.py`) | [docs/domains/thread-summary.md](docs/domains/thread-summary.md) |
-| Дебаг-панель, create-from-link, recreate (`_debug.py`, `debug_admin.py`) | [docs/domains/debug.md](docs/domains/debug.md) |
+| Админ-бэкенд: create-from-link, recreate, обёртки жизненного цикла (`_admin.py`, `admin_api.py`) | [docs/domains/admin.md](docs/domains/admin.md) |
+| Админ-фронтенд: web-UI (Vite+React+Tailwind, `web_ui/`) | [docs/admin-ui.md](docs/admin-ui.md) |
 | Резолв полей/опций Jira, формат date-time, тестовый режим | [docs/jira.md](docs/jira.md) |
 | Схема БД, миграции, идемпотентность, таймзона | [docs/persistence.md](docs/persistence.md) |
 | Переменные окружения (матрица required/optional) | [docs/config.md](docs/config.md) |

@@ -20,7 +20,7 @@ from mm_jira_bot.logging import get_logger
 
 
 class TicketSummaryRepository(Protocol):
-    def debug_summary(self) -> dict: ...
+    def stats_summary(self) -> dict: ...
 
 
 log = get_logger(__name__)
@@ -60,7 +60,7 @@ class TicketStatsCollector(Collector):
 
     def collect(self) -> Iterable[GaugeMetricFamily]:
         try:
-            summary = self._repository.debug_summary()
+            summary = self._repository.stats_summary()
         except Exception as exc:
             # A DB hiccup must not blank the entire /metrics output — but it must
             # not vanish silently either. WARNING (not ERROR) on purpose: a scrape

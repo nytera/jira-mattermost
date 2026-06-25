@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink text-fg font-sans antialiased;
+    /* Atmosphere: a faint engineering grid + a soft radial vignette, so the
+       surface reads like an instrument panel rather than a flat card wall. */
+    background-image:
+      radial-gradient(120% 80% at 100% 0%, rgba(47, 129, 247, 0.06), transparent 60%),
+      radial-gradient(100% 70% at 0% 100%, rgba(163, 113, 247, 0.05), transparent 55%),
+      linear-gradient(transparent 0 95%, rgba(230, 237, 243, 0.025) 95%),
+      linear-gradient(90deg, transparent 0 95%, rgba(230, 237, 243, 0.025) 95%);
+    background-size:
+      100% 100%,
+      100% 100%,
+      44px 44px,
+      44px 44px;
+    background-attachment: fixed;
+  }
+
+  /* Tabular numerals everywhere mono is used — readouts must not jitter. */
+  .font-mono {
+    font-feature-settings: "tnum" 1, "zero" 1;
+  }
+
+  ::selection {
+    background: rgba(47, 129, 247, 0.32);
+    color: #fff;
+  }
+
+  *:focus-visible {
+    outline: 2px solid theme("colors.live");
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  /* Scrollbars tuned to the dark surface. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(230, 237, 243, 0.18) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(230, 237, 243, 0.16);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-line bg-panel shadow-panel;
+  }
+
+  .panel-raised {
+    @apply rounded-lg border border-line bg-raised;
+  }
+
+  /* Uppercase, tracked micro-label used for section/field captions. */
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.18em] text-faint;
+  }
+
+  .hairline {
+    @apply border-line;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

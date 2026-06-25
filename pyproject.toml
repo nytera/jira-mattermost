@@ -30,6 +30,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+mm_jira_bot = ["admin_static/**/*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
@@ -59,10 +62,9 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
-# Эти модули содержат длинные неразбиваемые литералы: встроенный CSS/HTML/JS
-# debug-SPA и PM-шаблоны/хронологию инцидента на русском. Перенос строк сломал бы
-# рендеринг/текст, поэтому E501 здесь отключён (формат строк кода обеспечивает ruff format).
-"src/mm_jira_bot/debug_admin.py" = ["E501"]
+# Эти модули содержат длинные неразбиваемые литералы: PM-шаблоны и хронологию
+# инцидента на русском. Перенос строк сломал бы текст, поэтому E501 здесь отключён
+# (формат строк кода обеспечивает ruff format).
 "src/mm_jira_bot/jira_payload.py" = ["E501"]
 "src/mm_jira_bot/postmortem.py" = ["E501"]
 "src/mm_jira_bot/summary.py" = ["E501"]

@@ -44,7 +44,7 @@ order, shown below (the linearized list is in
 |---|---|---|
 | `SharedMixin` | `service/_shared.py` | base — primitives shared by ≥2 domains |
 | `AlertMixin` | `service/_alerts.py` | [`domains/alerts.md`](domains/alerts.md) |
-| `DebugMixin` | `service/_debug.py` | [`domains/debug.md`](domains/debug.md) |
+| `AdminMixin` | `service/_admin.py` | [`domains/admin.md`](domains/admin.md) |
 | `IncidentMixin` | `service/_incidents.py` | [`domains/incidents.md`](domains/incidents.md) |
 | `JiraSyncMixin` | `service/_jira_sync.py` | [`domains/jira-sync.md`](domains/jira-sync.md) |
 | `PostmortemMixin` | `service/_postmortem.py` | [`domains/postmortem.md`](domains/postmortem.md) |
@@ -53,6 +53,11 @@ order, shown below (the linearized list is in
 `coordinator.py` keeps init/auth and the event routers
 (`handle_websocket_event`/`handle_reaction`/`handle_slash_command`) plus the
 cross-domain orchestration of who-calls-what.
+
+`AdminMixin` backs the admin UI: its methods are exposed as JSON routes by
+`admin_api.py` (`register_admin_api`, `/admin/api/*`, Bearer auth) and consumed by
+the React SPA — see [`domains/admin.md`](domains/admin.md) and the frontend overview
+in [`admin-ui.md`](admin-ui.md).
 
 ### The `_shared.py` import-graph leaf
 

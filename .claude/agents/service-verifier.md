@@ -70,9 +70,9 @@ HEAD (`git stash` рабочих изменений ИЛИ проверь тот
    `coordinator`; `coordinator` импортирует миксин — односторонне.
 6. **Сборка/MRO.** В `class IncidentBotService(...)` миксин добавлен, `SharedMixin`
    остаётся ПЕРВЫМ; нет коллизий имён методов между миксинами.
-7. **Внешний API цел.** grep `web.py`/`debug_admin.py`: публичные методы
+7. **Внешний API цел.** grep `web.py`/`admin_api.py`: публичные методы
    (`handle_alert_action`, `handle_feedback_dialog_submission`, `handle_websocket_event`,
-   `process_pending_work`, `debug_*`, `_prompt_env_default` и т.д.) доступны на
+   `process_pending_work`, `admin_*`, `_prompt_env_default` и т.д.) доступны на
    собранном классе через наследование.
 
 ## 4. Doc-sync (перед коммитом — требование CLAUDE.md)
