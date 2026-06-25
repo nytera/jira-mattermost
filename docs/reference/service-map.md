@@ -16,8 +16,8 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `__init__.py` | 3 |
 | `__main__.py` | 18 |
 | `actions.py` | 291 |
-| `config.py` | 234 |
-| `debug_admin.py` | 736 |
+| `admin_api.py` | 313 |
+| `config.py` | 238 |
 | `domain.py` | 154 |
 | `formatting.py` | 309 |
 | `http.py` | 137 |
@@ -29,11 +29,11 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `metrics.py` | 113 |
 | `ops.py` | 160 |
 | `postmortem.py` | 359 |
-| `repository.py` | 715 |
+| `repository.py` | 806 |
 | `retry.py` | 56 |
 | `service/__init__.py` | 20 |
+| `service/_admin.py` | 372 |
 | `service/_alerts.py` | 607 |
-| `service/_debug.py` | 258 |
 | `service/_incidents.py` | 866 |
 | `service/_jira_sync.py` | 369 |
 | `service/_postmortem.py` | 563 |
@@ -41,30 +41,38 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `service/_thread_summary.py` | 392 |
 | `service/coordinator.py` | 479 |
 | `summary.py` | 30 |
-| `web.py` | 469 |
+| `web.py` | 470 |
 
 ## Service assembly (MRO)
 
 `IncidentBotService` is assembled from object-only mixins; linearized MRO:
 
-`IncidentBotService` → `SharedMixin` → `AlertMixin` → `DebugMixin` → `IncidentMixin` → `JiraSyncMixin` → `PostmortemMixin` → `ThreadSummaryMixin` → `object`
+`IncidentBotService` → `SharedMixin` → `AlertMixin` → `AdminMixin` → `IncidentMixin` → `JiraSyncMixin` → `PostmortemMixin` → `ThreadSummaryMixin` → `object`
 
 ## HTTP routes
 
-_`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` routes show `no` because they sit at the top of `register_debug_admin`, which `web.py` calls only when `debug_admin_enabled`._
+_`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes show `no` because they sit at the top of `register_admin_api` / `mount_admin_ui`, which `web.py` calls only when `admin_ui_enabled`._
 
 | Method | Path | Handler | Conditional |
 |---|---|---|---|
-| GET | `/debug/admin` | `debug_admin` | no |
-| GET | `/debug/admin/api/alerts` | `debug_admin_alerts` | no |
-| POST | `/debug/admin/api/alerts/create-from-link` | `debug_admin_create_from_link` | no |
-| GET | `/debug/admin/api/alerts/{post_id}` | `debug_admin_alert_detail` | no |
-| POST | `/debug/admin/api/alerts/{post_id}/jira/recreate` | `debug_admin_recreate_jira` | no |
-| GET | `/debug/admin/api/logs` | `debug_admin_logs` | no |
-| GET | `/debug/admin/api/settings` | `debug_admin_settings` | no |
-| POST | `/debug/admin/api/settings/{key}` | `debug_admin_save_setting` | no |
-| POST | `/debug/admin/api/settings/{key}/reset` | `debug_admin_reset_setting` | no |
-| GET | `/debug/admin/api/summary` | `debug_admin_summary` | no |
+| GET | `/admin` | `admin_index` | no |
+| GET | `/admin/api/alerts` | `admin_alerts` | no |
+| POST | `/admin/api/alerts/create-from-link` | `admin_create_from_link` | no |
+| GET | `/admin/api/alerts/{post_id}` | `admin_alert_detail` | no |
+| POST | `/admin/api/alerts/{post_id}/confirm` | `admin_confirm` | no |
+| POST | `/admin/api/alerts/{post_id}/end` | `admin_end` | no |
+| GET | `/admin/api/alerts/{post_id}/feedback` | `admin_alert_feedback` | no |
+| POST | `/admin/api/alerts/{post_id}/jira/recreate` | `admin_recreate_jira` | no |
+| POST | `/admin/api/alerts/{post_id}/postmortem` | `admin_postmortem` | no |
+| POST | `/admin/api/alerts/{post_id}/summary` | `admin_summary_action` | no |
+| POST | `/admin/api/alerts/{post_id}/validity` | `admin_validity` | no |
+| GET | `/admin/api/logs` | `admin_logs` | no |
+| GET | `/admin/api/settings` | `admin_settings` | no |
+| POST | `/admin/api/settings/{key}` | `admin_save_setting` | no |
+| POST | `/admin/api/settings/{key}/reset` | `admin_reset_setting` | no |
+| GET | `/admin/api/stats` | `admin_stats` | no |
+| GET | `/admin/api/summary` | `admin_summary` | no |
+| GET | `/admin/{path:path}` | `admin_spa` | no |
 | GET | `/healthz` | `healthz` | no |
 | POST | `/mattermost/actions/alert` | `alert_action` | no |
 | POST | `/mattermost/dialogs/feedback` | `feedback_dialog` | no |
@@ -88,15 +96,16 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
 - `def build_incident_create_attachment(*, incident_post_id: str, callback_url: str) -> dict`
 - `def feedback_dialog_callback_url(service_public_url: str) -> str`
 
+### `admin_api.py`
+
+- `def mount_admin_ui(app: FastAPI) -> None`
+- `def register_admin_api(app: FastAPI, service: IncidentBotService) -> None`
+
 ### `config.py`
 
 - **class `Settings`**
   - `def from_env(cls, dotenv_path: str | Path = '.env') -> Settings`
 - `def load_dotenv_file(path: str | Path = '.env') -> None`
-
-### `debug_admin.py`
-
-- `def register_debug_admin(app: FastAPI, service: IncidentBotService) -> None`
 
 ### `domain.py`
 
@@ -230,7 +239,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
 - **class `TicketStatsCollector(Collector)`**
   - `def collect(self) -> Iterable[GaugeMetricFamily]`
 - **class `TicketSummaryRepository(Protocol)`**
-  - `def debug_summary(self) -> dict`
+  - `def stats_summary(self) -> dict`
 - `def observe_http(client: str, method: str, status: str, duration_seconds: float) -> None`
 - `def register_ticket_collector(repository: TicketSummaryRepository) -> None`
 
@@ -263,11 +272,11 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
 - **class `AlertTicket(Base)`**
 - **class `AlertTicketRepository`**
   - `def add_feedback(self, post_id: str, *, user_id: str, user_display_name: str, message: str) -> AlertFeedback`
+  - `def admin_stats(self, *, timeseries_days: int = 90) -> dict`
   - `def attach_jira_issue(self, post_id: str, issue_key: str, issue_url: str) -> None`
   - `def create_or_classify_alert(self, post: MattermostPost, *, message_url: str, channel_name: str | None, signature: str | None = None) -> tuple[AlertTicket, bool, AlertTicket | None]`
   - `def create_or_get_alert(self, post: MattermostPost, *, message_url: str, channel_name: str | None) -> tuple[AlertTicket, bool]`
   - `def create_or_get_incident_thread(self, post: MattermostPost, *, message_url: str, channel_name: str | None) -> tuple[AlertTicket, bool]`
-  - `def debug_summary(self) -> dict`
   - `def delete_setting(self, key: str) -> None`
   - `def get_by_incident_post_id(self, post_id: str) -> AlertTicket | None`
   - `def get_by_post_id(self, post_id: str) -> AlertTicket | None`
@@ -291,6 +300,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
   - `def set_last_error(self, post_id: str, error: str) -> None`
   - `def set_setting(self, key: str, value: str) -> None`
   - `def set_validity_label(self, post_id: str, label: str) -> None`
+  - `def stats_summary(self) -> dict`
   - `def sync_valid_incident_from_jira(self, post_id: str) -> None`
 - **class `AppSetting(Base)`**
 - **class `Base(DeclarativeBase)`**
@@ -306,6 +316,19 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
 - `async def retry_async(operation: Callable[[], Awaitable[T]], *, attempts: int, base_delay_seconds: float, logger: EventLogger, event: str, **log_fields: Any) -> T`
 - `def is_retryable_status(status_code: int | None) -> bool`
 
+### `service/_admin.py`
+
+- **class `AdminCreateFromLinkResult`**
+- **class `AdminJiraRecreateResult`**
+- **class `AdminMixin`**
+  - `async def admin_confirm_incident(self, post_id: str) -> ConfirmationResult`
+  - `async def admin_create_from_link(self, link: str) -> AdminCreateFromLinkResult`
+  - `async def admin_end_incident(self, post_id: str, *, ended_at: datetime | None = None) -> ConfirmationResult`
+  - `async def admin_generate_postmortem(self, post_id: str) -> ConfirmationResult`
+  - `async def admin_generate_summary(self, post_id: str) -> ActionResult`
+  - `async def admin_recreate_jira_issue(self, post_id: str, *, force: bool = False) -> AdminJiraRecreateResult`
+  - `async def admin_set_validity(self, post_id: str, *, validity_label: str) -> ConfirmationResult`
+
 ### `service/_alerts.py`
 
 - **class `AlertMixin`**
@@ -314,14 +337,6 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
   - `async def handle_alert_post(self, post: MattermostPost) -> AlertTicket | None`
   - `async def handle_feedback_dialog_submission(self, *, user_id: str, state: str, submission: dict, cancelled: bool = False) -> ActionResult`
   - `async def open_feedback_dialog(self, *, alert_post_id: str, trigger_id: str) -> ActionResult`
-
-### `service/_debug.py`
-
-- **class `DebugCreateFromLinkResult`**
-- **class `DebugJiraRecreateResult`**
-- **class `DebugMixin`**
-  - `async def debug_create_from_link(self, link: str) -> DebugCreateFromLinkResult`
-  - `async def debug_recreate_jira_issue(self, post_id: str, *, force: bool = False) -> DebugJiraRecreateResult`
 
 ### `service/_incidents.py`
 
@@ -357,7 +372,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/debug/admin/*` r
 ### `service/coordinator.py`
 
 - **class `CommandResponse`**
-- **class `IncidentBotService(SharedMixin, AlertMixin, DebugMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`**
+- **class `IncidentBotService(SharedMixin, AlertMixin, AdminMixin, IncidentMixin, JiraSyncMixin, PostmortemMixin, ThreadSummaryMixin)`**
   - `async def handle_reaction(self, reaction: ReactionEvent) -> ConfirmationResult | ActionResult`
   - `async def handle_slash_command(self, *, user_id: str, text: str) -> CommandResponse`
   - `async def handle_websocket_event(self, event: dict) -> None`

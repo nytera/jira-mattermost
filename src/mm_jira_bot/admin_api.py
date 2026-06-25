@@ -276,6 +276,10 @@ def register_admin_api(app: FastAPI, service: IncidentBotService) -> None:
         result = await service.admin_set_validity(post_id, validity_label=validity_label)
         return _confirmation_response(result)
 
+    @app.post("/admin/api/alerts/{post_id}/postmortem", dependencies=[auth])
+    async def admin_postmortem(post_id: str) -> JSONResponse:
+        return _confirmation_response(await service.admin_generate_postmortem(post_id))
+
     @app.post("/admin/api/alerts/{post_id}/summary", dependencies=[auth])
     async def admin_summary_action(post_id: str) -> JSONResponse:
         result = await service.admin_generate_summary(post_id)

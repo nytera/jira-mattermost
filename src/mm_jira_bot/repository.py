@@ -358,9 +358,9 @@ class AlertTicketRepository:
 
         top_channels = [
             {"channel_id": cid, "channel_name": cname, "count": count}
-            for (cid, cname), count in sorted(
-                channels.items(), key=lambda kv: kv[1], reverse=True
-            )[:10]
+            for (cid, cname), count in sorted(channels.items(), key=lambda kv: kv[1], reverse=True)[
+                :10
+            ]
         ]
         return {
             "total": len(tickets),
@@ -379,9 +379,7 @@ class AlertTicketRepository:
             ),
             "by_creation_status": _count_by(t.creation_status for t in tickets),
             "by_confirmation_status": _count_by(t.confirmation_status for t in tickets),
-            "by_validity_label": _count_by(
-                (t.validity_label or "Не заполнено") for t in tickets
-            ),
+            "by_validity_label": _count_by((t.validity_label or "Не заполнено") for t in tickets),
             "mtta_seconds": _mean_duration(
                 (t.mattermost_message_created_at, t.confirmed_at) for t in tickets
             ),
@@ -389,9 +387,7 @@ class AlertTicketRepository:
                 (t.mattermost_message_created_at, t.resolved_at) for t in tickets
             ),
             "timeseries_days": timeseries_days,
-            "timeseries_daily": [
-                {"date": day, **counts} for day, counts in sorted(daily.items())
-            ],
+            "timeseries_daily": [{"date": day, **counts} for day, counts in sorted(daily.items())],
             "top_channels": top_channels,
         }
 

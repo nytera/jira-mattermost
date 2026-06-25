@@ -314,13 +314,14 @@ class AdminMixin:
             post_id, confirmed_by_user_id=self._admin_actor_id(), source="admin_ui"
         )
 
-    async def admin_end_incident(
-        self, post_id: str, *, ended_at: datetime | None = None
+    async def _run_incident_checkmark(
+        self, post_id: str, *, ended_at: datetime | None
     ) -> ConfirmationResult:
-        """End an incident from the UI: resolve the incident post and run the
-        checkmark flow (END time + Time-to-Fix + postmortem). Incident-keyed —
-        uses ``incident_post_id``, not the alert ``post_id``. Idempotent: a second
-        call on a finalized incident leaves the postmortem untouched."""
+        """Resolve the incident post and run the checkmark flow (END time +
+        Time-to-Fix + postmortem). Incident-keyed — uses ``incident_post_id``, not
+        the alert ``post_id``. Idempotent: a second call on a finalized incident
+        leaves the postmortem untouched. Shared by ``admin_end_incident`` and
+        ``admin_generate_postmortem`` — the two UI actions enter the same path."""
         ticket = self.repository.get_by_post_id(post_id)
         if ticket is None:
             return ConfirmationResult(
@@ -339,6 +340,20 @@ class AdminMixin:
             ended_at=ended_at or backend_now(),
             source="admin_ui",
         )
+
+    async def admin_end_incident(
+        self, post_id: str, *, ended_at: datetime | None = None
+    ) -> ConfirmationResult:
+        """End an incident from the UI: set the END time, Time-to-Fix and generate
+        the postmortem. Optionally takes an explicit ``ended_at``."""
+        return await self._run_incident_checkmark(post_id, ended_at=ended_at)
+
+    async def admin_generate_postmortem(self, post_id: str) -> ConfirmationResult:
+        """Generate the postmortem from the UI. Routes through the same idempotent
+        incident-checkmark path as ``admin_end_incident``: on an incident that is
+        not yet finalized it generates the postmortem; on a finalized one it leaves
+        the existing postmortem untouched (the Jira comment is additive)."""
+        return await self._run_incident_checkmark(post_id, ended_at=None)
 
     async def admin_set_validity(self, post_id: str, *, validity_label: str) -> ConfirmationResult:
         """Set the Jira «Валидность» field from the UI (lightweight path)."""
