@@ -7,7 +7,7 @@
 ## Scope and boundaries
 
 - **Owned here:** `generate_incident_postmortem` (orchestration), `_ensure_postmortem_jira_issue`, `_apply_postmortem_validity`, `_set_time_to_fix`, `_resolve_incident_end_time` / `_parse_incident_end_time` (END / time-to-fix recovery time — see below), `_postmortem_thread_context`.
-- **Delegated out** (called via `TYPE_CHECKING` stubs): the **thread-summary FLOW** (`_post_summary_placeholder`, `_set_summary_status`, `_generate_and_finalize_summary`, `_create_thread_summary_reply`, the live-stream throttle callback) lives in [../domains/thread-summary.md](../domains/thread-summary.md) — this domain only *calls* it. The reaction/dispatch that decides to close an incident and the idempotency *guard* live in [../domains/incidents.md](../domains/incidents.md). Jira field/option semantics: [../jira.md](../jira.md). Env vars: [../config.md](../config.md). Runtime prompt overrides: [../domains/debug.md](../domains/debug.md).
+- **Delegated out** (called via `TYPE_CHECKING` stubs): the **thread-summary FLOW** (`_post_summary_placeholder`, `_set_summary_status`, `_generate_and_finalize_summary`, `_create_thread_summary_reply`, the live-stream throttle callback) lives in [../domains/thread-summary.md](../domains/thread-summary.md) — this domain only *calls* it. The reaction/dispatch that decides to close an incident and the idempotency *guard* live in [../domains/incidents.md](../domains/incidents.md). Jira field/option semantics: [../jira.md](../jira.md). Env vars: [../config.md](../config.md). Runtime prompt overrides: [../domains/admin.md](../domains/admin.md).
 
 ## One template, two renderings (the central invariant)
 
@@ -19,7 +19,7 @@ Invariants:
 - The `[INC] DD.MM.YYYY - …` first line is read by `extract_postmortem_summary` to build the **Jira issue title** (falling back to `extract_alert_title` of the root post when absent); `_limit_postmortem_summary` clamps it to 120 chars / 10 words.
 - **Jira path:** the LLM always emits Markdown; `markdown_to_jira_wiki` converts it to wiki markup (the v2 comment endpoint renders wiki, not Markdown) **and** turns `@username → [~username]` (clickable mentions, when MM and Jira usernames match).
 - **Mattermost path:** `summary.neutralize_mentions` strips the leading `@` so the thread summary never pings participants.
-- **Effective template is resolved at call time** by `_resolve_prompt_template` (coordinator): **DB override (debug panel) → env (`LLM_POSTMORTEM_PROMPT` / `LLM_SUMMARY_PROMPT`, plus `*_FILE`) → built-in default**.
+- **Effective template is resolved at call time** by `_resolve_prompt_template` (coordinator): **DB override (admin UI) → env (`LLM_POSTMORTEM_PROMPT` / `LLM_SUMMARY_PROMPT`, plus `*_FILE`) → built-in default**.
 - The two `SYSTEM_PROMPT`s (role / quality guidelines) stay in `llm.py` **code** — they are not env-overridable.
 
 ## `generate_incident_postmortem` — the closure flow

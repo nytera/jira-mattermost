@@ -28,8 +28,8 @@ init expectations aligned.
 - **`alert_feedback`** — `mattermost_post_id`, `user_id`, display name, message text,
   created-at.
 - **`app_settings`** — a `key`/`value` store for runtime-editable config (the
-  debug-panel LLM prompt overrides), managed by `get_setting` / `set_setting` /
-  `delete_setting`. See [`domains/debug.md`](domains/debug.md).
+  admin-UI LLM prompt overrides), managed by `get_setting` / `set_setting` /
+  `delete_setting`. See [`domains/admin.md`](domains/admin.md).
 
 ## Idempotency keys
 

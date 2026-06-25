@@ -30,7 +30,7 @@ A channel for the **bot's own health** — not the Grafana alert channel. Two st
    best-effort with a `_posting` contextvar recursion guard and a **bounded queue**
    (overflow counted by `bot_ops_alerts_dropped_total`).
 2. **Issue-created feed** — on every Jira issue create (firing alert, manual incident,
-   postmortem incident, debug recreate) a blue "Создана задача" box with the key and a
+   postmortem incident, admin UI recreate) a blue "Создана задача" box with the key and a
    link to the source. Posted by `_announce_issue_to_ops` as a normal message (no
    cooldown/recursion guard); **not** throttled; skipped when `jira_create_enabled=false`.
 
@@ -50,11 +50,12 @@ are still counted (`bot_errors_total`) and logged.
 - `bot_tickets_total`, `bot_tickets_pending_jira`, `bot_tickets_failed`,
   `bot_tickets_confirmed`, `bot_tickets_by_creation_status{status}`,
   `bot_tickets_by_confirmation_status{status}` — sampled lazily on scrape via
-  `repository.debug_summary()`. A sampling failure logs `metrics.collect_failed`
+  `repository.stats_summary()`. A sampling failure logs `metrics.collect_failed`
   (WARNING, with stack) and returns no gauges instead of blanking `/metrics`.
 
-Like the debug admin, `/metrics` has **no auth** and shares port `8080` — rely on
-network isolation / reverse proxy.
+`/metrics` has **no auth** and shares port `8080` — rely on network isolation /
+reverse proxy. (The admin API `/admin/api/*` is the exception: it requires a Bearer
+token, see [`domains/admin.md`](domains/admin.md).)
 
 ## Recovery & retry
 
@@ -100,8 +101,8 @@ Logs go to stdout; `LOG_FORMAT` selects the shape:
 handler, startup backfill, HTTP endpoints) log at `ERROR` with `exc_info` and an
 `error_type` field; expected integration errors (`ApiError`) log compactly without a
 stack. uvicorn is unified via `log_config=None`, so its access/error/lifecycle lines
-use the same `LOG_FORMAT` and feed the in-memory ring buffer behind the debug admin
-(`GET /debug/admin/api/logs`, see [`domains/debug.md`](domains/debug.md)).
+use the same `LOG_FORMAT` and feed the in-memory ring buffer behind the admin UI
+(`GET /admin/api/logs`, Bearer auth, see [`domains/admin.md`](domains/admin.md)).
 
 A few high-signal events: `mattermost.alert.received`, `jira.issue.created`,
 `incident.confirmed`, `postmortem.completed`, `summary.completed`,

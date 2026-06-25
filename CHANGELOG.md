@@ -7,11 +7,27 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Админ-API и web-UI.** Маршруты `/admin/api/*` (`admin_api.py`) за общим Bearer-токеном
+  (`ADMIN_UI_TOKEN`): дашборд MTTA/MTTR, инциденты с действиями жизненного цикла
+  (confirm/end/validity/postmortem/summary), создание задачи из ссылки и пересоздание,
+  правка LLM-промптов, логи. Современный SPA `web_ui/` (Vite + React + Tailwind) отдаётся
+  на `/admin`; сборка кладётся в `src/mm_jira_bot/admin_static/` (gitignored, `pip install`
+  работает без Node). Новые env: `ADMIN_UI_ENABLED` (дефолт false), `ADMIN_UI_TOKEN`
+  (обязателен при включённом UI), `ADMIN_MM_USER_ID` (опц., атрибуция действий из UI).
+
 ### Изменено
 
 - Реструктуризация документации: README и CHANGELOG сжаты, `docs/` приведены к принципу
   «один факт — один владелец», исправлен MRO в `architecture.md`, убрана мета-проза.
   Поведение и код не менялись.
+- `repository.debug_summary()` переименован в `stats_summary()` (метрики + preflight).
+
+### Удалено
+
+- **Дебаг-панель** (`debug_admin.py`, `DEBUG_ADMIN_ENABLED`, `/debug/admin`): заменена
+  админ-API + web-UI.
 
 ## [0.1.0] - 2026-06-24
 
