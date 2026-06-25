@@ -24,17 +24,22 @@ export default function Settings() {
   const toast = useToast();
   const { data, error, loading, reload } = useApi(() => api.settings(), []);
 
-  // Local edit buffer, keyed by prompt key, seeded from the fetched values.
+  // The rows render from `prompts` (not the useApi `data`) so a save/reset
+  // response — which carries the new value AND source — updates value, source
+  // badge and button state immediately, without a refetch.
+  const [prompts, setPrompts] = useState<PromptSetting[]>([]);
+  // Local edit buffer, keyed by prompt key, seeded from the current values.
   const [edited, setEdited] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     if (!data) return;
-    setEdited(Object.fromEntries(data.prompts.map((p) => [p.key, p.value])));
+    applyResponse(data.prompts);
   }, [data]);
 
-  function applyResponse(prompts: PromptSetting[]) {
-    setEdited(Object.fromEntries(prompts.map((p) => [p.key, p.value])));
+  function applyResponse(next: PromptSetting[]) {
+    setPrompts(next);
+    setEdited(Object.fromEntries(next.map((p) => [p.key, p.value])));
   }
 
   async function save(prompt: PromptSetting) {
@@ -74,7 +79,7 @@ export default function Settings() {
         <Spinner label="Загрузка настроек…" />
       ) : error ? (
         <ErrorState message={error} onRetry={reload} />
-      ) : !data || data.prompts.length === 0 ? (
+      ) : prompts.length === 0 ? (
         <div className="panel">
           <EmptyState
             icon={<SlidersHorizontal size={28} />}
@@ -84,7 +89,7 @@ export default function Settings() {
         </div>
       ) : (
         <div className="flex flex-col gap-5">
-          {data.prompts.map((prompt) => {
+          {prompts.map((prompt) => {
             const meta = SOURCE_META[prompt.source];
             const current = edited[prompt.key] ?? prompt.value;
             const isBusy = busy === prompt.key;

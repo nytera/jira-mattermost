@@ -273,6 +273,56 @@ async def test_generate_postmortem_creates_then_is_idempotent(service):
     assert len(service.llm.prompts) == 1
 
 
+def _spy_on_end_time_resolution(service):
+    """Replace _resolve_incident_end_time with a recorder; returns the call log."""
+    calls: list = []
+
+    async def recorder(post, *, reacted_by_user_id, reaction_ended_at, ticket):
+        calls.append(reaction_ended_at)
+        return reaction_ended_at
+
+    service._resolve_incident_end_time = recorder
+    return calls
+
+
+async def test_end_with_explicit_time_bypasses_llm_inference(service):
+    from datetime import timedelta
+
+    from mm_jira_bot.domain import backend_now
+
+    service.llm = FakeLlmClient()
+    ticket = await _confirmed_incident(service)
+    calls = _spy_on_end_time_resolution(service)
+
+    explicit = backend_now() - timedelta(hours=3)
+    result = await service.admin_end_incident(ticket.mattermost_post_id, ended_at=explicit)
+
+    # An admin-supplied END time is authoritative — LLM inference is skipped.
+    assert result.status == ConfirmationStatus.INCIDENT_ENDED
+    assert calls == []
+
+
+async def test_end_without_explicit_time_uses_llm_inference(service):
+    service.llm = FakeLlmClient()
+    ticket = await _confirmed_incident(service)
+    calls = _spy_on_end_time_resolution(service)
+
+    await service.admin_end_incident(ticket.mattermost_post_id)
+
+    # No explicit time -> fall back to LLM inference (like a checkmark reaction).
+    assert len(calls) == 1
+
+
+async def test_generate_postmortem_uses_llm_inference(service):
+    service.llm = FakeLlmClient()
+    ticket = await _confirmed_incident(service)
+    calls = _spy_on_end_time_resolution(service)
+
+    await service.admin_generate_postmortem(ticket.mattermost_post_id)
+
+    assert len(calls) == 1
+
+
 # --------------------------------------------------------------------------- #
 # admin_generate_summary
 # --------------------------------------------------------------------------- #

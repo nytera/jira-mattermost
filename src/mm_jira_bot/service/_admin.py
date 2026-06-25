@@ -100,6 +100,7 @@ class AdminMixin:
             ended_at: datetime,
             source: str,
             validity_label: str | None = ...,
+            override_end_time: bool = ...,
         ) -> ConfirmationResult: ...
 
         # --- JiraSyncMixin ---
@@ -315,13 +316,17 @@ class AdminMixin:
         )
 
     async def _run_incident_checkmark(
-        self, post_id: str, *, ended_at: datetime | None
+        self, post_id: str, *, ended_at: datetime | None, ended_at_explicit: bool = False
     ) -> ConfirmationResult:
         """Resolve the incident post and run the checkmark flow (END time +
         Time-to-Fix + postmortem). Incident-keyed — uses ``incident_post_id``, not
         the alert ``post_id``. Idempotent: a second call on a finalized incident
         leaves the postmortem untouched. Shared by ``admin_end_incident`` and
-        ``admin_generate_postmortem`` — the two UI actions enter the same path."""
+        ``admin_generate_postmortem`` — the two UI actions enter the same path.
+
+        ``ended_at_explicit`` marks an admin-supplied END time as authoritative so
+        the checkmark flow trusts it instead of re-inferring the moment via the LLM.
+        """
         ticket = self.repository.get_by_post_id(post_id)
         if ticket is None:
             return ConfirmationResult(
@@ -339,14 +344,19 @@ class AdminMixin:
             reacted_by_user_id=self._admin_actor_id(),
             ended_at=ended_at or backend_now(),
             source="admin_ui",
+            override_end_time=ended_at_explicit,
         )
 
     async def admin_end_incident(
         self, post_id: str, *, ended_at: datetime | None = None
     ) -> ConfirmationResult:
         """End an incident from the UI: set the END time, Time-to-Fix and generate
-        the postmortem. Optionally takes an explicit ``ended_at``."""
-        return await self._run_incident_checkmark(post_id, ended_at=ended_at)
+        the postmortem. An explicit ``ended_at`` is authoritative — it bypasses the
+        LLM end-time inference; omitting it falls back to that inference (as a
+        checkmark reaction does)."""
+        return await self._run_incident_checkmark(
+            post_id, ended_at=ended_at, ended_at_explicit=ended_at is not None
+        )
 
     async def admin_generate_postmortem(self, post_id: str) -> ConfirmationResult:
         """Generate the postmortem from the UI. Routes through the same idempotent

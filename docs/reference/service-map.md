@@ -32,9 +32,9 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `repository.py` | 806 |
 | `retry.py` | 56 |
 | `service/__init__.py` | 20 |
-| `service/_admin.py` | 372 |
+| `service/_admin.py` | 382 |
 | `service/_alerts.py` | 607 |
-| `service/_incidents.py` | 866 |
+| `service/_incidents.py` | 870 |
 | `service/_jira_sync.py` | 369 |
 | `service/_postmortem.py` | 563 |
 | `service/_shared.py` | 171 |
@@ -344,7 +344,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
   - `async def apply_incident_end_time(self, post: MattermostPost, *, ended_at: datetime, source: str) -> ConfirmationResult`
   - `async def confirm_incident(self, post_id: str, *, confirmed_by_user_id: str, source: str, confirmed_at: datetime | None = None) -> ConfirmationResult`
   - `async def handle_incident_action(self, *, action: str, incident_post_id: str, user_id: str, selected_option: str = '') -> ActionResult`
-  - `async def handle_incident_checkmark(self, post: MattermostPost, *, reacted_by_user_id: str, ended_at: datetime, source: str, validity_label: str | None = None) -> ConfirmationResult`
+  - `async def handle_incident_checkmark(self, post: MattermostPost, *, reacted_by_user_id: str, ended_at: datetime, source: str, validity_label: str | None = None, override_end_time: bool = False) -> ConfirmationResult`
   - `async def handle_manual_incident_post(self, post: MattermostPost) -> None`
 
 ### `service/_jira_sync.py`
