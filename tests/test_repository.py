@@ -482,11 +482,11 @@ def test_mark_episode_resolved_returns_none_when_no_open_episode(repo):
 
 
 # --------------------------------------------------------------------------- #
-# debug_summary
+# stats_summary
 # --------------------------------------------------------------------------- #
 
 
-def test_debug_summary_counts(repo, session_factory):
+def test_stats_summary_counts(repo, session_factory):
     with session_factory() as session:
         session.add(
             make_ticket(
@@ -516,7 +516,7 @@ def test_debug_summary_counts(repo, session_factory):
         )
         session.commit()
 
-    summary = repo.debug_summary()
+    summary = repo.stats_summary()
     assert summary["total"] == 3
     assert summary["pending_jira"] == 2  # two rows with NULL jira_issue_key
     assert summary["failed"] == 1

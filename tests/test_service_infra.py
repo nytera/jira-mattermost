@@ -401,7 +401,7 @@ def test_alert_action_rejects_malformed_json(service, settings):
 
 def test_ticket_collector_logs_on_repository_failure():
     class FailingRepo:
-        def debug_summary(self):
+        def stats_summary(self):
             raise RuntimeError("db down")
 
     collector = TicketStatsCollector(FailingRepo())

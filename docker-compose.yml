@@ -1,14 +1,14 @@
 services:
-  bot:
+  bot_dev:
     build: .
     env_file: .env
     ports:
-      - "8080:8080"
+      - "8085:8080"
     depends_on:
-      - postgres
+      - postgres_dev
     restart: unless-stopped
 
-  postgres:
+  postgres_dev:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: incident_bot
@@ -20,16 +20,14 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
-    ports:
-      - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data_dev:/var/lib/postgresql/data
 
 volumes:
-  postgres-data:
+  postgres-data_dev:
 
 networks:
   default:
     ipam:
       config:
-        - subnet: 10.123.0.0/24
+        - subnet: 10.124.0.0/24

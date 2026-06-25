@@ -31,8 +31,8 @@ from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository
 from mm_jira_bot.retry import ApiError
+from mm_jira_bot.service._admin import AdminMixin
 from mm_jira_bot.service._alerts import AlertMixin
-from mm_jira_bot.service._debug import DebugMixin
 from mm_jira_bot.service._incidents import IncidentMixin
 from mm_jira_bot.service._jira_sync import JiraSyncMixin
 from mm_jira_bot.service._postmortem import PostmortemMixin
@@ -63,7 +63,7 @@ class CommandResponse:
 class IncidentBotService(
     SharedMixin,
     AlertMixin,
-    DebugMixin,
+    AdminMixin,
     IncidentMixin,
     JiraSyncMixin,
     PostmortemMixin,

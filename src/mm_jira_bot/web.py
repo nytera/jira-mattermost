@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from mm_jira_bot.config import Settings
-from mm_jira_bot.debug_admin import register_debug_admin
+from mm_jira_bot.admin_api import mount_admin_ui, register_admin_api
 from mm_jira_bot.jira import JiraClient
 from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.logging import configure_logging, get_logger
@@ -88,7 +88,7 @@ async def _run_dependency_check(
 
 
 async def _database_preflight(service: IncidentBotService) -> dict[str, Any]:
-    summary = await asyncio.to_thread(service.repository.debug_summary)
+    summary = await asyncio.to_thread(service.repository.stats_summary)
     return {
         "database_url": _redact_database_url(service.settings.database_url),
         "ticket_total": summary.get("total"),
@@ -463,7 +463,8 @@ def create_app(
             return JSONResponse({"error": result.message})
         return JSONResponse({})
 
-    if settings.debug_admin_enabled:
-        register_debug_admin(app, service)
+    if settings.admin_ui_enabled:
+        register_admin_api(app, service)
+        mount_admin_ui(app)
 
     return app

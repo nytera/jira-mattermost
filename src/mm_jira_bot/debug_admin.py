@@ -657,7 +657,7 @@ def register_debug_admin(app: FastAPI, service: IncidentBotService) -> None:
 
     @app.get("/debug/admin/api/summary")
     async def debug_admin_summary() -> dict:
-        return service.repository.debug_summary()
+        return service.repository.stats_summary()
 
     @app.get("/debug/admin/api/alerts")
     async def debug_admin_alerts(

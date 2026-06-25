@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import (
     Boolean,
@@ -21,7 +21,12 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from mm_jira_bot.domain import MattermostPost, backend_now, datetime_from_mattermost_ms
+from mm_jira_bot.domain import (
+    MattermostPost,
+    backend_datetime,
+    backend_now,
+    datetime_from_mattermost_ms,
+)
 from mm_jira_bot.formatting import alert_signature, extract_alert_title
 
 
@@ -193,6 +198,31 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
         )
 
 
+def _count_by(values: Iterable[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _mean_duration(pairs: Iterable[tuple[datetime | None, datetime | None]]) -> float | None:
+    """Mean of non-negative ``end - start`` deltas in seconds (``None`` if empty).
+
+    Naive timestamps localize to the runtime timezone (matching the Jira
+    Time-to-Fix path), never assumed UTC — so SQLite (tz-stripped) and Postgres
+    agree."""
+    deltas: list[float] = []
+    for start, end in pairs:
+        if start is None or end is None:
+            continue
+        seconds = (backend_datetime(end) - backend_datetime(start)).total_seconds()
+        if seconds >= 0:
+            deltas.append(seconds)
+    if not deltas:
+        return None
+    return round(sum(deltas) / len(deltas), 1)
+
+
 class AlertTicketRepository:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
@@ -239,7 +269,7 @@ class AlertTicketRepository:
         with self._session_factory() as session:
             return list(session.scalars(statement))
 
-    def debug_summary(self) -> dict:
+    def stats_summary(self) -> dict:
         with self._session_factory() as session:
             total = session.scalar(select(func.count(AlertTicket.id))) or 0
             creation_statuses = {
@@ -299,6 +329,71 @@ class AlertTicketRepository:
                 "confirmed": confirmed,
                 "empty_validity": empty_validity,
             }
+
+    def admin_stats(self, *, timeseries_days: int = 90) -> dict:
+        """Rich aggregate for the admin dashboard (separate from the lean
+        :meth:`stats_summary` that feeds Prometheus).
+
+        Loads tickets and computes MTTA/MTTR and the daily timeseries in Python
+        so the math is identical on SQLite and Postgres (no dialect-specific date
+        SQL). Scans the table — call it off the event loop (``asyncio.to_thread``).
+        MTTA/MTTR start at ``mattermost_message_created_at`` (alert fire time,
+        matching the Jira Time-to-Fix definition)."""
+        with self._session_factory() as session:
+            tickets = list(session.scalars(select(AlertTicket)))
+
+        cutoff = backend_now() - timedelta(days=timeseries_days)
+        daily: dict[str, dict[str, int]] = {}
+        channels: dict[tuple[str, str | None], int] = {}
+        for t in tickets:
+            stamp = t.mattermost_message_created_at or t.created_at
+            if stamp is not None and backend_datetime(stamp) >= cutoff:
+                day = backend_datetime(stamp).date().isoformat()
+                bucket = daily.setdefault(day, {"total": 0, "confirmed": 0})
+                bucket["total"] += 1
+                if t.valid_incident:
+                    bucket["confirmed"] += 1
+            channel_key = (t.mattermost_channel_id, t.mattermost_channel_name)
+            channels[channel_key] = channels.get(channel_key, 0) + 1
+
+        top_channels = [
+            {"channel_id": cid, "channel_name": cname, "count": count}
+            for (cid, cname), count in sorted(
+                channels.items(), key=lambda kv: kv[1], reverse=True
+            )[:10]
+        ]
+        return {
+            "total": len(tickets),
+            "open": sum(1 for t in tickets if t.valid_incident and t.resolved_at is None),
+            "closed": sum(1 for t in tickets if t.resolved_at is not None),
+            "pending_jira": sum(1 for t in tickets if t.jira_issue_key is None),
+            "failed": sum(
+                1
+                for t in tickets
+                if t.creation_status == "failed_jira"
+                or t.confirmation_status == "failed_confirmation"
+            ),
+            "confirmed": sum(1 for t in tickets if t.valid_incident),
+            "empty_validity": sum(
+                1 for t in tickets if not t.valid_incident and t.validity_label is None
+            ),
+            "by_creation_status": _count_by(t.creation_status for t in tickets),
+            "by_confirmation_status": _count_by(t.confirmation_status for t in tickets),
+            "by_validity_label": _count_by(
+                (t.validity_label or "Не заполнено") for t in tickets
+            ),
+            "mtta_seconds": _mean_duration(
+                (t.mattermost_message_created_at, t.confirmed_at) for t in tickets
+            ),
+            "mttr_seconds": _mean_duration(
+                (t.mattermost_message_created_at, t.resolved_at) for t in tickets
+            ),
+            "timeseries_days": timeseries_days,
+            "timeseries_daily": [
+                {"date": day, **counts} for day, counts in sorted(daily.items())
+            ],
+            "top_channels": top_channels,
+        }
 
     def get_setting(self, key: str) -> str | None:
         with self._session_factory() as session:

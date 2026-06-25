@@ -146,7 +146,9 @@ class Settings:
     backfill_recent_posts_limit: int = 0
     enable_websocket: bool = True
     enable_backfill_on_startup: bool = False
-    debug_admin_enabled: bool = False
+    admin_ui_enabled: bool = False
+    admin_ui_token: str | None = None
+    admin_mm_user_id: str | None = None
     llm_base_url: str = "https://corellm.wb.ru/deepseek/v1"
     llm_api_token: str | None = None
     llm_model: str = "deepseek-chat"
@@ -219,7 +221,9 @@ class Settings:
             backfill_recent_posts_limit=_int_env("BACKFILL_RECENT_POSTS_LIMIT", 0),
             enable_websocket=_env("ENABLE_WEBSOCKET", "true") != "false",
             enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false") == "true",
-            debug_admin_enabled=_env("DEBUG_ADMIN_ENABLED", "false") == "true",
+            admin_ui_enabled=_env("ADMIN_UI_ENABLED", "false") == "true",
+            admin_ui_token=_env("ADMIN_UI_TOKEN"),
+            admin_mm_user_id=_env("ADMIN_MM_USER_ID"),
             llm_base_url=_env("LLM_BASE_URL", "https://corellm.wb.ru/deepseek/v1").rstrip("/"),
             llm_api_token=_first_env("LLM_API_TOKEN", "CORELLM_API_TOKEN", "OPENAI_API_KEY"),
             llm_model=_env("LLM_MODEL", "deepseek-chat"),
