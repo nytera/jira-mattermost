@@ -23,6 +23,7 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+docker-compose.yml
 
 # Admin UI (web_ui): Node-зависимости и билд-артефакты не коммитим — фронт
 # собирается в multi-stage Docker, а admin_static/ генерируется из web_ui/dist.
