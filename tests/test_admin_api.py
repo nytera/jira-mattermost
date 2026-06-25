@@ -129,6 +129,9 @@ def test_alerts_list_and_detail(service, settings):
         detail = client.get(f"/admin/api/alerts/{post.id}", headers=AUTH)
 
     assert listing["alerts"][0]["mattermost_post_id"] == post.id
+    # Episode-stream fields are exposed for the dashboard signature view.
+    assert "alert_signature" in listing["alerts"][0]
+    assert listing["alerts"][0]["is_root"] is True
     assert detail.status_code == 200
     assert detail.json()["mattermost_message_text"] == post.message
 

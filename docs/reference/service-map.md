@@ -16,7 +16,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `__init__.py` | 3 |
 | `__main__.py` | 18 |
 | `actions.py` | 291 |
-| `admin_api.py` | 313 |
+| `admin_api.py` | 317 |
 | `config.py` | 238 |
 | `domain.py` | 154 |
 | `formatting.py` | 309 |
