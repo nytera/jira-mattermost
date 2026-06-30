@@ -5,7 +5,7 @@ single logging handler is the whole feature: when an ops channel is configured i
 enqueues a compact payload for :meth:`OpsNotifier.drain` to post as a colored
 attachment.
 
-Hardening (see plan):
+Hardening:
 
 * **Best-effort** — delivery failures are swallowed and logged at WARNING; the
   drain loop never dies.

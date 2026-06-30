@@ -35,11 +35,11 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `service/_incidents.py` | 673 |
 | `service/_jira_sync.py` | 344 |
 | `service/_postmortem.py` | 558 |
-| `service/_shared.py` | 159 |
+| `service/_shared.py` | 157 |
 | `service/_thread_summary.py` | 389 |
 | `service/coordinator.py` | 572 |
 | `summary.py` | 30 |
-| `web.py` | 449 |
+| `web.py` | 448 |
 
 ## Service assembly (MRO)
 

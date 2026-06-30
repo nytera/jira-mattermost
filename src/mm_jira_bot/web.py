@@ -218,7 +218,7 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
     results = await asyncio.gather(
         *[_run_dependency_check(dependency, check) for dependency, check in checks]
     )
-    failed_count = len([result for result in results if not result])
+    failed_count = sum(not r for r in results)
     log.info(
         "startup.preflight.completed",
         dependency_count=len(results),
@@ -363,7 +363,6 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.service = service
-        app.state.owns_clients = owns_clients
         app.state.background_tasks = []
         _warn_removed_env_vars()
         if settings.read_only_mode:
@@ -410,7 +409,7 @@ def create_app(
             for task in app.state.background_tasks:
                 with suppress(asyncio.CancelledError):
                     await task
-            if app.state.owns_clients:
+            if owns_clients:
                 await service.mattermost.aclose()
                 await service.jira.aclose()
                 if service.llm is not None:

@@ -21,10 +21,8 @@ if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
     from mm_jira_bot.repository import AlertTicketRepository
 
-# Распознавание Mattermost post id в ссылке/тексте (`/incident <permalink>` и
-# админ-панель). Жил в `coordinator`, переехал сюда (лист графа импортов), чтобы
-# `_admin.py` мог импортировать функцию без цикла; `coordinator` ре-импортирует её
-# (ре-экспорт в `service/__init__.py` и тесты продолжают работать без правок).
+# Распознавание Mattermost post id в ссылке/тексте (`/incident <permalink>`).
+# Живут здесь (лист графа импортов) и ре-экспортируются через `service/__init__.py`.
 POST_ID_PATTERN = re.compile(r"(?:^|/)(?:_redirect/)?pl/([a-z0-9]{20,32})(?:$|[/?#])")
 BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
 
@@ -47,7 +45,7 @@ SUMMARY_FAILED_TEXT = "Не удалось сгенерировать самма
 
 @dataclass(frozen=True)
 class ActionResult:
-    """Result of a thread-summary / admin action: a short human-facing message."""
+    """Short human-facing message returned by thread-summary actions."""
 
     message: str
 
