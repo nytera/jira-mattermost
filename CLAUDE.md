@@ -6,6 +6,8 @@
 старте и раздувает каждую сессию, markdown грузится по требованию. Если код и проза
 разошлись — верь коду.
 
+Используй todo list если задача из нескольких шагов.
+
 **Проект:** бот-мост `Mattermost alert → Jira incident`. Python 3.11+, FastAPI +
 async `httpx`, SQLAlchemy 2.0. Один процесс; сервис собран из доменных миксинов
 (см. [docs/architecture.md](docs/architecture.md)).
