@@ -5,34 +5,17 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [семантического версионирования](https://semver.org/lang/ru/).
 
-## [Unreleased]
-
-### Добавлено
-
-- **Админ-API и web-UI.** Маршруты `/admin/api/*` (`admin_api.py`) за общим Bearer-токеном
-  (`ADMIN_UI_TOKEN`): дашборд MTTA/MTTR, инциденты с действиями жизненного цикла
-  (confirm/end/validity/postmortem/summary), создание задачи из ссылки и пересоздание,
-  правка LLM-промптов, логи. Современный SPA `web_ui/` (Vite + React + Tailwind) отдаётся
-  на `/admin`; сборка кладётся в `src/mm_jira_bot/admin_static/` (gitignored, `pip install`
-  работает без Node). Новые env: `ADMIN_UI_ENABLED` (дефолт false), `ADMIN_UI_TOKEN`
-  (обязателен при включённом UI), `ADMIN_MM_USER_ID` (опц., атрибуция действий из UI).
+## [0.9.0]
 
 ### Изменено
 
-- Реструктуризация документации: README и CHANGELOG сжаты, `docs/` приведены к принципу
-  «один факт — один владелец», исправлен MRO в `architecture.md`, убрана мета-проза.
-  Поведение и код не менялись.
-- `repository.debug_summary()` переименован в `stats_summary()` (метрики + preflight).
+- Старт релизного цикла: журнал свёрнут в «Initial Release», дальше записи ведутся по
+  версиям (см. «Релизный цикл» в `CLAUDE.md`). Версия пакета → `0.9.0`.
 
-### Удалено
+## Initial Release
 
-- **Дебаг-панель** (`debug_admin.py`, `DEBUG_ADMIN_ENABLED`, `/debug/admin`): заменена
-  админ-API + web-UI.
-
-## [0.1.0] - 2026-06-24
-
-Первый отмеченный релиз. Охватывает всё, сделанное поверх исходного импорта
-(коммит `5b55e83 Initial Mattermost Jira incident bot`).
+Базовая функциональность бота-моста «Mattermost alert → Jira incident»: всё, сделанное
+поверх исходного импорта (коммит `5b55e83 Initial Mattermost Jira incident bot`).
 
 ### Добавлено
 
@@ -75,9 +58,9 @@
   items, хронология МСК, риски, открытые вопросы); первая строка `[INC] DD.MM.YYYY — …`
   идёт в заголовок задачи. В Jira разметка конвертится в wiki, `@username → [~username]`;
   в треде `@` убирается, чтобы саммари не пинговало. Промпты редактируются через env
-  (`LLM_*_PROMPT`/`*_FILE`) или вкладку «Настройки» дебаг-панели (БД, без рестарта;
-  приоритет панель → env → дефолт). Генерация постмортема идемпотентна
-  (`postmortem_comment_added`): повторная реакция не дублирует комментарий.
+  (`LLM_*_PROMPT`/`*_FILE`) или вкладку «Настройки» админ-UI (БД, без рестарта; приоритет
+  UI → env → дефолт). Генерация постмортема идемпотентна (`postmortem_comment_added`):
+  повторная реакция не дублирует комментарий.
 - **Стриминг и статусы при завершении инцидента.** Плейсхолдер показывает шаги
   «1/3 постмортем → 2/3 Jira → 3/3 саммари»; текст саммари дописывается по мере генерации
   (live-edit, троттлинг по `LLM_STREAM_EDIT_INTERVAL_SECONDS`/`LLM_STREAM_EDIT_MIN_CHARS`).
@@ -102,12 +85,16 @@
   «Создана задача» по всем точкам создания. `/metrics` (`METRICS_ENABLED`, дефолт `true`):
   Prometheus-счётчики/гистограммы внешних HTTP-вызовов, `bot_errors_total`, ticket-gauge'и.
 - **Логирование и наблюдаемость.** `LOG_FORMAT` (`json`|`text`), `EventLogger` с
-  поддержкой `exc_info` (стек в логах), in-memory ring buffer для дебаг-панели. Логи
+  поддержкой `exc_info` (стек в логах), in-memory ring buffer для админ-UI. Логи
   uvicorn унифицированы через тот же формат. HTTP error-boundary middleware: необработанное
   исключение → структурное событие `http.request.failed` + JSON `500`; битое тело → `400`.
-- **Дебаг-панель** (`DEBUG_ADMIN_ENABLED`): SPA `GET /debug/admin` с метриками, таблицей
-  алертов, фильтрами, модалкой деталей, логами, созданием задачи из ссылки и пересозданием;
-  JSON API.
+- **Админ-API и web-UI.** Маршруты `/admin/api/*` (`admin_api.py`) за общим Bearer-токеном
+  (`ADMIN_UI_TOKEN`): дашборд MTTA/MTTR, инциденты с действиями жизненного цикла
+  (confirm/end/validity/postmortem/summary), создание задачи из ссылки и пересоздание,
+  правка LLM-промптов, логи. Современный SPA `web_ui/` (Vite + React + Tailwind) отдаётся
+  на `/admin`; сборка кладётся в `src/mm_jira_bot/admin_static/` (gitignored, `pip install`
+  работает без Node). Env: `ADMIN_UI_ENABLED` (дефолт false), `ADMIN_UI_TOKEN`
+  (обязателен при включённом UI), `ADMIN_MM_USER_ID` (опц., атрибуция действий из UI).
 - **Инфраструктура.** Стартовый preflight (БД/Mattermost/Jira/LLM) и pending-work loop,
   добивающий упавшие создания задач и отложенные подтверждения. Единая backend-таймзона
   `INCIDENT_TIMEZONE` (дефолт `Europe/Moscow`). Таблицы `alert_feedback`, `app_settings`,
@@ -121,16 +108,17 @@
 ### Изменено
 
 - **Реорганизация документации под LLM-навигацию.** Папка [`docs/`](docs/) с маленькими
-  файлами по доменам и темам; `CLAUDE.md` — роутер «задача → документ»; `README.md` сжат до
-  пользовательской части. `AGENTS.md` удалён, канон перенесён в `CLAUDE.md`. Ссылки на
-  `docs/` — обычные markdown-ссылки, не `@`-импорты.
+  файлами по доменам и темам по принципу «один факт — один владелец»; `CLAUDE.md` — роутер
+  «задача → документ»; `README.md` и CHANGELOG сжаты до пользовательской части. `AGENTS.md`
+  удалён, канон перенесён в `CLAUDE.md`. Ссылки на `docs/` — обычные markdown-ссылки, не
+  `@`-импорты.
 - **Гейт разделён на два тира.** `/gate` (ruff + format + pyright + pytest) — на каждой
   итерации; `/gate full` (+ service-map `--check` + doc-sync) — перед PR. Хук на `git commit`
   предлагает `/code-review`/`/simplify` (не блокирует).
 - **`service.py` разнесён на доменные миксины** (`service/`, move-only, поведение не
-  изменилось): Shared / Alert / Debug / Incident / JiraSync / Postmortem / ThreadSummary.
+  изменилось): Shared / Alert / Incident / JiraSync / Postmortem / ThreadSummary / Admin.
 - **Тесты разнесены по доменам зеркально `service/`** (move-only): `test_alerts.py`,
-  `test_incidents.py`, `test_debug.py`, `test_jira_sync.py`, `test_postmortem.py`,
+  `test_incidents.py`, `test_admin.py`, `test_jira_sync.py`, `test_postmortem.py`,
   `test_thread_summary.py`, `test_service_infra.py`; общая оснастка в `conftest.py` и
   `support.py`.
 - **Jira REST v3 → v2, ADF → wiki-разметка** во всех описаниях и комментариях; авторизация
@@ -155,12 +143,13 @@
   `MATTERMOST_*`-переменные не тронуты).
 - **Тестовый режим** `JIRA_CREATE_ENABLED=false`: задача не создаётся, в БД пишется
   stub-ключ, все изменяющие операции с задачей — no-op.
+- **`repository.debug_summary()` переименован в `stats_summary()`** (метрики + preflight).
 - **Каждое WS-событие обрабатывается отдельной `asyncio.Task`** — read-loop не блокируется
   долгим постмортемом, события не теряются.
 - **Рефакторинг инфраструктуры** (поведение сохранено): общий `AsyncApiClient` с
   централизованными ретраями/метриками/логированием, единый `EventLogger`, мутаторы
-  репозитория через `_mutate`; выделены `jira_payload.py`, `debug_admin.py`, `http.py`,
-  `llm.py`, `summary.py`, `postmortem.py`.
+  репозитория через `_mutate`; выделены `jira_payload.py`, `http.py`, `llm.py`,
+  `summary.py`, `postmortem.py`.
 - `docker-compose.yml` (dev): сервисы `*_dev`, порт бота `8085:8080`, проброс порта
   Postgres убран.
 
@@ -196,5 +185,4 @@
 - Мёртвый код: `domain.utc_now`, `mattermost_ms_from_datetime`, `tickets_to_ids`,
   неиспользуемые Jira-фоллбэки совместимости.
 
-[Unreleased]: https://github.com/nytera/jira-mattermost/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/nytera/jira-mattermost/compare/5b55e83...v0.1.0
+[0.9.0]: https://github.com/nytera/jira-mattermost/compare/5b55e83...HEAD
