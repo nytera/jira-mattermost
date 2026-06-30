@@ -68,6 +68,13 @@ class AlertTicket(Base):
     jira_issue_url: Mapped[str | None] = mapped_column(Text)
     valid_incident: Mapped[bool] = mapped_column(Boolean, default=False)
     incident_post_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # Read-only (shadow) mode only: the real prod incident post id, adopted from a
+    # prod-bot incident post. Kept separate from the shadow's own ``incident_post_id``
+    # stub so the shadow mirrors its own incident message (formatting test) while a
+    # ✅ on the real prod incident post still resolves to this ticket. See
+    # ``docs/read-only.md``. Not unique — the prod-id and ``readonly-`` namespaces
+    # are disjoint, so a two-row match is impossible in practice.
+    prod_incident_post_id: Mapped[str | None] = mapped_column(String(64), index=True)
     incident_message_url: Mapped[str | None] = mapped_column(Text)
     confirmed_by_user_id: Mapped[str | None] = mapped_column(String(64))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -163,6 +170,7 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
         else "TIMESTAMP",
         "root_post_id": "VARCHAR(64)",
         "expected_repeat_linked": "BOOLEAN DEFAULT FALSE",
+        "prod_incident_post_id": "VARCHAR(64)",
     }
     for column_name, column_type in episode_columns.items():
         if column_name not in columns:
@@ -181,6 +189,12 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_alert_tickets_root_post_id "
                 "ON alert_tickets (root_post_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_alert_tickets_prod_incident_post_id "
+                "ON alert_tickets (prod_incident_post_id)"
             )
         )
         connection.execute(
@@ -234,9 +248,21 @@ class AlertTicketRepository:
             )
 
     def get_by_incident_post_id(self, post_id: str) -> AlertTicket | None:
+        """Resolve a ticket by its incident post id.
+
+        Matches the shadow's own ``incident_post_id`` first, then the adopted
+        ``prod_incident_post_id`` (read-only mode). Two ordered lookups, not an
+        ``OR``, so the result is deterministic even if both columns ever held the
+        same id — never relying on ``scalar()`` picking an arbitrary row.
+        """
         with self._session_factory() as session:
-            return session.scalar(
+            ticket = session.scalar(
                 select(AlertTicket).where(AlertTicket.incident_post_id == post_id)
+            )
+            if ticket is not None:
+                return ticket
+            return session.scalar(
+                select(AlertTicket).where(AlertTicket.prod_incident_post_id == post_id)
             )
 
     def list_alerts(
@@ -652,6 +678,14 @@ class AlertTicketRepository:
         def apply(ticket: AlertTicket) -> None:
             ticket.incident_post_id = incident_post_id
             ticket.incident_message_url = incident_message_url
+
+        self._mutate(post_id, apply)
+
+    def set_prod_incident_post_id(self, post_id: str, prod_incident_post_id: str) -> None:
+        """Record the adopted real prod incident post id (read-only mode)."""
+
+        def apply(ticket: AlertTicket) -> None:
+            ticket.prod_incident_post_id = prod_incident_post_id
 
         self._mutate(post_id, apply)
 

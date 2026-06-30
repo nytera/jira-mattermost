@@ -64,6 +64,44 @@ can push test traffic through the same path as prod traffic. The channel predica
 `_is_alert_channel` / `_is_incident_channel` / `_is_test_channel` (in `SharedMixin`)
 encode "real ∪ test".
 
+## Adopting prod artifacts
+
+For traffic in the **real** alert/incident channels the shadow doesn't just mint
+stubs — it adopts the real artifacts the prod bot produces, so the audit channel
+shows real Jira links and the shadow can track real incident closures.
+
+The prod bot tags its own posts with back-references: a reply in an alert thread
+or the incident message carries `props.mattermost_alert_post_id` (the source
+alert), and bot replies/incident posts carry `props.jira_issue_key`. Humans can't
+set props, and the shadow strips these keys from its own audit copies, so **a post
+in a real alert/incident channel carrying `mattermost_alert_post_id` is a prod
+artifact** — both the correlation key and the prod detector in one.
+
+`_observe_prod_artifact` (`coordinator.py`) runs first for every posted event in
+read-only mode and:
+
+- **Gates positively** — only the real alert and incident channels. This excludes
+  test, audit, and every other channel, so the shadow can never adopt its own
+  audit post (the prop strip is then only defense-in-depth). Test channels keep
+  the stub flow.
+- **Correlates** `get_by_post_id(mattermost_alert_post_id)` to the shadow's ticket.
+- **Adopts the real Jira key** (`props.jira_issue_key`), replacing the
+  `ADS-TEST-…` stub. Idempotent and self-healing: it replaces only while the key
+  is still a stub, so the first prod notice wins and a missed early adoption is
+  retried by the next one. The real link surfaces in the audit channel via a
+  one-time adoption note (the original "Создана задача" reply keeps the stub).
+- **Adopts the real incident post id** from the incident **root** post into the
+  separate `prod_incident_post_id` column, and aliases it to the shadow's own
+  incident audit thread (`AuditMirror.adopt_alias`). `get_by_incident_post_id`
+  matches `incident_post_id` first, then `prod_incident_post_id`, so a later ✅ on
+  the **real** prod incident post resolves to the shadow's ticket. The shadow then
+  runs its own LLM postmortem over the real incident thread and mirrors the
+  result into the audit incident thread — testing the postmortem/summary
+  formatting against real content, with every Jira write still suppressed.
+
+A prod artifact the shadow can't correlate (it never saw the source alert, e.g.
+started mid-incident) is consumed without adoption.
+
 ## Deploying a shadow
 
 - **Separate `DATABASE_URL`.** The shadow keeps its own idempotency state; it must
@@ -77,13 +115,26 @@ encode "real ∪ test".
 
 ## Limitations
 
-- An alert-originated incident stores a `readonly-` stub as its `incident_post_id`,
-  and that stub has no real thread behind it. So a postmortem generated from the
-  admin UI in read-only runs over an empty transcript until prod **adoption** (the
-  next increment) wires the real incident thread in. The run stays audit-only and
-  idempotent — it never writes to prod.
+- The shadow only sees an incident **closure** done via the ✅ **emoji reaction**.
+  A button-based "Завершить" is an HTTP callback to prod, invisible to the
+  shadow's websocket, so no shadow postmortem fires for it (consistent with the
+  "buttons deprecated, reactions only" stance).
+- Prod's bot adds an "Ожидаемый" reaction on repeat alerts. The shadow's
+  bot-reaction ignore keys on the *shadow's own* bot id, so a prod-bot reaction is
+  not ignored — in read-only that only produces extra audit noise (the Jira write
+  is no-op'd), never prod impact.
+- Adoption doubles LLM token spend: the shadow generates its own postmortem/summary
+  over the same real thread that prod already processed. Expected.
+- A firing alert that never becomes a confirmed incident is announced by prod with a
+  single `jira_issue_key`-bearing post. If the shadow observes that post before its
+  own ticket/stub exists (a timing inversion possible under load), adoption is
+  skipped with no retry and the audit mirror keeps the `ADS-TEST` stub for that alert.
+  Audit fidelity only — never prod impact. Confirmed incidents self-heal (prod emits
+  several `jira_issue_key`-bearing notices, so a later one re-adopts).
 - After a restart the thread map is lost, so older threads mirror flat (new replies
-  start fresh audit roots) until they are seen again.
+  start fresh audit roots) until they are seen again. The persisted
+  `prod_incident_post_id` survives, so a ✅ on an already-adopted incident still
+  resolves — only the thread grouping is lost.
 - The shadow stores `readonly-` stub ids as its own incident post id, so any
   permalink it builds for that post is a dead link — visible only inside mirrored
   audit content.

@@ -70,6 +70,18 @@ class AuditMirror:
             self._thread_map.move_to_end(original_id)
         return audit_id
 
+    def adopt_alias(self, original_id: str, alias_id: str) -> None:
+        """Point ``alias_id`` at the same audit thread as ``original_id``.
+
+        Used when the shadow adopts a real prod incident post id: aliasing it to
+        the shadow's own incident audit post means a later thread keyed by the prod
+        id (the prod ✅'s postmortem) mirrors under the existing audit thread
+        instead of minting a fresh anchor. No-op if ``original_id`` was never
+        mirrored (e.g. lost across a restart)."""
+        audit_id = self._audit_id_for(original_id)
+        if audit_id is not None:
+            self._remember(alias_id, audit_id)
+
     @staticmethod
     def _sanitize_props(props: dict | None) -> dict | None:
         if not props:

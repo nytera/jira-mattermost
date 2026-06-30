@@ -306,9 +306,10 @@ class JiraSyncMixin:
         return issue
 
     def _display_jira_issue(self, issue: JiraIssue) -> JiraIssue:
-        """In read-only mode the DB key is ``ADS-TEST-<postid>`` (unique); show the
-        clean ``ADS-TEST`` in the thread. Outside read-only the issue is real."""
-        if not self.settings.read_only_mode:
+        """In read-only mode the DB key is the ``ADS-TEST-<postid>`` stub (unique);
+        show the clean ``ADS-TEST`` in the thread. An adopted real prod key (no
+        stub prefix) is shown as-is. Outside read-only the issue is always real."""
+        if not self.settings.read_only_mode or not issue.key.startswith(STUB_ISSUE_KEY):
             return issue
         return JiraIssue(
             key=STUB_ISSUE_KEY,

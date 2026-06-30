@@ -205,6 +205,26 @@ async def test_audit_mirror_concurrent_replies_share_single_anchor(settings):
     await client.aclose()
 
 
+async def test_audit_mirror_adopt_alias_threads_prod_post_under_existing(settings):
+    client, transport = _mirrored_client(settings)
+    # The shadow mirrored its own incident message (auditgen001).
+    root = await client.create_post(channel_id="incidents-channel", message="incident")
+    # Adopting the real prod incident post id aliases it to that same audit thread.
+    mirror = client.audit
+    assert mirror is not None
+    mirror.adopt_alias(root.id, "prod-incident-xyz")
+    # A reply keyed by the prod id now threads under the existing audit post — no
+    # fresh anchor is minted for the prod id.
+    await client.create_post(
+        channel_id="incidents-channel", message="closing", root_id="prod-incident-xyz"
+    )
+    replies = [p for p in transport.posts if p.get("message") == "closing"]
+    assert len(replies) == 1
+    assert replies[0]["root_id"] == "auditgen001"
+    assert [p for p in transport.posts if "Зеркало треда" in p.get("message", "")] == []
+    await client.aclose()
+
+
 async def test_audit_mirror_update_patches_mapped_post(settings):
     client, transport = _mirrored_client(settings)
     root = await client.create_post(channel_id="alerts-channel", message="root")

@@ -24,6 +24,7 @@ from mm_jira_bot.formatting import (
     mention_from_display,
 )
 from mm_jira_bot.jira import (
+    STUB_ISSUE_KEY,
     VALID_INCIDENT_EXPECTED_VALUE,
     VALID_INCIDENT_FALSE_VALUE,
 )
@@ -182,6 +183,8 @@ class IncidentBotService(
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
         if posted:
+            if await self._observe_prod_artifact(posted):
+                return
             if self._is_incident_channel(posted.channel_id):
                 await self.handle_manual_incident_post(posted)
             else:
@@ -191,6 +194,116 @@ class IncidentBotService(
         reaction = parse_reaction_event(event)
         if reaction:
             await self.handle_reaction(reaction)
+
+    async def _observe_prod_artifact(self, post: MattermostPost) -> bool:
+        """Read-only (shadow) mode: adopt real prod artifacts from a prod-bot post.
+
+        A post in the **real** alert/incident channel that carries
+        ``props.mattermost_alert_post_id`` is a prod-bot artifact: only the prod
+        bot sets that prop (``_post_alert_thread_reply`` /
+        ``_publish_incident_message_if_needed``), humans can't set props, and the
+        shadow strips it from its own audit copies. We correlate it to the shadow's
+        ticket and adopt:
+
+        - the real Jira key (replacing the read-only ``ADS-TEST-…`` stub), so the
+          audit mirror shows the real link instead of the stub;
+        - for the incident **root** post, the real prod incident post id, so a later
+          ✅ on that real post resolves to this ticket and the shadow runs its own
+          postmortem into the audit thread.
+
+        Returns ``True`` when the post is a prod artifact and must not fall through
+        to the normal alert/incident handlers (which would only drop it).
+        """
+        if not self.settings.read_only_mode:
+            return False
+        alert_post_id = (post.props or {}).get("mattermost_alert_post_id")
+        if not isinstance(alert_post_id, str) or not alert_post_id:
+            return False
+        # Positive channel gate: ONLY the real alert/incident channels. This is the
+        # load-bearing guard for the zero-prod-impact invariant — it excludes test,
+        # audit, and every other channel, so the shadow can never adopt its own
+        # audit post (the prop strip is then only defense-in-depth).
+        if post.channel_id not in {
+            self.settings.mattermost_alert_channel_id,
+            self.settings.mattermost_incident_channel_id,
+        }:
+            return False
+        ticket = self.repository.get_by_post_id(alert_post_id)
+        if ticket is None:
+            # A prod artifact the shadow can't correlate (it never saw the source
+            # alert). Consume it so it doesn't fall through; nothing to adopt.
+            log.info(
+                "readonly.adopt.no_ticket",
+                mattermost_post_id=post.id,
+                source_alert_post_id=alert_post_id,
+            )
+            return True
+
+        await self._adopt_prod_jira_issue(ticket, (post.props or {}).get("jira_issue_key"))
+        if post.channel_id == self.settings.mattermost_incident_channel_id and not post.root_id:
+            await self._adopt_prod_incident_post(ticket, post.id)
+        return True
+
+    async def _adopt_prod_jira_issue(self, ticket: AlertTicket, issue_key: object) -> None:
+        """Replace the read-only stub Jira key with the adopted real prod key.
+
+        Idempotent and self-healing: adopts only while the current key is still a
+        ``ADS-TEST-…`` stub, so the first prod reply carrying ``jira_issue_key``
+        wins and any later one is a no-op. A missing stub (shadow hasn't created
+        its own yet) is skipped — a later prod notice (every confirmed incident
+        gets several) re-attempts once the stub exists.
+        """
+        if not isinstance(issue_key, str) or not issue_key:
+            return
+        if not (ticket.jira_issue_key or "").startswith(STUB_ISSUE_KEY):
+            return
+        issue_url = f"{self.settings.jira_base_url}/browse/{issue_key}"
+        self.repository.replace_jira_issue(ticket.mattermost_post_id, issue_key, issue_url)
+        log.info(
+            "readonly.adopt.jira_issue",
+            mattermost_post_id=ticket.mattermost_post_id,
+            jira_issue_key=issue_key,
+        )
+        # The adoption note is the ONE place the real link surfaces in the audit
+        # channel (the original "Создана задача" reply keeps showing the stub).
+        await self._post_alert_thread_reply(
+            ticket.mattermost_post_id,
+            channel_id=ticket.mattermost_channel_id,
+            message=f"Усыновлён реальный Jira с прода: [{issue_key}]({issue_url})",
+            event="readonly.adopt.jira_issue_published",
+            props={"jira_issue_key": issue_key},
+        )
+
+    async def _adopt_prod_incident_post(
+        self, ticket: AlertTicket, prod_incident_post_id: str
+    ) -> None:
+        """Record the real prod incident post id and alias it to the shadow's own
+        incident audit thread (idempotent)."""
+        if ticket.prod_incident_post_id == prod_incident_post_id:
+            return
+        self.repository.set_prod_incident_post_id(ticket.mattermost_post_id, prod_incident_post_id)
+        # If the shadow already published its own incident message, alias the prod
+        # post id to that audit thread so the prod ✅'s postmortem lands there
+        # rather than under a fresh anchor. Done before the note below so the note
+        # itself threads correctly. Re-read fresh: the shadow's own confirm path may
+        # have recorded incident_post_id concurrently (same ✅-on-alert cause)
+        # since this observer snapshotted the ticket, so the snapshot can be stale.
+        current = self.repository.get_by_post_id(ticket.mattermost_post_id) or ticket
+        audit = getattr(self.mattermost, "audit", None)
+        if current.incident_post_id and audit is not None:
+            audit.adopt_alias(current.incident_post_id, prod_incident_post_id)
+        log.info(
+            "readonly.adopt.incident_post",
+            mattermost_post_id=ticket.mattermost_post_id,
+            prod_incident_post_id=prod_incident_post_id,
+        )
+        await self._post_incident_thread_reply(
+            prod_incident_post_id,
+            channel_id=self.settings.mattermost_incident_channel_id,
+            message="Инцидент усыновлён с прода — отслеживаю закрытие.",
+            event="readonly.adopt.incident_post_published",
+            color=INCIDENT_OPEN_COLOR,
+        )
 
     def _is_bot_post(self, post: MattermostPost) -> bool:
         """Posts authored by our bot or by any integration/webhook.
