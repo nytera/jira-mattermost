@@ -855,6 +855,24 @@ async def test_ops_channel_receives_created_issue_from_alert(settings):
 
 
 @pytest.mark.asyncio
+async def test_ops_channel_issue_is_mirrored_in_read_only(settings):
+    """In read-only the ops issue announcement is no longer skipped — it is posted
+    (redirected to the audit channel by the mirror in a real shadow), showing the
+    clean ``ADS-TEST`` stub key."""
+    service = _build_service(
+        replace(settings, read_only_mode=True, mattermost_ops_channel_id="ops-channel")
+    )
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    ops_posts = _ops_posts(service)
+    assert len(ops_posts) == 1
+    text = ops_posts[0]["props"]["attachments"][0]["text"]
+    assert "ADS-TEST" in text and "ADS-TEST-" not in text  # clean stub, not the suffixed key
+
+
+@pytest.mark.asyncio
 async def test_ops_channel_silent_when_unconfigured(service):
     post = make_alert()
     service.mattermost.posts[post.id] = post

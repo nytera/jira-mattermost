@@ -40,7 +40,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `service/_postmortem.py` | 561 |
 | `service/_shared.py` | 199 |
 | `service/_thread_summary.py` | 392 |
-| `service/coordinator.py` | 633 |
+| `service/coordinator.py` | 638 |
 | `summary.py` | 30 |
 | `web.py` | 548 |
 

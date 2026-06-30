@@ -565,16 +565,21 @@ class IncidentBotService(
     ) -> None:
         """Best-effort: post every newly created Jira issue to the ops channel with
         a link back to its source thread/message. Shares ``MATTERMOST_OPS_CHANNEL_ID``
-        with the error-alert feed; skips stub issues (read-only mode, where every
-        issue is a stub) and never breaks issue creation (a failed post is logged,
-        not propagated).
+        with the error-alert feed and never breaks issue creation (a failed post is
+        logged, not propagated).
+
+        In read-only mode this is **not** skipped: the post is redirected to the
+        audit channel like every other write, so the shadow's ops feed is mirrored
+        there too. The displayed key is the clean ``ADS-TEST`` stub (or the adopted
+        real key), matching the thread notices.
         """
         channel_id = self.settings.mattermost_ops_channel_id
-        if not channel_id or self.settings.read_only_mode:
+        if not channel_id:
             return
+        display = self._display_jira_issue(issue)
         message = format_ops_issue_created(
-            jira_issue_key=issue.key,
-            jira_issue_url=issue.url,
+            jira_issue_key=display.key,
+            jira_issue_url=display.url,
             source_title=ticket.mattermost_alert_title,
             source_message_url=ticket.mattermost_message_url,
             channel_name=ticket.mattermost_channel_name,
@@ -585,7 +590,7 @@ class IncidentBotService(
                 channel_id=channel_id,
                 message="",
                 props={
-                    "jira_issue_key": issue.key,
+                    "jira_issue_key": display.key,
                     "attachments": [
                         {"fallback": message, "color": OPS_ISSUE_CREATED_COLOR, "text": message}
                     ],
@@ -593,14 +598,14 @@ class IncidentBotService(
             )
             log.info(
                 "ops.issue_created.published",
-                jira_issue_key=issue.key,
+                jira_issue_key=display.key,
                 mattermost_post_id=ticket.mattermost_post_id,
                 source=source,
             )
         except ApiError as exc:
             log.warning(
                 "ops.issue_created.failed",
-                jira_issue_key=issue.key,
+                jira_issue_key=display.key,
                 mattermost_post_id=ticket.mattermost_post_id,
                 error=str(exc),
             )
