@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import deque
 from typing import Any
 
 from mm_jira_bot.domain import backend_now
@@ -146,67 +145,9 @@ def _build_formatter(log_format: str) -> logging.Formatter:
     return JsonFormatter()
 
 
-def _coerce_field(value: Any) -> Any:
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-class LogRingBuffer:
-    """In-memory ring buffer of recent log records for the debug admin UI."""
-
-    def __init__(self, capacity: int) -> None:
-        self._records: deque[dict[str, Any]] = deque(maxlen=capacity)
-
-    def append(self, entry: dict[str, Any]) -> None:
-        self._records.append(entry)
-
-    def records(self, *, limit: int, min_levelno: int = 0) -> list[dict[str, Any]]:
-        items = [r for r in self._records if r["levelno"] >= min_levelno]
-        return items[-limit:]
-
-    def clear(self) -> None:
-        self._records.clear()
-
-
-class LogBufferHandler(logging.Handler):
-    _exception_formatter = logging.Formatter()
-
-    def __init__(self, buffer: LogRingBuffer) -> None:
-        super().__init__()
-        self._buffer = buffer
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            fields = _extra_fields(record)
-            fields.pop("event", None)
-            entry: dict[str, Any] = {
-                "timestamp": backend_now().isoformat(),
-                "level": record.levelname,
-                "levelno": record.levelno,
-                "logger": record.name,
-                "message": record.getMessage(),
-                "fields": {key: _coerce_field(value) for key, value in fields.items()},
-            }
-            if record.exc_info:
-                entry["exception"] = self._exception_formatter.formatException(record.exc_info)
-            self._buffer.append(entry)
-        except Exception:  # pragma: no cover - logging must never raise
-            self.handleError(record)
-
-
-_LOG_BUFFER: LogRingBuffer | None = None
-
-
-def get_log_buffer() -> LogRingBuffer | None:
-    return _LOG_BUFFER
-
-
 def configure_logging(
     level: str = "INFO",
     log_format: str = "json",
-    *,
-    buffer_capacity: int = 2000,
 ) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(_build_formatter(log_format))
@@ -215,11 +156,6 @@ def configure_logging(
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
-    global _LOG_BUFFER
-    if buffer_capacity > 0:
-        if _LOG_BUFFER is None:
-            _LOG_BUFFER = LogRingBuffer(buffer_capacity)
-        root.addHandler(LogBufferHandler(_LOG_BUFFER))
     root.setLevel(level.upper())
 
 

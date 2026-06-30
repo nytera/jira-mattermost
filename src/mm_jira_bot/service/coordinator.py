@@ -32,7 +32,6 @@ from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository
 from mm_jira_bot.retry import ApiError
-from mm_jira_bot.service._admin import AdminMixin
 from mm_jira_bot.service._alerts import AlertMixin
 from mm_jira_bot.service._incidents import IncidentMixin
 from mm_jira_bot.service._jira_sync import JiraSyncMixin
@@ -62,7 +61,6 @@ _JIRA_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 class IncidentBotService(
     SharedMixin,
     AlertMixin,
-    AdminMixin,
     IncidentMixin,
     JiraSyncMixin,
     PostmortemMixin,
