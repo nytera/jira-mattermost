@@ -145,6 +145,8 @@ class AlertMixin:
         ) -> None: ...
 
         # --- SharedMixin ---
+        def _is_alert_channel(self, channel_id: str) -> bool: ...
+
         async def _post_alert_thread_reply(
             self,
             post_id: str,
@@ -158,7 +160,7 @@ class AlertMixin:
         ) -> None: ...
 
     async def handle_alert_post(self, post: MattermostPost) -> AlertTicket | None:
-        if post.channel_id != self.settings.mattermost_alert_channel_id:
+        if not self._is_alert_channel(post.channel_id):
             log.info(
                 "mattermost.post.skipped_non_alert_channel",
                 mattermost_post_id=post.id,
@@ -351,7 +353,7 @@ class AlertMixin:
                 post, requested_by_user_id=user_id, source="action"
             )
 
-        if post.channel_id != self.settings.mattermost_alert_channel_id:
+        if not self._is_alert_channel(post.channel_id):
             return ActionResult(message="Сообщение не в канале алертов.")
 
         if action == ACTION_FEEDBACK:

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from mm_jira_bot.admin_api import mount_admin_ui, register_admin_api
+from mm_jira_bot.audit import AuditMirror
 from mm_jira_bot.config import Settings
 from mm_jira_bot.jira import JiraClient
 from mm_jira_bot.llm import PostmortemLlmClient
@@ -29,6 +30,35 @@ from mm_jira_bot.repository import (
 from mm_jira_bot.service import IncidentBotService
 
 log = get_logger(__name__)
+
+
+def _assert_audit_channel_isolated(settings: Settings) -> None:
+    """Refuse to start if the audit channel collides with any channel the bot
+    reads or the prod bot writes.
+
+    The audit post is the single write the read-only backstop permits; if the
+    audit channel equals a real/test/ops channel, that "safe" write lands in a
+    real prod channel and breaks the zero-prod-impact guarantee. A dedicated
+    channel is mandatory, so this is fatal rather than a warning.
+    """
+    audit = settings.mattermost_audit_channel_id
+    if not audit:
+        return
+    handled = {
+        "alert": settings.mattermost_alert_channel_id,
+        "incident": settings.mattermost_incident_channel_id,
+        "test_alert": settings.mattermost_test_alert_channel_id,
+        "test_incident": settings.mattermost_test_incident_channel_id,
+        "ops": settings.mattermost_ops_channel_id,
+    }
+    collisions = [
+        name for name, channel_id in handled.items() if channel_id and channel_id == audit
+    ]
+    if collisions:
+        raise RuntimeError(
+            "MATTERMOST_AUDIT_CHANNEL_ID must be a dedicated channel in read-only mode; "
+            f"it collides with: {', '.join(collisions)}"
+        )
 
 
 def _redact_database_url(database_url: str) -> str:
@@ -294,6 +324,21 @@ def create_app(
     else:
         owns_clients = False
 
+    # Read-only (shadow) mode: refuse to start on a colliding audit channel, then
+    # wire the mirror so suppressed Mattermost writes are reproduced there.
+    if settings.read_only_mode:
+        _assert_audit_channel_isolated(settings)
+        if settings.mattermost_audit_channel_id:
+            service.mattermost.audit = AuditMirror(service.mattermost, settings)
+        else:
+            log.warning(
+                "readonly.no_audit_channel",
+                detail=(
+                    "READ_ONLY_MODE is on but MATTERMOST_AUDIT_CHANNEL_ID is unset; "
+                    "all writes are suppressed and mirrored nowhere"
+                ),
+            )
+
     # Self-health observability: the ops handler counts every error event
     # (bot_errors_total) and, when an ops channel is set, posts it; the metrics
     # collector exposes ticket gauges on /metrics scrape.
@@ -310,6 +355,14 @@ def create_app(
         app.state.service = service
         app.state.owns_clients = owns_clients
         app.state.background_tasks = []
+        if settings.read_only_mode:
+            log.warning(
+                "readonly.enabled",
+                database_url=_redact_database_url(settings.database_url),
+                audit_channel=settings.mattermost_audit_channel_id,
+                test_alert_channel=settings.mattermost_test_alert_channel_id,
+                test_incident_channel=settings.mattermost_test_incident_channel_id,
+            )
         # Bind the ops queue before preflight so early startup errors (preflight,
         # backfill) buffer instead of being dropped before drain() starts.
         if ops_notifier is not None and ops_notifier.posts_to_channel:

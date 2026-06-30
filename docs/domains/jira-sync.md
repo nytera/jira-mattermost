@@ -10,7 +10,7 @@ covers WHY and the invariants; for signatures see
 > `JiraSyncMixin` is a domain mixin of `IncidentBotService` — see [architecture.md](../architecture.md) for how the service is assembled.
 
 Field/option **resolution mechanics** (name → `customfield_*`, validity/option
-plumbing, `JIRA_CREATE_ENABLED=false` stubbing) live in [../jira.md](../jira.md) —
+plumbing, `READ_ONLY_MODE=true` stubbing) live in [../jira.md](../jira.md) —
 link, don't duplicate.
 
 ## Issue creation (`_ensure_jira_issue`)
@@ -20,9 +20,8 @@ The crash-safety contract: the DB row exists **before** any Jira call. Callers i
 then call `_ensure_jira_issue`. If the process dies mid-create, the row carries
 `creation_status = pending` and `pending_work_loop` retries it via
 `process_pending_work`. `_create_jira_issue` → `_stub_jira_issue` when
-`JIRA_CREATE_ENABLED=false` (test mode); `_display_jira_issue` shows the clean
-configured `JIRA_STUB_ISSUE_KEY` in the thread reply while the DB keeps a
-post-id-suffixed unique key.
+`READ_ONLY_MODE=true`; `_display_jira_issue` shows the clean `ADS-TEST` key in the
+thread reply while the DB keeps a post-id-suffixed unique key (`ADS-TEST-<postid>`).
 
 Idempotency: the method early-returns when `ticket.jira_issue_key` is already set,
 so re-delivery and retries never create a second issue. On `ApiError` it stamps

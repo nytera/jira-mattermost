@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import secrets
 from datetime import datetime
 from typing import Any
 
@@ -28,18 +27,16 @@ VALID_INCIDENT_CONFIRMED_VALUE = "Валидный"
 VALID_INCIDENT_FALSE_VALUE = "Ложный"
 VALID_INCIDENT_EXPECTED_VALUE = "Ожидаемый"
 
+#: Hardcoded Jira key shown in read-only mode. The DB stores it with a
+#: post-id suffix (uniqueness); ``_display_jira_issue`` shows the clean key.
+STUB_ISSUE_KEY = "ADS-TEST"
+
 
 def stub_jira_issue(settings: Settings, mattermost_post_id: str) -> JiraIssue:
-    """Fake JiraIssue used in test mode (``JIRA_CREATE_ENABLED=false``): the
-    configured stub key with a post-id suffix for DB uniqueness, or a generated
-    ``PROJECT-NNNNN`` key. No Jira call is made."""
-    key = settings.jira_stub_issue_key
-    if not key:
-        key = f"{settings.jira_project_key}-{10000 + secrets.randbelow(90000)}"
-    else:
-        suffix = mattermost_post_id[:12]
-        prefix = key[: 63 - len(suffix)]
-        key = f"{prefix}-{suffix}"
+    """Fake JiraIssue used in read-only mode: the hardcoded :data:`STUB_ISSUE_KEY`
+    with a Mattermost-post-id suffix so the DB's unique ``jira_issue_key`` never
+    collides. No Jira call is made."""
+    key = f"{STUB_ISSUE_KEY}-{mattermost_post_id[:12]}"
     return JiraIssue(key=key, url=f"{settings.jira_base_url}/browse/{key}")
 
 
@@ -217,7 +214,7 @@ class JiraClient(AsyncApiClient):
         labels: list[str] | None = None,
         include_alert_fields: bool = True,
     ) -> JiraIssue:
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return stub_jira_issue(self._settings, post.id)
         valid_incident_field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         source_field_id = (
@@ -301,7 +298,7 @@ class JiraClient(AsyncApiClient):
         )
 
     async def get_valid_incident(self, issue_key: str) -> bool | None:
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return None
         field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
 
@@ -336,7 +333,7 @@ class JiraClient(AsyncApiClient):
         )
 
     async def set_end_time(self, issue_key: str, ended_at: datetime) -> None:
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return
         if not self._settings.jira_end_field:
             log.info(
@@ -363,7 +360,7 @@ class JiraClient(AsyncApiClient):
 
     async def set_time_to_fix(self, issue_key: str, minutes: int) -> None:
         """Set the numeric "Time to fix" field (minutes) on the issue."""
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return
         if not self._settings.jira_time_to_fix_field:
             log.info(
@@ -397,7 +394,7 @@ class JiraClient(AsyncApiClient):
         ended_at: datetime | None = None,
     ) -> None:
         """Set the "Валидность" field to an arbitrary option value."""
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return
         field_id = await self._get_field_id(self._settings.jira_valid_incident_field)
         option_payload = await self._get_option_payload(field_id, option_value)
@@ -428,7 +425,7 @@ class JiraClient(AsyncApiClient):
         )
 
     async def set_description(self, issue_key: str, description: str) -> None:
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return
         payload = {"fields": {"description": description}}
         log.info(
@@ -461,7 +458,7 @@ class JiraClient(AsyncApiClient):
         )
 
     async def add_comment(self, issue_key: str, body: str) -> None:
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return
         payload = {"body": body}
         await self._request(
@@ -479,7 +476,7 @@ class JiraClient(AsyncApiClient):
         Not idempotent — Jira creates a duplicate link on each call, so the
         caller must guard with a persisted flag.
         """
-        if not self._settings.jira_create_enabled:
+        if self._settings.read_only_mode:
             return
         link_type_name = await self._get_link_type_name()
         await self._request(

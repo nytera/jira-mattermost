@@ -94,6 +94,32 @@ class SharedMixin:
     repository: AlertTicketRepository
     mattermost: Any
 
+    def _is_alert_channel(self, channel_id: str) -> bool:
+        """Alert channel — the real one or the configured test alert channel.
+
+        In read-only mode the shadow treats the test alert channel as a first-class
+        alert channel so test traffic exercises the same path as prod traffic.
+        """
+        return channel_id in (
+            self.settings.mattermost_alert_channel_id,
+            self.settings.mattermost_test_alert_channel_id,
+        )
+
+    def _is_incident_channel(self, channel_id: str) -> bool:
+        """Incident channel — the real one or the configured test incident channel."""
+        return channel_id in (
+            self.settings.mattermost_incident_channel_id,
+            self.settings.mattermost_test_incident_channel_id,
+        )
+
+    def _is_test_channel(self, channel_id: str) -> bool:
+        """One of the configured test channels (alert or incident). Test-channel
+        traffic gets the ``ADS-TEST`` Jira stub; real channels adopt the real key."""
+        return channel_id in (
+            self.settings.mattermost_test_alert_channel_id,
+            self.settings.mattermost_test_incident_channel_id,
+        )
+
     def _prompt_env_default(self, key: str) -> str | None:
         """Env-configured override for a prompt key (``None`` ⇒ built-in default)."""
         if key == _PROMPT_KEY_SUMMARY:

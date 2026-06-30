@@ -83,7 +83,7 @@ def test_settings_do_not_backfill_old_messages_by_default(tmp_path, monkeypatch)
     assert loaded_settings.enable_backfill_on_startup is False
 
 
-def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
+def test_settings_loads_read_only_mode(tmp_path, monkeypatch):
     required_env = {
         "MATTERMOST_URL": "https://mattermost.example.com",
         "MATTERMOST_TOKEN": "mm-token",
@@ -97,8 +97,9 @@ def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
         "JIRA_VALID_INCIDENT_FIELD": "Валидность",
         "JIRA_SOURCE_FIELD": "Источник",
         "JIRA_IS_CRIT_ALERT_FIELD": "Был ли крит алерт?",
-        "JIRA_CREATE_ENABLED": "false",
-        "JIRA_STUB_ISSUE_KEY": "ADSDEV-12024",
+        "READ_ONLY_MODE": "true",
+        "MATTERMOST_AUDIT_CHANNEL_ID": "audit-channel",
+        "MATTERMOST_TEST_ALERT_CHANNEL_ID": "test-alert",
         "DATABASE_URL": f"sqlite:///{tmp_path / 'bot.db'}",
     }
     for key, value in required_env.items():
@@ -106,8 +107,9 @@ def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
 
     loaded_settings = Settings.from_env(tmp_path / "missing.env")
 
-    assert loaded_settings.jira_create_enabled is False
-    assert loaded_settings.jira_stub_issue_key == "ADSDEV-12024"
+    assert loaded_settings.read_only_mode is True
+    assert loaded_settings.mattermost_audit_channel_id == "audit-channel"
+    assert loaded_settings.mattermost_test_alert_channel_id == "test-alert"
 
 
 def test_settings_load_llm_prompt_overrides(tmp_path, monkeypatch):

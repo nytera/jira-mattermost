@@ -100,8 +100,7 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
     service = _build_service(
         replace(
             settings,
-            jira_create_enabled=False,
-            jira_stub_issue_key="ADSDEV-12024",
+            read_only_mode=True,
             service_public_url="https://bot.example.com/",
             interactive_buttons_enabled=True,
         )
@@ -112,8 +111,8 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
     ticket = await service.handle_alert_post(post)
 
     assert ticket is not None
-    assert ticket.jira_issue_key == f"ADSDEV-12024-{post.id[:12]}"
-    assert ticket.jira_issue_url == (f"https://jira.example.com/browse/ADSDEV-12024-{post.id[:12]}")
+    assert ticket.jira_issue_key == f"ADS-TEST-{post.id[:12]}"
+    assert ticket.jira_issue_url == (f"https://jira.example.com/browse/ADS-TEST-{post.id[:12]}")
     assert len(service.jira.created_payloads) == 0
     assert ticket.jira_issue_key is not None
     reply = _issue_reply(service, post.id, issue_key=ticket.jira_issue_key)
@@ -122,7 +121,7 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
     assert "title" not in attachment
     assert "title_link" not in attachment
     assert attachment["text"] == (
-        "**Создана задача: [ADSDEV-12024](https://jira.example.com/browse/ADSDEV-12024)**"
+        "**Создана задача: [ADS-TEST](https://jira.example.com/browse/ADS-TEST)**"
     )
     assert ticket.jira_issue_key not in attachment["text"]
 
@@ -132,8 +131,7 @@ async def test_reuses_display_stub_jira_issue_without_db_conflict(settings):
     service = _build_service(
         replace(
             settings,
-            jira_create_enabled=False,
-            jira_stub_issue_key="ADSDEV-12024",
+            read_only_mode=True,
         )
     )
     # Distinct messages → distinct signatures, so both are independent root
@@ -154,8 +152,8 @@ async def test_reuses_display_stub_jira_issue_without_db_conflict(settings):
     assert second_ticket.jira_issue_key is not None
     first_reply = _issue_reply(service, first_post.id, issue_key=first_ticket.jira_issue_key)
     second_reply = _issue_reply(service, second_post.id, issue_key=second_ticket.jira_issue_key)
-    assert "Создана задача Jira: [ADSDEV-12024]" in _reply_text(first_reply)
-    assert "Создана задача Jira: [ADSDEV-12024]" in _reply_text(second_reply)
+    assert "Создана задача Jira: [ADS-TEST]" in _reply_text(first_reply)
+    assert "Создана задача Jira: [ADS-TEST]" in _reply_text(second_reply)
 
 
 @pytest.mark.asyncio

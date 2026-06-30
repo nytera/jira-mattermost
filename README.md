@@ -141,7 +141,7 @@ On-prem / Data Center Jira с personal access token. Минимум: `JIRA_BASE_
 должен иметь option `Crit alert`, `JIRA_IS_CRIT_ALERT_FIELD` — `Да`. Опционально:
 `JIRA_START_FIELD`/`JIRA_END_FIELD` (время начала/окончания), `JIRA_TIME_TO_FIX_FIELD`
 (длительность в минутах), `JIRA_REPEAT_LINK_INWARD` (тип связи повторов). Механика
-резолва полей и тестовый режим без записи в Jira — [`docs/jira.md`](docs/jira.md).
+резолва полей и read-only стаб без записи в Jira — [`docs/jira.md`](docs/jira.md).
 
 ### Минимум env
 
@@ -154,8 +154,10 @@ On-prem / Data Center Jira с personal access token. Минимум: `JIRA_BASE_
 - БД: `DATABASE_URL` (например `sqlite:///./mattermost_jira_bot.db` локально или
   `postgresql://incident_bot:incident_bot@postgres:5432/incident_bot`).
 
-Остальное (реакции, LLM, ops-канал, метрики, админ-UI, поведение кнопок) — опционально
-с дефолтами. Полная матрица — [`docs/config.md`](docs/config.md).
+Остальное (реакции, LLM, ops-канал, метрики, админ-UI, поведение кнопок,
+read-only/shadow-режим) — опционально с дефолтами. Полная матрица —
+[`docs/config.md`](docs/config.md); параллельный теневой прогон без влияния на прод —
+[`docs/read-only.md`](docs/read-only.md).
 
 ### Локальный запуск
 

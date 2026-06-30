@@ -7,10 +7,27 @@
 
 ## [0.9.0]
 
+### Добавлено
+
+- **Read-only (shadow) режим** (`READ_ONLY_MODE=true`): теневой экземпляр гоняется
+  параллельно с продом, ничего не меняет во внешних системах и зеркалит каждое
+  действие в выделенный аудит-канал (`MATTERMOST_AUDIT_CHANNEL_ID`) — с
+  воспроизведением тредов. Записи в Jira/Mattermost подавляются на уровне методов
+  клиентов (Jira — no-op + стаб `ADS-TEST`; Mattermost — редирект в `AuditMirror`),
+  плюс backstop в `_request`. Тест-каналы (`MATTERMOST_TEST_ALERT_CHANNEL_ID`,
+  `MATTERMOST_TEST_INCIDENT_CHANNEL_ID`) обрабатываются как алерт/инцидент. Bind-адрес
+  теперь настраивается (`HOST`/`PORT`). Старт падает, если аудит-канал совпадает с
+  любым рабочим каналом. Подробности — [docs/read-only.md](docs/read-only.md).
+
 ### Изменено
 
 - Старт релизного цикла: журнал свёрнут в «Initial Release», дальше записи ведутся по
   версиям (см. «Релизный цикл» в `CLAUDE.md`). Версия пакета → `0.9.0`.
+
+### Удалено
+
+- `JIRA_CREATE_ENABLED` и `JIRA_STUB_ISSUE_KEY`: тестовый режим заменён на
+  `READ_ONLY_MODE`, стаб-ключ зашит как `ADS-TEST`.
 
 ## Initial Release
 

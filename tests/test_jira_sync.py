@@ -274,15 +274,15 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
 
 
 @pytest.mark.asyncio
-async def test_jira_client_makes_no_calls_in_test_mode(settings):
-    """JIRA_CREATE_ENABLED=false must not hit Jira for issue-key operations, so a
-    bogus stub key never aborts the confirm/validity/end flows."""
+async def test_jira_client_makes_no_calls_in_read_only_mode(settings):
+    """READ_ONLY_MODE=true must not hit Jira for issue-key operations, so a
+    stub key never aborts the confirm/validity/end flows."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError(f"Unexpected Jira call in test mode: {request.method} {request.url}")
+        raise AssertionError(f"Unexpected Jira call: {request.method} {request.url}")
 
     client = jira_module.JiraClient(
-        replace(settings, jira_create_enabled=False, jira_stub_issue_key="ADSDEV-12024"),
+        replace(settings, read_only_mode=True),
         http_client=httpx.AsyncClient(
             base_url=settings.jira_base_url,
             transport=httpx.MockTransport(handler),
@@ -298,7 +298,7 @@ async def test_jira_client_makes_no_calls_in_test_mode(settings):
     issue = await client.create_postmortem_issue(
         make_alert(), message_url="u", channel_name="c", summary="s", description="d"
     )
-    assert issue.key.startswith("ADSDEV-12024-")
+    assert issue.key.startswith("ADS-TEST-")
     await client.aclose()
 
 

@@ -182,7 +182,7 @@ class IncidentBotService(
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
         if posted:
-            if posted.channel_id == self.settings.mattermost_incident_channel_id:
+            if self._is_incident_channel(posted.channel_id):
                 await self.handle_manual_incident_post(posted)
             else:
                 await self.handle_alert_post(posted)
@@ -271,7 +271,7 @@ class IncidentBotService(
             return await self.generate_thread_summary(
                 post, requested_by_user_id=reaction.user_id, source="reaction"
             )
-        in_incident_channel = post.channel_id == self.settings.mattermost_incident_channel_id
+        in_incident_channel = self._is_incident_channel(post.channel_id)
         if is_incident_end and in_incident_channel:
             return await self.handle_incident_checkmark(
                 post,
@@ -298,7 +298,7 @@ class IncidentBotService(
                 message="Reaction ignored: checkmark only handled on incident thread roots.",
             )
 
-        if post.channel_id != self.settings.mattermost_alert_channel_id:
+        if not self._is_alert_channel(post.channel_id):
             log.info(
                 "mattermost.reaction.skipped_non_alert_channel",
                 mattermost_post_id=reaction.post_id,
@@ -395,7 +395,7 @@ class IncidentBotService(
             )
             return CommandResponse(text=f"Could not read Band post `{post_id}`.")
 
-        if post.channel_id != self.settings.mattermost_alert_channel_id:
+        if not self._is_alert_channel(post.channel_id):
             return CommandResponse(text="This message is not in the configured alerts channel.")
 
         ticket = self.repository.get_by_post_id(post_id)
@@ -412,11 +412,12 @@ class IncidentBotService(
     ) -> None:
         """Best-effort: post every newly created Jira issue to the ops channel with
         a link back to its source thread/message. Shares ``MATTERMOST_OPS_CHANNEL_ID``
-        with the error-alert feed; skips stub issues (``jira_create_enabled=false``)
-        and never breaks issue creation (a failed post is logged, not propagated).
+        with the error-alert feed; skips stub issues (read-only mode, where every
+        issue is a stub) and never breaks issue creation (a failed post is logged,
+        not propagated).
         """
         channel_id = self.settings.mattermost_ops_channel_id
-        if not channel_id or not self.settings.jira_create_enabled:
+        if not channel_id or self.settings.read_only_mode:
             return
         message = format_ops_issue_created(
             jira_issue_key=issue.key,

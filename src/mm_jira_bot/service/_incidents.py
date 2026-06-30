@@ -154,6 +154,8 @@ class IncidentMixin:
         ) -> ActionResult: ...
 
         # --- SharedMixin ---
+        def _is_incident_channel(self, channel_id: str) -> bool: ...
+
         async def _post_alert_thread_reply(
             self,
             post_id: str,
@@ -179,7 +181,7 @@ class IncidentMixin:
         path. When no duty mention is configured, emoji-only mode posts nothing.
         Idempotent: the reply is posted once, guarded by the unique ticket row.
         """
-        if post.channel_id != self.settings.mattermost_incident_channel_id:
+        if not self._is_incident_channel(post.channel_id):
             return
         if post.root_id:  # only channel root posts, not thread replies
             return

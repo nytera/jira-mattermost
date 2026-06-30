@@ -59,10 +59,22 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `JIRA_END_FIELD` | — | Date-time field set on validity/checkmark close |
 | `JIRA_TIME_TO_FIX_FIELD` | — | Numeric field, incident duration in minutes (best-effort) |
 | `JIRA_REPEAT_LINK_INWARD` | `is child of` | Link type for expected-repeat → root |
-| `JIRA_CREATE_ENABLED` | `true` | `false` = test mode, no Jira issue-key calls |
-| `JIRA_STUB_ISSUE_KEY` | — | Key shown in Mattermost in test mode |
 
 Field/option resolution mechanics and the date-time format are in [`jira.md`](jira.md).
+
+## Read-only / shadow mode (optional)
+
+Run a shadow instance in parallel with prod that changes nothing externally and
+mirrors everything to an audit channel. Full behavior: [`read-only.md`](read-only.md).
+
+| Var | Default | Meaning |
+|---|---|---|
+| `READ_ONLY_MODE` | `false` | `true` = suppress every Jira/Mattermost write, mirror to the audit channel; Jira keys become `ADS-TEST-…` stubs |
+| `MATTERMOST_AUDIT_CHANNEL_ID` | — | Dedicated channel the shadow mirrors into; **must differ** from every alert/incident/test/ops channel (startup refuses a collision) |
+| `MATTERMOST_TEST_ALERT_CHANNEL_ID` | — | Extra channel treated as an alert channel (push test traffic without the real one) |
+| `MATTERMOST_TEST_INCIDENT_CHANNEL_ID` | — | Extra channel treated as an incident channel |
+| `HOST` | `0.0.0.0` | uvicorn bind host |
+| `PORT` | `8080` | uvicorn bind port (set to run a shadow next to prod) |
 
 ## LLM (optional)
 
