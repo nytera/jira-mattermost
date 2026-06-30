@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from time import perf_counter
 from typing import Any, cast
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -162,9 +161,6 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         metrics_enabled=settings.metrics_enabled,
         enable_websocket=settings.enable_websocket,
         enable_backfill_on_startup=settings.enable_backfill_on_startup,
-        interactive_buttons_enabled=(
-            settings.interactive_buttons_enabled and bool(settings.service_public_url)
-        ),
         jira_base_url=settings.jira_base_url,
         jira_project_key=settings.jira_project_key,
         jira_issue_type=settings.jira_issue_type,
@@ -462,84 +458,6 @@ def create_app(
         @app.get("/metrics")
         async def metrics() -> Response:
             return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-    @app.post("/mattermost/slash/incident")
-    async def incident_slash_command(request: Request) -> JSONResponse:
-        try:
-            raw_body = (await request.body()).decode("utf-8")
-        except UnicodeDecodeError:
-            log.warning("http.request.bad_body", path=request.url.path)
-            return JSONResponse(
-                {"response_type": "ephemeral", "text": "Malformed request body."},
-                status_code=400,
-            )
-        form = {key: values[0] for key, values in parse_qs(raw_body).items()}
-
-        slash_token = settings.mattermost_slash_token
-        if slash_token and form.get("token") != slash_token:
-            log.warning(
-                "mattermost.slash_command.invalid_token",
-                user_id=form.get("user_id"),
-            )
-            return JSONResponse(
-                {"response_type": "ephemeral", "text": "Invalid slash command token."},
-                status_code=403,
-            )
-
-        response = await service.handle_slash_command(
-            user_id=form.get("user_id", ""),
-            text=form.get("text", ""),
-        )
-        return JSONResponse({"response_type": response.response_type, "text": response.text})
-
-    async def _parse_json_body(request: Request) -> dict | None:
-        """Return the JSON body, or ``None`` after logging a malformed payload."""
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            log.warning("http.request.bad_json", path=request.url.path)
-            return None
-        return body if isinstance(body, dict) else {}
-
-    @app.post("/mattermost/actions/alert")
-    async def alert_action(request: Request) -> JSONResponse:
-        payload = await _parse_json_body(request)
-        if payload is None:
-            return JSONResponse({"error": "Malformed request body."}, status_code=400)
-        context = payload.get("context") or {}
-
-        result = await service.handle_alert_action(
-            action=context.get("action", ""),
-            alert_post_id=context.get("alert_post_id", ""),
-            user_id=payload.get("user_id", ""),
-            user_name=payload.get("user_name", ""),
-            channel_id=payload.get("channel_id", ""),
-            selected_option=context.get("selected_option") or payload.get("selected_option", ""),
-            trigger_id=payload.get("trigger_id", ""),
-            source=context.get("source", "alert"),
-            incident_post_id=context.get("incident_post_id", ""),
-        )
-        body: dict = {"ephemeral_text": result.message}
-        if result.update_attachments is not None:
-            # Replace the originating post's controls (e.g. swap "Создать задачу"
-            # for the full card) via the Mattermost interactive-action update.
-            body["update"] = {"props": {"attachments": result.update_attachments}}
-        return JSONResponse(body)
-
-    @app.post("/mattermost/dialogs/feedback")
-    async def feedback_dialog(request: Request) -> JSONResponse:
-        payload = await _parse_json_body(request)
-        if payload is None:
-            return JSONResponse({"error": "Malformed request body."}, status_code=400)
-        result = await service.handle_feedback_dialog_submission(
-            user_id=payload.get("user_id", ""),
-            state=payload.get("state", ""),
-            submission=payload.get("submission") or {},
-            cancelled=bool(payload.get("cancelled")),
-        )
-        if result.message:
-            return JSONResponse({"error": result.message})
-        return JSONResponse({})
 
     if settings.admin_ui_enabled:
         register_admin_api(app, service)

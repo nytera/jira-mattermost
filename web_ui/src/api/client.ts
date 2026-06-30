@@ -4,7 +4,6 @@ import type {
   AlertTicket,
   ConfirmationResult,
   CreateFromLinkResult,
-  FeedbackItem,
   LogsResponse,
   RecreateResult,
   SettingsResponse,
@@ -96,7 +95,6 @@ export const api = {
     return get<AlertsResponse>(`/alerts${qs ? `?${qs}` : ""}`);
   },
   alert: (postId: string) => get<AlertTicket>(`/alerts/${postId}`),
-  feedback: (postId: string) => get<{ feedback: FeedbackItem[] }>(`/alerts/${postId}/feedback`),
   logs: (params: { limit?: number; level?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.limit) q.set("limit", String(params.limit));

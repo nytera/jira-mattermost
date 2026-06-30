@@ -11,7 +11,7 @@ from __future__ import annotations
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
+from mm_jira_bot.colors import NOTICE_ATTACHMENT_COLOR
 from mm_jira_bot.domain import MattermostPost
 from mm_jira_bot.llm import StreamProgress
 from mm_jira_bot.logging import get_logger

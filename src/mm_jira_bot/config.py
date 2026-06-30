@@ -127,9 +127,6 @@ class Settings:
     bind_host: str = "0.0.0.0"
     bind_port: int = 8080
     incident_timezone: str = "Europe/Moscow"
-    mattermost_slash_token: str | None = None
-    service_public_url: str | None = None
-    interactive_buttons_enabled: bool = False
     duty_help_enabled: bool = True
     jira_time_to_fix_field: str | None = None
     jira_repeat_link_inward: str = "is child of"
@@ -171,7 +168,6 @@ class Settings:
     @classmethod
     def from_env(cls, dotenv_path: str | Path = ".env") -> Settings:
         load_dotenv_file(dotenv_path)
-        service_public_url = _env("SERVICE_PUBLIC_URL")
         return cls(
             mattermost_url=_required("MATTERMOST_URL").rstrip("/"),
             mattermost_token=_required("MATTERMOST_TOKEN"),
@@ -205,9 +201,6 @@ class Settings:
             bind_host=_env("HOST", "0.0.0.0"),
             bind_port=_int_env("PORT", 8080),
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
-            mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
-            service_public_url=service_public_url.rstrip("/") if service_public_url else None,
-            interactive_buttons_enabled=_env("INTERACTIVE_BUTTONS_ENABLED", "false") == "true",
             duty_help_enabled=_env("DUTY_HELP_ENABLED", "true") != "false",
             mattermost_false_incident_reaction_name=_env(
                 "MATTERMOST_FALSE_INCIDENT_REACTION_NAME", "man_gesturing_no"

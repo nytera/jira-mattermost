@@ -5,7 +5,6 @@ import json
 import logging
 import os
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any, cast
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -17,12 +16,11 @@ from support import (
     _build_service,
     _capture_bot_logs,
     _extra_fields,
-    _incident_service,
     _manual_post,
     make_alert,
 )
 
-from mm_jira_bot.actions import (
+from mm_jira_bot.colors import (
     OPS_ALERT_COLOR,
 )
 from mm_jira_bot.config import Settings, _csv_env, load_dotenv_file
@@ -325,59 +323,11 @@ async def test_mattermost_preflight_checks_bot_user_and_channels(settings):
     ]
 
 
-@pytest.mark.asyncio
-async def test_mattermost_client_opens_dialog(settings):
-    requests: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append({"path": request.url.path, "json": json.loads(request.content)})
-        return httpx.Response(200, json={})
-
-    client = MattermostClient(
-        settings,
-        http_client=httpx.AsyncClient(
-            base_url=settings.mattermost_url,
-            transport=httpx.MockTransport(handler),
-        ),
-    )
-    try:
-        await client.open_dialog(
-            trigger_id="trigger-1",
-            url="https://bot.example.com/mattermost/dialogs/feedback",
-            dialog={"title": "Обратная связь"},
-        )
-    finally:
-        await client.aclose()
-
-    assert requests == [
-        {
-            "path": "/api/v4/actions/dialogs/open",
-            "json": {
-                "trigger_id": "trigger-1",
-                "url": "https://bot.example.com/mattermost/dialogs/feedback",
-                "dialog": {"title": "Обратная связь"},
-            },
-        }
-    ]
-
-
 def test_extracts_post_id_from_mattermost_permalink():
     assert parse_post_id_from_text(f"https://mattermost.example.com/team/pl/{POST_ID}") == POST_ID
     assert (
         parse_post_id_from_text(f"https://mattermost.example.com/_redirect/pl/{POST_ID}") == POST_ID
     )
-
-
-def test_invalid_slash_link_returns_ephemeral_response(service, settings):
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/slash/incident",
-            data={"token": "slash-token", "user_id": "validator", "text": "not-a-link"},
-        )
-
-    assert response.status_code == 200
-    assert "Invalid link" in response.json()["text"]
 
 
 @pytest.mark.asyncio
@@ -402,38 +352,27 @@ async def test_startup_preflight_logs_failures_without_raising(service, caplog):
     assert "startup.preflight.completed" in messages
 
 
-def test_slash_command_handles_missing_jira_mapping(service, settings):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/slash/incident",
-            data={
-                "token": "slash-token",
-                "user_id": "validator",
-                "text": f"https://mattermost.example.com/_redirect/pl/{post.id}",
-            },
-        )
+def test_http_error_boundary_returns_500_and_logs(service):
+    """The app-global ``@app.middleware('http')`` 500 boundary: an unhandled
+    error in any route becomes a clean JSON 500 plus a structured
+    ``http.request.failed`` event carrying the request path. Driven through a
+    surviving admin GET route whose repo call is monkeypatched to raise."""
 
-    assert response.status_code == 200
-    assert "Incident confirmed" in response.json()["text"]
-    assert len(service.jira.created_payloads) == 1
-
-
-def test_http_error_boundary_returns_500_and_logs(service, settings):
-    async def boom(**kwargs):
+    def boom():
         raise RuntimeError("kaboom")
 
-    service.handle_feedback_dialog_submission = boom
-    app = create_app(settings, service=service)
+    service.repository.admin_stats = boom
+    service.settings = replace(
+        service.settings, admin_ui_enabled=True, admin_ui_token="admin-token"
+    )
+    app = create_app(service.settings, service=service)
     records: list[logging.LogRecord] = []
     logger, handler = _capture_bot_logs(records)
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
-            response = client.post(
-                "/mattermost/dialogs/feedback",
-                json={"user_id": "u", "state": "s", "submission": {}},
+            response = client.get(
+                "/admin/api/stats",
+                headers={"authorization": "Bearer admin-token"},
             )
     finally:
         logger.removeHandler(handler)
@@ -444,25 +383,7 @@ def test_http_error_boundary_returns_500_and_logs(service, settings):
     assert failures
     assert failures[0].exc_info is not None
     assert _extra_fields(failures[0])["error_type"] == "RuntimeError"
-    assert _extra_fields(failures[0])["path"] == "/mattermost/dialogs/feedback"
-
-
-def test_alert_action_rejects_malformed_json(service, settings):
-    app = create_app(settings, service=service)
-    records: list[logging.LogRecord] = []
-    logger, handler = _capture_bot_logs(records)
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/mattermost/actions/alert",
-                content="{not json",
-                headers={"content-type": "application/json"},
-            )
-    finally:
-        logger.removeHandler(handler)
-
-    assert response.status_code == 400
-    assert "http.request.bad_json" in [r.msg for r in records]
+    assert _extra_fields(failures[0])["path"] == "/admin/api/stats"
 
 
 def test_ticket_collector_logs_on_repository_failure():
@@ -483,55 +404,6 @@ def test_ticket_collector_logs_on_repository_failure():
     assert failures
     assert failures[0].exc_info is not None
     assert _extra_fields(failures[0])["error_type"] == "RuntimeError"
-
-
-def test_alert_action_endpoint_dispatches(service, settings):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/actions/alert",
-            json={
-                "user_id": "clicker",
-                "context": {
-                    "action": "validity",
-                    "alert_post_id": post.id,
-                    "selected_option": "false",
-                },
-            },
-        )
-
-    assert response.status_code == 200
-    assert "Ложный" in response.json()["ephemeral_text"]
-    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
-
-
-def test_feedback_dialog_endpoint_stores_feedback(service, settings):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    service.mattermost.display_names["clicker"] = "@clicker"
-    service.repository.create_or_get_alert(
-        post,
-        message_url=service.mattermost.permalink(post.id),
-        channel_name="alerts",
-    )
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/dialogs/feedback",
-            json={
-                "user_id": "clicker",
-                "state": json.dumps({"alert_post_id": post.id}),
-                "submission": {"feedback": "Хорошая форма"},
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {}
-    feedback = service.repository.list_feedback(post.id)
-    assert len(feedback) == 1
-    assert feedback[0].message == "Хорошая форма"
 
 
 def _authorized_service(settings, usernames, resolvable):
@@ -588,64 +460,6 @@ async def test_unauthorized_user_reaction_is_ignored(settings):
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_action_is_blocked(settings):
-    service = _authorized_service(settings, ("alice",), {"alice": "u-alice"})
-    await service.resolve_authorized_users()
-
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    await service.handle_alert_post(post)
-    service.jira.valid_updates.clear()
-
-    result = await service.handle_alert_action(
-        action="incident",
-        alert_post_id=post.id,
-        user_id="u-bob",
-        user_name="bob",
-        channel_id="alert-channel",
-    )
-
-    assert result.message == ""
-    assert service.jira.valid_updates == []
-    # A visible thread reply with the denial notice must be posted.
-    notice_replies = [
-        c
-        for c in service.mattermost.created_posts
-        if c["root_id"] == post.id and "@bob" in (c.get("message") or "")
-    ]
-    assert len(notice_replies) == 1
-    att_text = notice_replies[0]["props"]["attachments"][0]["text"]
-    assert "авторизованным" in att_text
-    assert "@alice" in att_text
-
-
-@pytest.mark.asyncio
-async def test_feedback_action_allowed_for_unauthorized_user(settings):
-    service = _build_service(
-        replace(
-            settings,
-            mattermost_authorized_usernames=("alice",),
-            service_public_url="https://bot.example.com",
-        )
-    )
-    service.mattermost.username_to_id = {"alice": "u-alice"}
-    await service.resolve_authorized_users()
-
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    result = await service.handle_alert_action(
-        action="feedback",
-        alert_post_id=post.id,
-        user_id="u-bob",
-        trigger_id="trigger-1",
-    )
-
-    assert "Открыта форма" in result.message
-    assert len(service.mattermost.opened_dialogs) == 1
-
-
-@pytest.mark.asyncio
 async def test_partial_resolution_keeps_resolved_and_drops_typo(settings):
     service = _authorized_service(settings, ("alice", "typo"), {"alice": "u-alice"})
     await service.resolve_authorized_users()
@@ -682,45 +496,9 @@ async def test_no_usernames_resolved_is_fail_open(settings):
     assert service._is_authorized("anyone") is True
 
 
-def test_endpoint_routes_incident_create_task(settings):
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=True,
-        )
-    )
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-    service.repository.create_or_get_incident_thread(
-        post, message_url=service.mattermost.permalink(post.id), channel_name="incidents"
-    )
-
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/actions/alert",
-            json={
-                "user_id": "opener",
-                "context": {
-                    "action": "create_task",
-                    "source": "incident",
-                    "incident_post_id": post.id,
-                },
-            },
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["update"]["props"]["attachments"][0]["actions"]
-    ticket = service.repository.get_by_incident_post_id(post.id)
-    assert ticket is not None
-    assert ticket.jira_issue_key == "OPS-1"
-
-
 @pytest.mark.asyncio
 async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
-    service = _incident_service(settings)
+    service = _build_service(settings)
     post = _manual_post()
     service.mattermost.posts[post.id] = post
 
@@ -743,13 +521,19 @@ async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
         }
     )
 
-    cards = [
+    # Emoji-only mode has no create_task card; the manual handler instead opens
+    # the incident thread (cheat-sheet reply) and records the ticket row.
+    def _attachment_text(created: dict) -> str:
+        attachments = (created["props"] or {}).get("attachments") or [{}]
+        return attachments[0].get("text", "")
+
+    help_replies = [
         c
         for c in service.mattermost.created_posts
-        if c["root_id"] == post.id and (c["props"] or {}).get("attachments", [{}])[0].get("actions")
+        if c["root_id"] == post.id and "Памятка дежурному" in _attachment_text(c)
     ]
-    assert len(cards) == 1
-    assert cards[0]["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
+    assert len(help_replies) == 1
+    assert service.repository.get_by_incident_post_id(post.id) is not None
 
 
 # --- Ops alerts channel & Prometheus metrics ---------------------------------
@@ -1132,118 +916,7 @@ async def test_startup_configuration_log_carries_no_plaintext_password(service):
     assert "s3cret" not in cast(str, redacted)
 
 
-# --- Slash route: token enforcement & malformed body ------------------------
-
-
-def test_slash_command_rejects_wrong_token(service, settings):
-    app = create_app(settings, service=service)
-    records: list[logging.LogRecord] = []
-    logger, handler = _capture_bot_logs(records)
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/mattermost/slash/incident",
-                data={"token": "wrong-token", "user_id": "u", "text": "x"},
-            )
-    finally:
-        logger.removeHandler(handler)
-
-    assert response.status_code == 403
-    assert response.json() == {
-        "response_type": "ephemeral",
-        "text": "Invalid slash command token.",
-    }
-    assert "mattermost.slash_command.invalid_token" in [r.msg for r in records]
-
-
-def test_slash_command_skips_token_check_when_unconfigured(service, settings):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    app = create_app(replace(settings, mattermost_slash_token=None), service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/slash/incident",
-            data={
-                "token": "anything-goes",
-                "user_id": "validator",
-                "text": f"https://mattermost.example.com/_redirect/pl/{post.id}",
-            },
-        )
-
-    assert response.status_code == 200
-    assert "Incident confirmed" in response.json()["text"]
-
-
-def test_slash_command_rejects_non_utf8_body(service, settings):
-    app = create_app(settings, service=service)
-    records: list[logging.LogRecord] = []
-    logger, handler = _capture_bot_logs(records)
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/mattermost/slash/incident",
-                content=b"\xff\xfe\x00",
-                headers={"content-type": "application/x-www-form-urlencoded"},
-            )
-    finally:
-        logger.removeHandler(handler)
-
-    assert response.status_code == 400
-    assert response.json()["text"] == "Malformed request body."
-    assert "http.request.bad_body" in [r.msg for r in records]
-
-
-# --- Feedback route: broken JSON & validation rejection ---------------------
-
-
-def test_feedback_rejects_broken_json(service, settings):
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/dialogs/feedback",
-            content="{not json",
-            headers={"content-type": "application/json"},
-        )
-
-    assert response.status_code == 400
-    assert response.json() == {"error": "Malformed request body."}
-
-
-def test_feedback_validation_rejection_returns_200_with_error(service, settings):
-    async def reject(**_kwargs):
-        return SimpleNamespace(message="Пустая форма")
-
-    service.handle_feedback_dialog_submission = reject
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.post(
-            "/mattermost/dialogs/feedback",
-            json={"user_id": "u", "state": "s", "submission": {}},
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {"error": "Пустая форма"}
-
-
-# --- Alert-action: list/empty bodies & /healthz -----------------------------
-
-
-def test_alert_action_accepts_list_body(service, settings):
-    app = create_app(settings, service=service)
-    with TestClient(app, raise_server_exceptions=False) as client:
-        response = client.post("/mattermost/actions/alert", json=[])
-
-    assert response.status_code == 200
-    assert "ephemeral_text" in response.json()
-
-
-def test_alert_action_accepts_empty_object_body(service, settings):
-    app = create_app(settings, service=service)
-    with TestClient(app, raise_server_exceptions=False) as client:
-        response = client.post("/mattermost/actions/alert", json={})
-
-    assert response.status_code == 200
-    assert "ephemeral_text" in response.json()
+# --- /healthz ---------------------------------------------------------------
 
 
 def test_healthz_returns_ok(service, settings):

@@ -200,22 +200,6 @@ def register_admin_api(app: FastAPI, service: IncidentBotService) -> None:
             raise HTTPException(status_code=404, detail="Alert ticket not found.")
         return _ticket_to_dict(ticket, full=True)
 
-    @app.get("/admin/api/alerts/{post_id}/feedback", dependencies=[auth])
-    async def admin_alert_feedback(post_id: str) -> dict:
-        feedback = await asyncio.to_thread(repo.list_feedback, post_id)
-        return {
-            "feedback": [
-                {
-                    "id": item.id,
-                    "user_id": item.user_id,
-                    "user_display_name": item.user_display_name,
-                    "message": item.message,
-                    "created_at": _datetime_iso(item.created_at),
-                }
-                for item in feedback
-            ]
-        }
-
     @app.get("/admin/api/logs", dependencies=[auth])
     async def admin_logs(limit: int = 300, level: str | None = None) -> dict:
         buffer = get_log_buffer()

@@ -450,25 +450,6 @@ class MattermostClient(AsyncApiClient):
             allow_in_read_only=allow_in_read_only,
         )
 
-    async def open_dialog(
-        self,
-        *,
-        trigger_id: str,
-        url: str,
-        dialog: dict,
-    ) -> None:
-        # Interactive dialogs are deprecated and have no audit representation;
-        # in read-only mode just drop the call (no prod side effect).
-        if self._settings.read_only_mode:
-            return
-        await self._request(
-            "POST",
-            "/api/v4/actions/dialogs/open",
-            json={"trigger_id": trigger_id, "url": url, "dialog": dialog},
-            error_message="Failed to open Mattermost dialog",
-            event="mattermost.dialog.open",
-        )
-
     async def fetch_recent_channel_posts(
         self, channel_id: str, *, limit: int
     ) -> list[MattermostPost]:

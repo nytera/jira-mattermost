@@ -13,8 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
-from mm_jira_bot.domain import ConfirmationResult, ConfirmationStatus
+from mm_jira_bot.colors import NOTICE_ATTACHMENT_COLOR
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.retry import ApiError
 
@@ -52,27 +51,11 @@ _PROMPT_KEY_SUMMARY = "llm_summary_prompt"
 _PROMPT_KEY_POSTMORTEM = "llm_postmortem_prompt"
 
 
-def _validity_action_message(result: ConfirmationResult, validity_label: str) -> str:
-    if result.status == ConfirmationStatus.VALIDITY_SET:
-        return f"Готово: «Валидность» = {validity_label}."
-    if result.status == ConfirmationStatus.PENDING_JIRA:
-        return "Задача Jira ещё создаётся — обновлю «Валидность» автоматически."
-    if result.status == ConfirmationStatus.ERROR:
-        return "Не удалось обновить «Валидность», попробуйте ещё раз."
-    return result.message
-
-
 @dataclass(frozen=True)
 class ActionResult:
-    """Ephemeral feedback shown to the user who clicked an alert button.
-
-    ``update_attachments``, when set, replaces the originating post's attachments
-    via the Mattermost interactive-action ``update`` response (used to swap the
-    "Создать задачу" prompt for the full controls card after task creation).
-    """
+    """Result of a thread-summary / admin action: a short human-facing message."""
 
     message: str
-    update_attachments: list[dict] | None = None
 
 
 # Имя логгера держим стабильным (`mm_jira_bot.service`) во всех файлах пакета —

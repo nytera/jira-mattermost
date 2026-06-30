@@ -8,7 +8,6 @@ from support import (
     _build_service,
     _confirm_and_close_incident,
     _confirmed_incident,
-    _manual_post,
     _reply_text,
     make_alert,
 )
@@ -344,33 +343,6 @@ async def test_time_to_fix_on_manual_checkmark_new_issue(settings):
         )
     )
     assert service.jira.time_to_fix_updates == [("OPS-1", 5)]
-
-
-@pytest.mark.asyncio
-async def test_time_to_fix_on_manual_incident_close(settings):
-    # create_task → end_incident → the existing-issue postmortem branch.
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=True,
-            jira_time_to_fix_field="customfield_99999",
-        )
-    )
-    service.llm = FakeLlmClient()
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-    await service.handle_manual_incident_post(post)
-    await service.handle_incident_action(
-        action="create_task", incident_post_id=post.id, user_id="opener"
-    )
-    await service.handle_incident_action(
-        action="end_incident", incident_post_id=post.id, user_id="closer"
-    )
-    # Exactly one write, positive minutes (no double-write across set_end_time sites).
-    assert len(service.jira.time_to_fix_updates) == 1
-    assert service.jira.time_to_fix_updates[0][0] == "OPS-1"
-    assert service.jira.time_to_fix_updates[0][1] > 0
 
 
 # --- LLM-derived incident end time -----------------------------------------

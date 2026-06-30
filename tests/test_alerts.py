@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 
 import pytest
@@ -12,7 +11,7 @@ from support import (
     make_alert,
 )
 
-from mm_jira_bot.actions import (
+from mm_jira_bot.colors import (
     NOTICE_ATTACHMENT_COLOR,
 )
 from mm_jira_bot.domain import (
@@ -101,8 +100,6 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
         replace(
             settings,
             read_only_mode=True,
-            service_public_url="https://bot.example.com/",
-            interactive_buttons_enabled=True,
         )
     )
     post = make_alert()
@@ -121,7 +118,7 @@ async def test_uses_stub_jira_issue_when_creation_disabled(settings):
     assert "title" not in attachment
     assert "title_link" not in attachment
     assert attachment["text"] == (
-        "**Создана задача: [ADS-TEST](https://jira.example.com/browse/ADS-TEST)**"
+        "Создана задача Jira: [ADS-TEST](https://jira.example.com/browse/ADS-TEST)"
     )
     assert ticket.jira_issue_key not in attachment["text"]
 
@@ -291,8 +288,6 @@ async def test_repeat_firing_skips_duty_ping_and_cheat_sheet(settings):
     service = _build_service(
         replace(
             settings,
-            service_public_url="https://bot.example.com/",
-            interactive_buttons_enabled=True,
             mattermost_duty_mention=":look: @sre-ads-duty",
         )
     )
@@ -608,73 +603,6 @@ async def test_replies_in_alert_thread_on_status_change(service):
     assert len(incident_posts) == 1
     info_text = incident_posts[0]["props"]["attachments"][0]["text"]
     assert "Подтвердил: @validator" in info_text
-
-
-@pytest.mark.asyncio
-async def test_feedback_button_opens_dialog(settings):
-    service = _build_service(replace(settings, service_public_url="https://bot.example.com/"))
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    result = await service.handle_alert_action(
-        action="feedback",
-        alert_post_id=post.id,
-        user_id="clicker",
-        trigger_id="trigger-1",
-    )
-
-    assert "Открыта форма" in result.message
-    assert service.mattermost.opened_dialogs == [
-        {
-            "trigger_id": "trigger-1",
-            "url": "https://bot.example.com/mattermost/dialogs/feedback",
-            "dialog": {
-                "callback_id": "alert_feedback",
-                "title": "Обратная связь",
-                "introduction_text": "Оставьте комментарий по этому алерту.",
-                "elements": [
-                    {
-                        "display_name": "Комментарий",
-                        "name": "feedback",
-                        "type": "textarea",
-                        "placeholder": "Что стоит улучшить?",
-                        "max_length": 3000,
-                    }
-                ],
-                "submit_label": "Отправить",
-                "state": json.dumps({"alert_post_id": post.id}, ensure_ascii=False),
-            },
-        }
-    ]
-    assert service.jira.validity_updates == []
-
-
-@pytest.mark.asyncio
-async def test_feedback_dialog_submission_stores_feedback_and_posts_notice(service):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    service.mattermost.display_names["clicker"] = "@clicker"
-    await service.handle_alert_post(post)
-
-    result = await service.handle_feedback_dialog_submission(
-        user_id="clicker",
-        state=json.dumps({"alert_post_id": post.id}),
-        submission={"feedback": "Кнопки стали понятнее"},
-    )
-
-    assert result.message == ""
-    feedback = service.repository.list_feedback(post.id)
-    assert len(feedback) == 1
-    assert feedback[0].user_id == "clicker"
-    assert feedback[0].user_display_name == "@clicker"
-    assert feedback[0].message == "Кнопки стали понятнее"
-    notices = [
-        created
-        for created in service.mattermost.created_posts
-        if created["root_id"] == post.id
-        and "Получили обратную связь от @clicker" in _reply_text(created)
-    ]
-    assert len(notices) == 1
 
 
 @pytest.mark.asyncio

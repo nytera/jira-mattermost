@@ -418,38 +418,13 @@ def test_list_alerts_orders_created_at_desc(repo, session_factory):
 
 
 # --------------------------------------------------------------------------- #
-# _mutate / _require_ticket / add_feedback KeyError on unknown post
+# _mutate / _require_ticket KeyError on unknown post
 # --------------------------------------------------------------------------- #
 
 
 def test_mutate_raises_keyerror_on_unknown_post(repo):
     with pytest.raises(KeyError):
         repo.set_last_error("nope", "boom")
-
-
-def test_add_feedback_raises_keyerror_on_unknown_post(repo):
-    with pytest.raises(KeyError):
-        repo.add_feedback(
-            "nope",
-            user_id="u",
-            user_display_name="User",
-            message="hi",
-        )
-
-
-def test_add_feedback_persists_for_known_ticket(repo, session_factory):
-    with session_factory() as session:
-        session.add(make_ticket(mattermost_post_id="fb-post"))
-        session.commit()
-
-    fb = repo.add_feedback(
-        "fb-post",
-        user_id="u1",
-        user_display_name="User One",
-        message="looks bad",
-    )
-    assert fb.id is not None
-    assert repo.list_feedback("fb-post")[0].message == "looks bad"
 
 
 # --------------------------------------------------------------------------- #

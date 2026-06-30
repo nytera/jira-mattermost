@@ -882,20 +882,19 @@ async def test_ops_channel_silent_when_unconfigured(service):
 
 @pytest.mark.asyncio
 async def test_ops_channel_receives_manual_incident_issue(settings):
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=True,
-            mattermost_ops_channel_id="ops-channel",
-        )
-    )
+    service = _build_service(replace(settings, mattermost_ops_channel_id="ops-channel"))
     service.llm = FakeLlmClient()
+    # Closing a manual incident root with a white_check_mark drives the postmortem
+    # new-issue branch, which creates the Jira issue and announces it to ops.
     post = _manual_post()
     service.mattermost.posts[post.id] = post
-    await service.handle_manual_incident_post(post)
-    await service.handle_incident_action(
-        action="create_task", incident_post_id=post.id, user_id="opener"
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=post.id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_300_000,
+        )
     )
     ops_posts = _ops_posts(service)
     assert len(ops_posts) == 1

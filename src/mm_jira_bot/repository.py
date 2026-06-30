@@ -116,17 +116,6 @@ class AlertTicket(Base):
     )
 
 
-class AlertFeedback(Base):
-    __tablename__ = "alert_feedback"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    mattermost_post_id: Mapped[str] = mapped_column(String(64), index=True)
-    user_id: Mapped[str] = mapped_column(String(64))
-    user_display_name: Mapped[str] = mapped_column(String(255))
-    message: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=backend_now)
-
-
 class AppSetting(Base):
     """Runtime-editable key/value overrides (e.g. LLM prompt templates edited in
     the debug panel). Overrides win over env config; absence ⇒ fall back to env."""
@@ -738,37 +727,6 @@ class AlertTicketRepository:
             ticket.validity_label = label
 
         self._mutate(post_id, apply)
-
-    def add_feedback(
-        self,
-        post_id: str,
-        *,
-        user_id: str,
-        user_display_name: str,
-        message: str,
-    ) -> AlertFeedback:
-        with self._session_factory() as session:
-            self._require_ticket(session, post_id)
-            feedback = AlertFeedback(
-                mattermost_post_id=post_id,
-                user_id=user_id,
-                user_display_name=user_display_name,
-                message=message,
-            )
-            session.add(feedback)
-            session.commit()
-            session.refresh(feedback)
-            return feedback
-
-    def list_feedback(self, post_id: str) -> list[AlertFeedback]:
-        with self._session_factory() as session:
-            return list(
-                session.scalars(
-                    select(AlertFeedback)
-                    .where(AlertFeedback.mattermost_post_id == post_id)
-                    .order_by(AlertFeedback.created_at)
-                )
-            )
 
     def sync_valid_incident_from_jira(self, post_id: str) -> None:
         def apply(ticket: AlertTicket) -> None:

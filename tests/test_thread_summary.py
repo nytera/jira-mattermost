@@ -9,8 +9,6 @@ from support import (
     FakeLlmClient,
     _confirmed_incident,
     _FakeStreamResponse,
-    _incident_service,
-    _manual_post,
     _reply_text,
     make_alert,
 )
@@ -236,40 +234,14 @@ async def test_llm_preflight_uses_small_openai_compatible_request(settings):
 
 
 @pytest.mark.asyncio
-async def test_summary_button_posts_thread_reply(service):
-    service.llm = FakeLlmClient()
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    await service.handle_alert_post(post)
-
-    result = await service.handle_alert_action(
-        action="summary", alert_post_id=post.id, user_id="clicker"
-    )
-
-    assert len(service.llm.summary_prompts) == 1
-    # The bot first posts a "Генерация саммари…" placeholder, then edits it in place.
-    placeholders = [
-        created
-        for created in service.mattermost.created_posts
-        if created["root_id"] == post.id and "Генерация саммари" in _reply_text(created)
-    ]
-    assert len(placeholders) == 1
-    updates = [
-        u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
-    ]
-    assert len(updates) == 1
-    assert "Саммари треда" in _reply_text(updates[0])
-    assert "всё сломалось" in _reply_text(updates[0])
-    assert "опубликовано" in result.message
-
-
-@pytest.mark.asyncio
-async def test_summary_button_without_llm_is_noop(service):
+async def test_summary_reaction_without_llm_is_noop(service):
+    # The conftest ``service`` fixture has ``llm=None``: a memo reaction must noop
+    # with the "LLM не настроен" notice and post no summary reply.
     post = make_alert()
     service.mattermost.posts[post.id] = post
 
-    result = await service.handle_alert_action(
-        action="summary", alert_post_id=post.id, user_id="clicker"
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
     )
 
     summary_replies = [
@@ -279,26 +251,6 @@ async def test_summary_button_without_llm_is_noop(service):
     ]
     assert summary_replies == []
     assert "LLM не настроен" in result.message
-
-
-@pytest.mark.asyncio
-async def test_incident_summary_button_posts_light_summary(settings):
-    service = _incident_service(settings)
-    service.llm = FakeLlmClient()
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-    service.repository.create_or_get_incident_thread(
-        post, message_url=service.mattermost.permalink(post.id), channel_name="incidents"
-    )
-
-    result = await service.handle_incident_action(
-        action="summary", incident_post_id=post.id, user_id="closer"
-    )
-
-    assert len(service.llm.summary_prompts) == 1
-    assert "опубликовано" in result.message
-    # Light summary does not touch Jira (no PM comment).
-    assert service.jira.generic_comments == []
 
 
 def test_thread_summary_strips_mentions_so_it_never_pings():

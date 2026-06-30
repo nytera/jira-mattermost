@@ -10,7 +10,7 @@ import {
 import { api, ApiError } from "@/api/client";
 import { useApi } from "@/lib/useApi";
 import { useToast } from "@/components/Toast";
-import type { AlertTicket, FeedbackItem } from "@/api/types";
+import type { AlertTicket } from "@/api/types";
 import {
   Badge,
   Button,
@@ -157,10 +157,6 @@ function IncidentDrawer({
   notify: (message: string, ok: boolean) => void;
 }) {
   const detail = useApi(() => (postId ? api.alert(postId) : Promise.resolve(null)), [postId]);
-  const feedback = useApi(
-    () => (postId ? api.feedback(postId).then((r) => r.feedback) : Promise.resolve<FeedbackItem[]>([])),
-    [postId],
-  );
   const [busy, setBusy] = useState<string | null>(null);
 
   async function run(action: string, fn: () => Promise<{ message: string; status?: string; ok?: boolean }>) {
@@ -254,25 +250,6 @@ function IncidentDrawer({
               </p>
             </Field>
           )}
-          <Field label={`Фидбэк (${feedback.data?.length ?? 0})`}>
-            {feedback.loading ? (
-              <span className="text-xs text-faint">загрузка…</span>
-            ) : feedback.data && feedback.data.length ? (
-              <ul className="flex flex-col gap-2">
-                {feedback.data.map((f) => (
-                  <li key={f.id} className="rounded-md border border-line bg-raised/50 px-3 py-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-fg">{f.user_display_name}</span>
-                      <span className="text-faint">{formatRelative(f.created_at)}</span>
-                    </div>
-                    <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{f.message}</p>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <span className="text-xs text-faint">нет записей</span>
-            )}
-          </Field>
         </div>
       )}
     </SlideOver>

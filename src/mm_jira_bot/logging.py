@@ -19,7 +19,6 @@ TEXT_INFO_EVENT_ALLOWLIST = frozenset(
         "jira.issue.create_stubbed",
         "incident.validity.updated",
         "incident.confirmed",
-        "feedback.received",
         "postmortem.completed",
     }
 )
@@ -33,7 +32,6 @@ TEXT_EVENT_LABELS = {
     "jira.issue.create_stubbed": "jira issue stubbed",
     "incident.validity.updated": "validity updated",
     "incident.confirmed": "incident confirmed",
-    "feedback.received": "feedback received",
     "postmortem.completed": "postmortem completed",
 }
 

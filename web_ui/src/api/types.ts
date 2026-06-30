@@ -73,14 +73,6 @@ export interface AdminStats {
   top_channels: ChannelCount[];
 }
 
-export interface FeedbackItem {
-  id: number;
-  user_id: string;
-  user_display_name: string;
-  message: string;
-  created_at: string | null;
-}
-
 export interface LogRecord {
   [key: string]: unknown;
   timestamp?: string;

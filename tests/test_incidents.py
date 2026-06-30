@@ -7,14 +7,13 @@ import pytest
 from support import (
     FakeLlmClient,
     _build_service,
-    _incident_service,
     _issue_reply,
     _manual_post,
     _reply_text,
     make_alert,
 )
 
-from mm_jira_bot.actions import (
+from mm_jira_bot.colors import (
     DUTY_HELP_ATTACHMENT_COLOR,
 )
 from mm_jira_bot.domain import (
@@ -417,74 +416,6 @@ def test_builds_incident_channel_message(service):
 
 
 @pytest.mark.asyncio
-async def test_issue_reply_has_action_buttons_when_public_url_set(settings):
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com/",
-            interactive_buttons_enabled=True,
-        )
-    )
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    await service.handle_alert_post(post)
-
-    reply = _issue_reply(service, post.id)
-
-    # One message with two stacked blocks: the blue main block ("Создана задача"
-    # notice + validity menu + incident/summary buttons) and a gray feedback block.
-    assert reply["message"] == ""
-    attachments = reply["props"]["attachments"]
-    assert len(attachments) == 2
-
-    # Block 1: the notice, validity menu, and incident/summary buttons, blue.
-    controls_attachment = attachments[0]
-    assert controls_attachment["color"] == "#3B82F6"
-    assert "title" not in controls_attachment
-    assert "title_link" not in controls_attachment
-    assert controls_attachment["text"] == (
-        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
-    )
-    controls_actions = controls_attachment["actions"]
-    assert [action["id"] for action in controls_actions] == [
-        "validity",
-        "incident",
-        "summary",
-    ]
-    validity = controls_actions[0]
-    assert validity["integration"]["url"] == ("https://bot.example.com/mattermost/actions/alert")
-    assert validity["integration"]["context"] == {
-        "action": "validity",
-        "alert_post_id": post.id,
-    }
-    assert validity["name"] == "Выбрать валидность ▼"
-    assert validity["type"] == "select"
-    assert validity["options"] == [
-        {"text": "Ложный", "value": "false"},
-        {"text": "Ожидаемый", "value": "expected"},
-        {"text": "Валидный", "value": "valid"},
-    ]
-    assert controls_actions[1]["name"] == "🚨 Инцидент"
-    assert controls_actions[1]["style"] == "primary"
-    assert controls_actions[2]["name"] == "📝 Summary"
-    assert controls_actions[2]["style"] == "default"
-
-    # Block 2: feedback, in its own gray block below.
-    feedback_attachment = attachments[1]
-    assert feedback_attachment["color"] == "#4B5563"
-    assert "text" not in feedback_attachment
-    feedback_actions = feedback_attachment["actions"]
-    assert [action["id"] for action in feedback_actions] == ["feedback"]
-    assert feedback_actions[0]["name"] == "💬 Обратная связь по алерту"
-    assert feedback_actions[0]["style"] == "default"
-    assert feedback_actions[0]["integration"]["context"] == {
-        "action": "feedback",
-        "alert_post_id": post.id,
-    }
-
-
-@pytest.mark.asyncio
 async def test_issue_reply_has_no_buttons_without_public_url(service):
     post = make_alert()
     service.mattermost.posts[post.id] = post
@@ -492,55 +423,9 @@ async def test_issue_reply_has_no_buttons_without_public_url(service):
     await service.handle_alert_post(post)
 
     reply = _issue_reply(service, post.id)
-    # Boxed notice (no SERVICE_PUBLIC_URL), but no interactive button/menu controls.
+    # Plain boxed "Создана задача" notice — no interactive button/menu controls.
     assert "Создана задача Jira" in _reply_text(reply)
     assert all("actions" not in a for a in reply["props"].get("attachments", []))
-
-
-@pytest.mark.asyncio
-async def test_issue_reply_has_no_buttons_when_interactive_buttons_disabled(settings):
-    # Emoji-only mode: SERVICE_PUBLIC_URL is set but the toggle is off, so the
-    # issue-created reply degrades to the plain text fallback (no cards).
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=False,
-        )
-    )
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    await service.handle_alert_post(post)
-
-    reply = _issue_reply(service, post.id)
-    # Emoji-only mode still boxes the notice, just without interactive controls.
-    assert "Создана задача Jira" in _reply_text(reply)
-    assert all("actions" not in a for a in reply["props"].get("attachments", []))
-
-
-@pytest.mark.asyncio
-async def test_firing_alert_pings_duty_above_box_with_buttons(settings):
-    # Interactive mode: the duty @mention is a bare message above the box so the
-    # ping fires; the "Создана задача" notice stays inside the attachment.
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com/",
-            interactive_buttons_enabled=True,
-            mattermost_duty_mention=":look: @sre-ads-duty",
-        )
-    )
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    await service.handle_alert_post(post)
-
-    reply = _issue_reply(service, post.id)
-    assert reply["message"] == ":look: @sre-ads-duty"
-    assert reply["props"]["attachments"][0]["text"] == (
-        "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
-    )
 
 
 @pytest.mark.asyncio
@@ -570,36 +455,8 @@ async def test_firing_alert_no_duty_ping_when_unset(service):
 
 
 @pytest.mark.asyncio
-async def test_manual_incident_no_card_when_interactive_buttons_disabled(settings):
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=False,
-        )
-    )
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-
-    await service.handle_manual_incident_post(post)
-
-    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    # Emoji-only mode: only the duty cheat-sheet notice, no interactive create-task card.
-    assert len(replies) == 1
-    assert "Памятка дежурному" in _reply_text(replies[0])
-    assert all("actions" not in a for a in (replies[0]["props"] or {}).get("attachments", []))
-
-
-@pytest.mark.asyncio
 async def test_manual_incident_pings_duty_in_emoji_only_mode(settings):
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=False,
-            mattermost_duty_mention=":look: @sre-ads-duty",
-        )
-    )
+    service = _build_service(replace(settings, mattermost_duty_mention=":look: @sre-ads-duty"))
     post = _manual_post()
     service.mattermost.posts[post.id] = post
 
@@ -620,124 +477,6 @@ async def test_manual_incident_pings_duty_in_emoji_only_mode(settings):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "selected_option,expected_label",
-    [
-        ("false", "Ложный"),
-        ("expected", "Ожидаемый"),
-        ("valid", "Валидный"),
-    ],
-)
-async def test_action_menu_sets_validity(service, selected_option, expected_label):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    result = await service.handle_alert_action(
-        action="validity",
-        alert_post_id=post.id,
-        user_id="clicker",
-        selected_option=selected_option,
-    )
-
-    ticket = service.repository.get_by_post_id(post.id)
-    assert service.jira.validity_updates == [("OPS-1", expected_label)]
-    assert ticket.validity_label == expected_label
-    assert ticket.valid_incident is False
-    assert ticket.incident_post_id is None
-    assert expected_label in result.message
-
-
-@pytest.mark.asyncio
-async def test_legacy_action_button_still_sets_validity(service):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    result = await service.handle_alert_action(
-        action="false", alert_post_id=post.id, user_id="clicker"
-    )
-
-    ticket = service.repository.get_by_post_id(post.id)
-    assert service.jira.validity_updates == [("OPS-1", "Ложный")]
-    assert ticket.validity_label == "Ложный"
-    assert "Ложный" in result.message
-
-
-@pytest.mark.asyncio
-async def test_incident_button_confirms_incident(service):
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-
-    result = await service.handle_alert_action(
-        action="incident", alert_post_id=post.id, user_id="clicker"
-    )
-
-    ticket = service.repository.get_by_post_id(post.id)
-    assert ticket.valid_incident is True
-    assert ticket.incident_post_id is not None
-    incident_posts = [
-        created
-        for created in service.mattermost.created_posts
-        if created["channel_id"] == "incidents-channel" and created["root_id"] is None
-    ]
-    assert len(incident_posts) == 1
-    assert "Инцидент заведён" in result.message
-
-
-@pytest.mark.asyncio
-async def test_incident_button_swaps_to_confirmed(settings):
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=True,
-        )
-    )
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    await service.handle_alert_post(post)
-
-    result = await service.handle_alert_action(
-        action="incident", alert_post_id=post.id, user_id="closer"
-    )
-
-    assert result.update_attachments is not None
-    controls = result.update_attachments[0]
-    names = [a.get("name") for a in controls["actions"]]
-    assert "✅ Подтверждён" in names
-    assert "🚨 Инцидент" not in names
-    assert "📝 Summary" in names
-    # Validity moves to the incident card, so the alert menu is gone after confirm.
-    assert not any(a["id"] == "validity" for a in controls["actions"])
-    # The alert thread gets the status notice with the incident-channel link.
-    status_replies = [
-        c
-        for c in service.mattermost.created_posts
-        if c["root_id"] == post.id and "Ссылка на инцидент" in _reply_text(c)
-    ]
-    assert len(status_replies) == 1
-
-
-@pytest.mark.asyncio
-async def test_manual_incident_post_offers_create_button(settings):
-    service = _incident_service(settings)
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-
-    await service.handle_manual_incident_post(post)
-
-    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    # The create-task card plus the duty cheat-sheet notice below it.
-    assert len(replies) == 2
-    card = next(r for r in replies if (r["props"] or {}).get("attachments", [{}])[0].get("actions"))
-    assert card["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
-
-    # Idempotent: a redelivered event does not post a second card or cheat-sheet.
-    await service.handle_manual_incident_post(post)
-    replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    assert len(replies) == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     "post",
     [
         _manual_post(user_id="bot-user"),
@@ -747,7 +486,7 @@ async def test_manual_incident_post_offers_create_button(settings):
     ],
 )
 async def test_manual_incident_ignores_bots_and_replies(settings, post):
-    service = _incident_service(settings)
+    service = _build_service(settings)
     await service.handle_manual_incident_post(post)
     assert service.mattermost.created_posts == []
 
@@ -759,89 +498,17 @@ async def test_manual_incident_no_controls_without_public_url(settings):
     service.mattermost.posts[post.id] = post
     await service.handle_manual_incident_post(post)
     replies = [c for c in service.mattermost.created_posts if c["root_id"] == post.id]
-    # No SERVICE_PUBLIC_URL → no create-task card, only the duty cheat-sheet notice.
+    # Emoji-only: no create-task card, only the duty cheat-sheet notice.
     assert len(replies) == 1
     assert "Памятка дежурному" in _reply_text(replies[0])
     assert all("actions" not in a for a in (replies[0]["props"] or {}).get("attachments", []))
 
 
 @pytest.mark.asyncio
-async def test_manual_incident_card_pings_duty(settings):
-    service = _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=True,
-            mattermost_duty_mention=":look: @sre-ads-duty",
-        )
-    )
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-
-    await service.handle_manual_incident_post(post)
-
-    card = next(c for c in service.mattermost.created_posts if c["root_id"] == post.id)
-    # The mention lives in the message text (renders above the card) so the ping fires.
-    assert card["message"] == ":look: @sre-ads-duty"
-    assert card["props"]["attachments"][0]["actions"][0]["id"] == "create_task"
-
-
-@pytest.mark.asyncio
-async def test_incident_create_task_creates_jira_and_updates_card(settings):
-    service = _incident_service(settings)
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-    await service.handle_manual_incident_post(post)
-
-    result = await service.handle_incident_action(
-        action="create_task", incident_post_id=post.id, user_id="opener"
-    )
-
-    ticket = service.repository.get_by_incident_post_id(post.id)
-    assert ticket is not None
-    assert ticket.jira_issue_key == "OPS-1"
-    assert result.update_attachments is not None
-    card = result.update_attachments[0]
-    # The Jira link lives in the main message, so the card carries no task text.
-    assert "text" not in card
-    ids = [a["id"] for a in card["actions"]]
-    assert ids == ["validity", "end_incident", "summary"]
-
-
-@pytest.mark.asyncio
-async def test_manual_incident_false_then_end_preserves_validity(settings):
-    """Manual flow: create task → Ложный → Завершение keeps Ложный and runs the PM."""
-    service = _incident_service(settings)
-    service.llm = FakeLlmClient()
-    post = _manual_post()
-    service.mattermost.posts[post.id] = post
-    await service.handle_manual_incident_post(post)
-    await service.handle_incident_action(
-        action="create_task", incident_post_id=post.id, user_id="opener"
-    )
-
-    await service.handle_incident_action(
-        action="validity", incident_post_id=post.id, user_id="closer", selected_option="false"
-    )
-    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
-
-    result = await service.handle_incident_action(
-        action="end_incident", incident_post_id=post.id, user_id="closer"
-    )
-
-    assert "завершён" in result.message.lower()
-    assert len(service.llm.prompts) == 1
-    # Postmortem set end-time but never re-stamped Валидный over the explicit Ложный.
-    assert service.jira.valid_updates == []
-    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
-    assert [key for key, _ in service.jira.end_updates] == ["OPS-1"]
-
-
-@pytest.mark.asyncio
 async def test_pending_work_ignores_uncreated_manual_card(settings):
     """The pre-created card row stays keyless: the background loop must not
     auto-create a Jira issue for it (that would defeat the button gating)."""
-    service = _incident_service(settings)
+    service = _build_service(settings)
     post = _manual_post()
     service.mattermost.posts[post.id] = post
     await service.handle_manual_incident_post(post)
@@ -855,65 +522,8 @@ async def test_pending_work_ignores_uncreated_manual_card(settings):
 
 
 @pytest.mark.asyncio
-async def test_confirmed_alert_incident_gets_controls_card(settings):
-    """An alert confirmed as an incident gets the same controls in the incident
-    channel, but without "Создать задачу" (the Jira issue already exists)."""
-    service = _incident_service(settings)
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    await service.handle_alert_post(post)
-
-    await service.handle_reaction(
-        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
-    )
-
-    ticket = service.repository.get_by_post_id(post.id)
-    assert ticket is not None
-    assert ticket.incident_post_id is not None
-    cards = [
-        c
-        for c in service.mattermost.created_posts
-        if c["root_id"] == ticket.incident_post_id
-        and any(a.get("actions") for a in (c["props"] or {}).get("attachments", []))
-    ]
-    assert len(cards) == 1
-    card = cards[0]["props"]["attachments"][0]
-    ids = [a["id"] for a in card["actions"]]
-    assert ids == ["validity", "end_incident", "summary"]
-    # Alert-originated card shows the "Создана задача" header like the alert card.
-    assert card["text"] == "**Создана задача: [OPS-1](https://jira.example.com/browse/OPS-1)**"
-
-
-@pytest.mark.asyncio
-async def test_incident_card_validity_on_alert_incident(settings):
-    """Validity from the incident card resolves the alert-originated ticket
-    (incident_post_id != mattermost_post_id) and sets the Jira field."""
-    service = _incident_service(settings)
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    await service.handle_alert_post(post)
-    await service.handle_reaction(
-        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
-    )
-    ticket = service.repository.get_by_post_id(post.id)
-    assert ticket is not None
-    assert ticket.incident_post_id != ticket.mattermost_post_id
-    assert ticket.incident_post_id is not None
-
-    result = await service.handle_incident_action(
-        action="validity",
-        incident_post_id=ticket.incident_post_id,
-        user_id="closer",
-        selected_option="false",
-    )
-
-    assert "Ложный" in result.message
-    assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
-
-
-@pytest.mark.asyncio
 async def test_completing_alert_incident_updates_title_to_done(settings):
-    service = _incident_service(settings)
+    service = _build_service(settings)
     service.llm = FakeLlmClient()
     post = make_alert()
     service.mattermost.posts[post.id] = post
@@ -931,60 +541,17 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
 
     assert "##### 🔴 CPU usage is above 95%" in info_text()
 
-    await service.handle_incident_action(
-        action="end_incident", incident_post_id=incident_post_id, user_id="closer"
+    await service.handle_reaction(
+        ReactionEvent(
+            post_id=incident_post_id,
+            user_id="closer",
+            emoji_name="white_check_mark",
+            create_at=1_700_000_300_000,
+        )
     )
 
     assert "##### 🟢 CPU usage is above 95%" in info_text()
     assert "##### 🔴" not in info_text()
-
-
-@pytest.mark.asyncio
-async def test_end_button_swaps_to_completed(settings):
-    service = _incident_service(settings)
-    service.llm = FakeLlmClient()
-    post = make_alert()
-    service.mattermost.posts[post.id] = post
-    await service.handle_alert_post(post)
-    await service.handle_reaction(
-        ReactionEvent(post_id=post.id, user_id="validator", emoji_name="incident", create_at=1)
-    )
-    ticket = service.repository.get_by_post_id(post.id)
-    assert ticket is not None
-    assert ticket.incident_post_id is not None
-
-    result = await service.handle_incident_action(
-        action="end_incident", incident_post_id=ticket.incident_post_id, user_id="closer"
-    )
-
-    assert result.update_attachments is not None
-    actions = result.update_attachments[0]["actions"]
-    names = [a.get("name") for a in actions]
-    assert "✅ Завершено" in names
-    assert "🏁 Завершить" not in names
-    # Validity menu and summary remain after completion.
-    assert any(a["id"] == "validity" for a in actions)
-    assert "📝 Саммари" in names
-
-
-def test_incident_and_end_buttons_require_confirmation():
-    from mm_jira_bot.actions import (
-        build_alert_controls_attachment,
-        build_incident_controls_attachment,
-    )
-
-    alert = build_alert_controls_attachment(
-        title="OPS-1", title_link="u", alert_post_id="p", callback_url="http://x/cb"
-    )
-    incident_btn = next(a for a in alert["actions"] if a.get("id") == "incident")
-    assert incident_btn["confirm"]["ok_text"] == "Завести"
-
-    inc = build_incident_controls_attachment(incident_post_id="p", callback_url="http://x/cb")
-    end_btn = next(a for a in inc["actions"] if a.get("id") == "end_incident")
-    assert end_btn["confirm"]["ok_text"] == "Завершить"
-    # Summary stays a plain one-click button.
-    summary_btn = next(a for a in inc["actions"] if a.get("id") == "summary")
-    assert "confirm" not in summary_btn
 
 
 # --- Duty cheat-sheet -------------------------------------------------------

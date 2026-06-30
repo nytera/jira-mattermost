@@ -24,7 +24,7 @@ import time
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import OPS_ALERT_COLOR
+from mm_jira_bot.colors import OPS_ALERT_COLOR
 from mm_jira_bot.logging import LOGGER_PREFIX, get_logger
 from mm_jira_bot.metrics import errors_total, ops_alerts_dropped_total
 

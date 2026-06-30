@@ -29,7 +29,6 @@ class FakeMattermostClient:
     def __init__(self) -> None:
         self.posts: dict[str, MattermostPost] = {}
         self.created_posts: list[dict] = []
-        self.opened_dialogs: list[dict] = []
         self.updated_posts: list[dict] = []
         self.display_names: dict[str, str] = {}
         self.username_to_id: dict[str, str] = {}
@@ -122,15 +121,6 @@ class FakeMattermostClient:
             if props is not None:
                 changes["props"] = props
             self.posts[post_id] = replace(self.posts[post_id], **changes)
-
-    async def open_dialog(
-        self,
-        *,
-        trigger_id: str,
-        url: str,
-        dialog: dict,
-    ) -> None:
-        self.opened_dialogs.append({"trigger_id": trigger_id, "url": url, "dialog": dialog})
 
     async def fetch_recent_channel_posts(self, channel_id: str, *, limit: int):
         return []
@@ -370,16 +360,6 @@ def _reply_text(reply):
         return reply["message"]
     attachments = (reply.get("props") or {}).get("attachments") or []
     return attachments[0].get("text", "") if attachments else ""
-
-
-def _incident_service(settings):
-    return _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=True,
-        )
-    )
 
 
 def _manual_post(

@@ -14,7 +14,7 @@ import re
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import INCIDENT_DONE_COLOR
+from mm_jira_bot.colors import INCIDENT_DONE_COLOR
 from mm_jira_bot.domain import (
     ConfirmationResult,
     ConfirmationStatus,
