@@ -17,29 +17,29 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `__main__.py` | 20 |
 | `audit.py` | 199 |
 | `colors.py` | 20 |
-| `config.py` | 234 |
+| `config.py` | 232 |
 | `domain.py` | 169 |
 | `formatting.py` | 309 |
 | `http.py` | 152 |
 | `jira.py` | 807 |
 | `jira_payload.py` | 243 |
-| `llm.py` | 305 |
+| `llm.py` | 280 |
 | `logging.py` | 210 |
 | `mattermost.py` | 487 |
 | `ops.py` | 158 |
-| `postmortem.py` | 359 |
+| `postmortem.py` | 360 |
 | `repository.py` | 679 |
 | `retry.py` | 56 |
 | `service/__init__.py` | 17 |
 | `service/_alerts.py` | 314 |
-| `service/_incidents.py` | 673 |
+| `service/_incidents.py` | 676 |
 | `service/_jira_sync.py` | 344 |
-| `service/_postmortem.py` | 558 |
+| `service/_postmortem.py` | 474 |
 | `service/_shared.py` | 157 |
-| `service/_thread_summary.py` | 389 |
+| `service/_thread_summary.py` | 450 |
 | `service/coordinator.py` | 572 |
 | `summary.py` | 30 |
-| `web.py` | 448 |
+| `web.py` | 447 |
 
 ## Service assembly (MRO)
 
@@ -146,10 +146,9 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 ### `llm.py`
 
 - **class `PostmortemLlmClient(AsyncApiClient)`**
-  - `async def extract_incident_end_time(self, prompt: str) -> str`
-  - `async def generate_postmortem(self, prompt: str) -> str`
   - `async def generate_summary(self, prompt: str, *, on_progress: StreamProgress | None = None) -> str`
   - `async def preflight_check(self) -> dict[str, object]`
+  - `async def resolve_incident_closeout(self, prompt: str) -> str`
 - **class `StreamResponse(Protocol)`**
   - `def aiter_lines(self) -> AsyncIterator[str]`
 - `def build_llm_auth_headers(settings: Settings) -> dict[str, str]`
@@ -211,9 +210,9 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 ### `postmortem.py`
 
 - **class `ThreadMessage`**
-- `def build_incident_end_time_prompt(*, transcript: str, start: datetime | None, max_chars: int) -> str`
+- `def build_incident_closeout_prompt(*, transcript: str, start: datetime | None, max_chars: int) -> str`
 - `def build_incident_report_prompt(*, thread_url: str, participants: list[str], postmortem_author: str, transcript: str, max_chars: int, template: str | None = None) -> str`
-- `def build_postmortem_comment(*, report: str, incident_thread_url: str, postmortem_author: str) -> str`
+- `def build_thread_summary_comment(*, summary: str, thread_url: str, requested_by_display: str) -> str`
 - `def extract_postmortem_summary(report: str, *, fallback: str) -> str`
 - `def format_incident_closed_notice(*, jira_issue_title: str, jira_issue_url: str | None) -> str`
 - `def format_thread_transcript(messages: list[ThreadMessage]) -> str`
@@ -286,7 +285,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 ### `service/_postmortem.py`
 
 - **class `PostmortemMixin`**
-  - `async def generate_incident_postmortem(self, root_post: MattermostPost, *, reacted_by_user_id: str, ended_at: datetime, source: str, existing_ticket: AlertTicket | None = None, validity_label: str | None = None) -> ConfirmationResult`
+  - `async def generate_incident_postmortem(self, root_post: MattermostPost, *, reacted_by_user_id: str, ended_at: datetime, source: str, existing_ticket: AlertTicket | None = None, validity_label: str | None = None, title: str | None = None) -> ConfirmationResult`
 
 ### `service/_shared.py`
 

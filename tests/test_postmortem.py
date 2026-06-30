@@ -22,7 +22,7 @@ from mm_jira_bot.postmortem import (
     DEFAULT_POSTMORTEM_PROMPT,
     DEFAULT_SUMMARY_PROMPT,
     build_incident_report_prompt,
-    build_postmortem_comment,
+    build_thread_summary_comment,
     extract_postmortem_summary,
     format_incident_closed_notice,
     markdown_to_jira_wiki,
@@ -46,6 +46,14 @@ def test_postmortem_summary_limits_llm_title_words_and_chars():
     assert summary == (
         "[INC] 15.11.2023 - Очень длинное название инцидента про падение checkout api после релиза"
     )
+
+
+def test_extract_postmortem_summary_falls_back_when_no_inc_line():
+    # When the closeout title is empty / lacks an [INC] line, the issue summary is
+    # built as "[INC] {alert title}" from the fallback. This branch is the title
+    # safety net for a missing/garbage closeout TITLE.
+    assert extract_postmortem_summary("", fallback="CPU > 95%") == "[INC] CPU > 95%"
+    assert extract_postmortem_summary("просто текст без маркера", fallback="Сбой") == "[INC] Сбой"
 
 
 def test_format_incident_closed_notice_links_task_by_title():
@@ -102,7 +110,7 @@ async def test_postmortem_checkmark_preserves_false_validity(service):
     )
 
     assert result.status == "incident_ended"
-    # Postmortem ran (end-time set, report commented) ...
+    # Close ran (end-time set, one closeout LLM call) ...
     assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_200_000))]
     assert len(service.llm.prompts) == 1
     # ... but validity was NOT re-stamped Валидный: set_valid_incident stays the
@@ -195,17 +203,20 @@ def test_markdown_to_jira_wiki_is_idempotent_on_wiki():
     assert markdown_to_jira_wiki(once) == once
 
 
-def test_postmortem_comment_is_jira_wiki_without_disturbing_summary():
-    report = "[INC] 01.01.2026 - Сбой\n## Сводка\nТекст\n- пункт\n**жирный**"
-    comment = build_postmortem_comment(
-        report=report, incident_thread_url="https://t/1", postmortem_author="Автор"
+def test_thread_summary_comment_is_jira_wiki_with_mentions():
+    summary = "## Сводка\nТекст\n- пункт\n**жирный**\nответил @ivanov.ivan"
+    comment = build_thread_summary_comment(
+        summary=summary, thread_url="https://t/1", requested_by_display="Автор"
     )
+    assert comment.startswith("Саммари треда сгенерировано по запросу.")
+    assert "Тред: https://t/1" in comment
+    assert "Запросил: Автор" in comment
     assert "h2. Сводка" in comment
     assert "## Сводка" not in comment
     assert "* пункт" in comment
     assert "*жирный*" in comment and "**жирный**" not in comment
-    # Summary extraction reads the untouched raw report.
-    assert extract_postmortem_summary(report, fallback="f").startswith("[INC] 01.01.2026 - Сбой")
+    # @username renders as a clickable Jira mention.
+    assert "[~ivanov.ivan]" in comment and "@ivanov.ivan" not in comment
 
 
 def test_incident_report_prompt_fills_placeholders_without_leftovers():
@@ -255,8 +266,8 @@ def test_incident_report_prompt_overridable_and_does_not_rescan_transcript():
 
 
 def test_incident_report_prompt_keeps_legacy_thread_url_placeholder():
-    # Pre-existing LLM_POSTMORTEM_PROMPT files used {incident_thread_url}; the
-    # builder still substitutes that alias so they don't emit a literal token.
+    # Pre-existing prompt-override files used {incident_thread_url}; the builder
+    # still substitutes that alias so they don't emit a literal token.
     rendered = build_incident_report_prompt(
         thread_url="https://t/1",
         participants=["Иван Иванов"],
@@ -427,6 +438,25 @@ def test_parse_incident_end_time_validates_bounds(service):
     assert parse("2099-01-01T00:00:00", start=start) is None  # far future
 
 
+def test_split_closeout_answer_is_tolerant(service):
+    split = service._split_closeout_answer
+    # Canonical two-line answer.
+    assert split("END: 2023-11-15T01:23:20\nTITLE: [INC] 15.11.2023 - Сбой") == (
+        "2023-11-15T01:23:20",
+        "[INC] 15.11.2023 - Сбой",
+    )
+    # Lowercase prefixes, swapped order, and stray prose before the markers.
+    assert split("Вот ответ:\ntitle: [INC] 15.11.2023 - Сбой\nend: UNKNOWN") == (
+        "UNKNOWN",
+        "[INC] 15.11.2023 - Сбой",
+    )
+    # Missing TITLE line → empty title (caller turns "" into None → alert-title fallback);
+    # an END value containing colons is kept intact.
+    assert split("END: 2023-11-15T01:23:20") == ("2023-11-15T01:23:20", "")
+    # Nothing parseable → both empty.
+    assert split("мусор без маркеров") == ("", "")
+
+
 @pytest.mark.asyncio
 async def test_time_to_fix_failure_does_not_block_closure(settings):
     service = _build_service(replace(settings, jira_time_to_fix_field="customfield_99999"))
@@ -456,10 +486,10 @@ async def test_false_reaction_in_incident_closes_with_postmortem(service):
     )
 
     assert result.status == "incident_ended"
-    # Validity stamped Ложный, postmortem generated exactly once, end-time set.
+    # Validity stamped Ложный, one closeout LLM call, end-time set, no PM comment.
     assert service.jira.validity_by_issue["OPS-1"] == "Ложный"
     assert len(service.llm.prompts) == 1
-    assert [key for key, _ in service.jira.generic_comments] == ["OPS-1"]
+    assert service.jira.generic_comments == []
     assert [key for key, _ in service.jira.end_updates] == ["OPS-1"]
     assert service.repository.get_by_post_id(ticket.mattermost_post_id).postmortem_comment_added
 
@@ -498,7 +528,8 @@ async def test_validity_reaction_on_finalized_incident_only_flips_validity(servi
             create_at=1_700_000_200_000,
         )
     )
-    assert len(service.jira.generic_comments) == 1
+    # Close posts no PM comment anymore (narrative is button-only).
+    assert service.jira.generic_comments == []
 
     # A later validity emoji just flips the field; it must not regenerate the PM.
     await service.handle_reaction(
@@ -511,7 +542,8 @@ async def test_validity_reaction_on_finalized_incident_only_flips_validity(servi
     )
 
     assert service.jira.validity_by_issue["OPS-1"] == "Ожидаемый"
-    assert len(service.jira.generic_comments) == 1
+    # No PM comment on close, and the validity flip adds none either.
+    assert service.jira.generic_comments == []
     assert len(service.llm.prompts) == 1
     # The templated "validity changed" notice is posted in the incident thread.
     notices = [
@@ -537,8 +569,9 @@ async def test_repeated_checkmark_does_not_duplicate_postmortem(service):
     await service.handle_reaction(reaction)
     await service.handle_reaction(reaction)
 
-    # The PM comment is additive — a second checkmark must not duplicate it.
-    assert len(service.jira.generic_comments) == 1
+    # No PM comment on close; the second checkmark short-circuits on the
+    # postmortem_comment_added guard, so the closeout LLM runs exactly once.
+    assert service.jira.generic_comments == []
     assert len(service.llm.prompts) == 1
 
 
@@ -624,16 +657,16 @@ def test_parse_incident_end_time_treats_naive_iso_as_moscow_wallclock(service, _
 
 
 @pytest.mark.asyncio
-async def test_generate_incident_postmortem_llm_failure_edits_placeholder(service):
-    # The postmortem LLM call fails → the ticket ends in ERROR, the spinner
-    # placeholder is edited into a retry notice (never left on "Генерация саммари…"),
+async def test_generate_incident_postmortem_jira_failure_posts_retry_notice(service):
+    # A Jira write fails during close → the ticket ends in ERROR, a fresh retry
+    # notice is posted in the thread (no spinner placeholder anymore),
     # mark_postmortem_failed is recorded, and no green "closed" notice is posted.
     service.llm = FakeLlmClient()
 
-    async def _boom(prompt):
-        raise ApiError("llm down", retryable=False)
+    async def _boom(issue_key, description):
+        raise ApiError("jira down", retryable=False)
 
-    service.llm.generate_postmortem = _boom
+    service.jira.set_description = _boom
 
     ticket = await _confirmed_incident(service)
     result = await service.handle_reaction(
@@ -647,22 +680,19 @@ async def test_generate_incident_postmortem_llm_failure_edits_placeholder(servic
 
     assert result.status == "error"
 
-    # The placeholder post was UPDATED to the failure/retry message …
-    failure_updates = [
-        u
-        for u in service.mattermost.updated_posts
-        if "Не удалось" in _notice_text(u) and "повторить" in _notice_text(u)
+    # A retry notice was posted in the incident thread (a fresh reply, no spinner).
+    failure_notices = [
+        c
+        for c in service.mattermost.created_posts
+        if "Не удалось" in _notice_text(c) and "повторить" in _notice_text(c)
     ]
-    assert len(failure_updates) == 1
-    # … and never left stuck on the spinner: the "Генерация саммари…" placeholder is
-    # only ever a create, never an update, so the placeholder must end on the failure
-    # notice (the sole update carrying it), not a spinner.
-    assert not any("Генерация саммари" in _notice_text(u) for u in service.mattermost.updated_posts)
+    assert len(failure_notices) == 1
+    assert not any("Генерация саммари" in _notice_text(c) for c in service.mattermost.created_posts)
 
     # The repository marked the postmortem as failed.
     failed = service.repository.get_by_post_id(ticket.mattermost_post_id)
     assert failed.creation_status == "failed_postmortem"
-    assert failed.last_error and "llm down" in failed.last_error
+    assert failed.last_error and "jira down" in failed.last_error
 
     # No green "Инцидент закрыт" success notice was posted.
     assert not any("Инцидент закрыт" in _notice_text(c) for c in service.mattermost.created_posts)

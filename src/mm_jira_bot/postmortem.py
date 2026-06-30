@@ -132,10 +132,9 @@ def trim_transcript(transcript: str, *, max_chars: int) -> str:
     )
 
 
-# Single source-of-truth user-prompt template for BOTH the Jira postmortem
-# comment and the in-thread Mattermost summary — one structure, two renderings.
-# Overridable per channel via ``LLM_POSTMORTEM_PROMPT`` / ``LLM_SUMMARY_PROMPT``
-# (and their ``*_FILE`` / debug-panel overrides). Supported placeholders,
+# User-prompt template for the in-thread Mattermost summary (and its optional Jira
+# comment when posted via the memo emoji). Overridable via ``LLM_SUMMARY_PROMPT``
+# (and its ``*_FILE`` variant). Supported placeholders,
 # substituted by ``build_incident_report_prompt``: ``{thread_url}``,
 # ``{participants}``, ``{postmortem_author}``, ``{transcript}`` (the trimmed
 # thread; always substituted last so thread text can safely contain
@@ -256,50 +255,52 @@ def build_incident_report_prompt(
     )
 
 
-def build_incident_end_time_prompt(
+def build_incident_closeout_prompt(
     *,
     transcript: str,
     start: datetime | None,
     max_chars: int,
 ) -> str:
-    """Prompt for the dedicated "when did the incident end" extraction call.
+    """Prompt for the single closeout call: incident end time AND a short title.
 
-    Pairs with ``PostmortemLlmClient.extract_incident_end_time``: gives the LLM
-    the same per-message MSK timestamps the postmortem sees, names the incident
-    start as the lower bound, and asks for a single machine-parseable line.
+    Pairs with ``PostmortemLlmClient.resolve_incident_closeout``: gives the LLM the
+    same per-message MSK timestamps the postmortem sees, names the incident start as
+    the lower bound for the end time, and asks for two machine-parseable lines.
     """
     trimmed_transcript = trim_transcript(transcript, max_chars=max_chars)
     start_text = (
         backend_datetime(start).strftime("%Y-%m-%dT%H:%M:%S") if start is not None else "не указано"
     )
     return (
-        "Определи время фактического окончания инцидента по хронологии ниже.\n"
+        "По хронологии ниже определи две вещи об инциденте.\n"
         f"Инцидент начался: {start_text} MSK — время окончания не может быть раньше.\n"
         "В транскрипте каждое сообщение помечено абсолютным временем "
         "(`DD.MM.YYYY HH:MM:SS MSK`); используй именно эти таймстампы.\n"
-        "Ответ — ровно одна строка: ISO-8601 `YYYY-MM-DDTHH:MM:SS` (MSK) или `UNKNOWN`.\n\n"
+        "Ответ — ровно две строки:\n"
+        "END: ISO-8601 `YYYY-MM-DDTHH:MM:SS` (MSK) или `UNKNOWN`\n"
+        "TITLE: [INC] DD.MM.YYYY - короткий заголовок\n\n"
         "Хронология треда:\n"
         f"{trimmed_transcript}"
     )
 
 
-def build_postmortem_comment(
+def build_thread_summary_comment(
     *,
-    report: str,
-    incident_thread_url: str,
-    postmortem_author: str,
+    summary: str,
+    thread_url: str,
+    requested_by_display: str,
 ) -> str:
     body = "\n".join(
         [
-            "Постмортем сгенерирован по треду инцидента.",
-            f"Тред инцидента: {incident_thread_url}",
-            f"Автор постмортема: {postmortem_author}",
+            "Саммари треда сгенерировано по запросу.",
+            f"Тред: {thread_url}",
+            f"Запросил: {requested_by_display}",
             "",
-            report.strip(),
+            summary.strip(),
         ]
     )
     # The Jira v2 comment endpoint renders wiki markup, not Markdown. Convert the
-    # whole assembled body (header + report) so headings/bullets/links render.
+    # whole assembled body (header + summary) so headings/bullets/mentions render.
     return markdown_to_jira_wiki(body)
 
 

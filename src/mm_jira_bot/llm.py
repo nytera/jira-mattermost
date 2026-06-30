@@ -23,26 +23,6 @@ class StreamResponse(Protocol):
     def aiter_lines(self) -> AsyncIterator[str]: ...
 
 
-SYSTEM_PROMPT = """Ты — старший SRE и incident manager. Ты помогаешь дежурным
-инженерам составлять профессиональный постмортем инцидента в духе blameless
-postmortem. Пиши на русском языке: технично, точно, по существу, без воды и
-канцелярита, используя корректную инженерную терминологию (сервисы, ручки,
-метрики, релизы, откаты, алерты, SLO).
-
-Опирайся только на факты из предоставленного треда и метаданных. Не выдумывай
-причины, действия, метрики, имена, сервисы и таймлайны: если данных нет, пиши
-"не указано" или формулируй осторожно. Чётко отделяй подтверждённые факты от
-гипотез. Не указывай вину людей — фокус на процессах, системах и решениях.
-
-Делай отчёт содержательным и подробным там, где это подкреплено тредом: где
-возможно, количественно описывай влияние (длительность, доля затронутых
-запросов/клиентов, метрики до/после) и выстраивай связную логику причина →
-влияние → решение. Action items формулируй конкретно и проверяемо.
-
-Все времена в хронологии указывай по московскому времени в формате HH:MM. Не
-добавляй преамбулу, code fences и служебные пояснения: верни только готовый
-отчёт строго по заданному шаблону, первая строка — "[INC] DD.MM.YYYY - …"."""
-
 SUMMARY_SYSTEM_PROMPT = """Ты — старший SRE и incident manager. Ты помогаешь
 дежурным инженерам точно понять, что происходит в треде инцидента, и составляешь
 структурный инцидентный отчёт по заданному шаблону. Пиши на русском языке:
@@ -62,15 +42,17 @@ SUMMARY_SYSTEM_PROMPT = """Ты — старший SRE и incident manager. Ты
 заданной структуре, первая строка — "[INC] DD.MM.YYYY - …"."""
 
 
-END_TIME_SYSTEM_PROMPT = """Ты — ассистент SRE. По хронологии треда инцидента
-определи момент, когда инцидент фактически завершился (сервис восстановлен,
-объявлен конец инцидента, поставлена галочка завершения). Опирайся ТОЛЬКО на
-абсолютные таймстампы, уже указанные в транскрипте: не выдумывай дату и время.
+CLOSEOUT_SYSTEM_PROMPT = """Ты — ассистент SRE. По хронологии треда инцидента
+определи две вещи: (1) момент, когда инцидент фактически завершился (сервис
+восстановлен, объявлен конец инцидента, поставлена галочка завершения) и
+(2) короткий заголовок инцидента по сути произошедшего. Для времени опирайся
+ТОЛЬКО на абсолютные таймстампы, уже указанные в транскрипте: не выдумывай дату
+и время.
 
-Верни РОВНО одну строку без каких-либо пояснений, преамбулы, кавычек и code
-fences: либо время окончания в формате ISO-8601 по московскому времени
-(`YYYY-MM-DDTHH:MM:SS`), либо литерал `UNKNOWN`, если момент окончания
-по треду определить нельзя."""
+Верни РОВНО две строки без пояснений, преамбулы, кавычек и code fences:
+END: <время окончания ISO-8601 по московскому времени `YYYY-MM-DDTHH:MM:SS`, либо
+`UNKNOWN`, если момент окончания по треду определить нельзя>
+TITLE: [INC] DD.MM.YYYY - <короткий заголовок инцидента>"""
 
 
 def _parse_chat_content(response: httpx.Response) -> str:
@@ -169,26 +151,19 @@ class PostmortemLlmClient(AsyncApiClient):
             "llm_response_length": len(content),
         }
 
-    async def generate_postmortem(self, prompt: str) -> str:
-        return await self._generate(
-            prompt,
-            system_prompt=SYSTEM_PROMPT,
-            event="llm.postmortem.generate",
-            error_message="Failed to generate postmortem",
-        )
+    async def resolve_incident_closeout(self, prompt: str) -> str:
+        """Ask the LLM for the incident end time AND a short title in one call.
 
-    async def extract_incident_end_time(self, prompt: str) -> str:
-        """Ask the LLM for the incident's recovery time (ISO-8601 or ``UNKNOWN``).
-
-        A small, non-templated call separate from the postmortem: the caller
-        parses and range-validates the single-line answer, falling back to the
-        reaction timestamp on anything unparseable.
+        A small, non-templated call: the answer is two machine-parseable lines
+        (``END:`` / ``TITLE:``). The caller parses and range-validates the end
+        time and clamps the title, falling back to the reaction timestamp / alert
+        title on anything unparseable.
         """
         return await self._generate(
             prompt,
-            system_prompt=END_TIME_SYSTEM_PROMPT,
-            event="llm.incident_end_time.extract",
-            error_message="Failed to extract incident end time",
+            system_prompt=CLOSEOUT_SYSTEM_PROMPT,
+            event="llm.incident_closeout.resolve",
+            error_message="Failed to resolve incident closeout",
         )
 
     async def generate_summary(

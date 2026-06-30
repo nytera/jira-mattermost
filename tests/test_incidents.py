@@ -223,19 +223,11 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
     assert result.status == "incident_ended"
     assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))]
     assert len(service.jira.created_payloads) == 1
+    # One LLM call at close (the closeout: end time + title), fed the transcript.
     assert len(service.llm.prompts) == 1
     prompt = service.llm.prompts[0]
     assert "API 500 on checkout" in prompt
     assert "Откатили релиз" in prompt
-    assert "Иван Иванов (@ivanov.ivan)" in prompt
-    assert "Петр Петров (@petrov.petr)" in prompt
-    assert "## Извлечённые уроки" in prompt
-    assert "### Что было сделано хорошо / В чём повезло" in prompt
-    assert "### Что пошло не так / В чём не повезло" in prompt
-    assert "## Action Items (на обсуждение)" in prompt
-    assert "Action Items — это предложения на обсуждение" in prompt
-    assert "до 10 слов и до 80 символов" in prompt
-    assert "до 120 символов" in prompt
     issue_key, description = service.jira.descriptions[-1]
     assert issue_key == "OPS-1"
     assert "|*Авторы ПМ*|Иван Иванов (@ivanov.ivan)|" in description
@@ -250,35 +242,14 @@ async def test_checkmark_on_incident_thread_generates_postmortem_for_existing_is
     assert "h2. Хронология" in description
     assert "API начал отвечать 500." not in description
     assert "##Хронология" not in description
-    assert service.jira.generic_comments
-    comment_issue_key, comment = service.jira.generic_comments[-1]
-    assert comment_issue_key == "OPS-1"
-    assert "Постмортем сгенерирован" in comment
-    assert "API начал отвечать 500." in comment
-    # The comment is converted to Jira wiki markup (Markdown headings → h2.).
-    assert "h2. Хронология" in comment
-    assert "##Хронология" not in comment
-    # The incident thread gets the fact-based summary (own LLM prompt), posted as
-    # a "Генерация саммари…" placeholder that is then edited into the final reply.
-    placeholders = [
-        created
+    # No postmortem comment and no auto thread summary on close (button-only now);
+    # closure is announced in a standalone green box posted as a separate reply.
+    assert service.jira.generic_comments == []
+    assert not any(
+        created["root_id"] == ticket.incident_post_id
+        and ("Генерация саммари" in _reply_text(created) or "Саммари треда" in _reply_text(created))
         for created in service.mattermost.created_posts
-        if created["root_id"] == ticket.incident_post_id
-        and "Генерация саммари" in _reply_text(created)
-    ]
-    assert len(placeholders) == 1
-    # The placeholder is edited through the 1/3·2/3·3/3 status steps, then into the
-    # final summary (last edit).
-    edits = [
-        u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
-    ]
-    assert any("Шаг 1/3" in _reply_text(u) for u in edits)
-    final = edits[-1]
-    assert "Саммари треда" in _reply_text(final)
-    assert "всё сломалось" in _reply_text(final)
-    # The Jira link no longer rides inside the summary; closure is announced in a
-    # standalone green box posted as a separate reply.
-    assert "Полный постмортем отправлен в Jira" not in _reply_text(final)
+    )
     closed = [
         created
         for created in service.mattermost.created_posts
@@ -342,21 +313,14 @@ async def test_checkmark_on_manual_incident_thread_creates_postmortem_issue(serv
     assert "API начал отвечать 500." not in payload["description"]
     assert service.jira.valid_updates == [("OPS-1", True)]
     assert service.jira.end_updates == [("OPS-1", datetime_from_mattermost_ms(1_700_000_300_000))]
-    assert service.jira.generic_comments
-    assert "API начал отвечать 500." in service.jira.generic_comments[-1][1]
-    placeholders = [
-        created
+    # No postmortem comment and no auto thread summary on close (button-only now):
+    # the thread only gets the standalone green "closed" notice below.
+    assert service.jira.generic_comments == []
+    assert not any(
+        created["root_id"] == root.id
+        and ("Генерация саммари" in _reply_text(created) or "Саммари треда" in _reply_text(created))
         for created in service.mattermost.created_posts
-        if created["root_id"] == root.id and "Генерация саммари" in _reply_text(created)
-    ]
-    assert len(placeholders) == 1
-    edits = [
-        u for u in service.mattermost.updated_posts if u["post_id"] == placeholders[0]["post"].id
-    ]
-    assert any("Шаг 1/3" in _reply_text(u) for u in edits)
-    final = edits[-1]
-    assert "Саммари треда" in _reply_text(final)
-    assert "Полный постмортем отправлен в Jira" not in _reply_text(final)
+    )
     closed = [
         created
         for created in service.mattermost.created_posts

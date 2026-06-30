@@ -255,21 +255,23 @@ class FakeLlmClient:
         ),
     ) -> None:
         self.report = report
+        # Closeout (END + title) prompts seen at incident finalize.
         self.prompts: list[str] = []
         self.summary_prompts: list[str] = []
         self.summary = "Суть: всё сломалось.\nСтатус: в работе."
-        # End-time extraction answer; default UNKNOWN so tests keep the legacy
-        # reaction-time behavior unless they opt into a derived value.
+        # Closeout end-time answer; default UNKNOWN so tests keep the legacy
+        # reaction-time behavior unless they opt into a derived value. The title
+        # line of the closeout answer reuses the report's first `[INC] …` line.
         self.end_time = "UNKNOWN"
-        self.end_time_prompts: list[str] = []
 
-    async def generate_postmortem(self, prompt: str) -> str:
+    @property
+    def closeout_title(self) -> str:
+        first = self.report.splitlines()[0].strip() if self.report.strip() else ""
+        return first or "[INC] Инцидент"
+
+    async def resolve_incident_closeout(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        return self.report
-
-    async def extract_incident_end_time(self, prompt: str) -> str:
-        self.end_time_prompts.append(prompt)
-        return self.end_time
+        return f"END: {self.end_time}\nTITLE: {self.closeout_title}"
 
     async def generate_summary(self, prompt: str, *, on_progress=None) -> str:
         self.summary_prompts.append(prompt)

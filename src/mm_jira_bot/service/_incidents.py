@@ -101,20 +101,21 @@ class IncidentMixin:
             source: str,
             existing_ticket: AlertTicket | None = ...,
             validity_label: str | None = ...,
+            title: str | None = ...,
         ) -> ConfirmationResult: ...
 
         async def _set_time_to_fix(
             self, issue_key: str, ticket: AlertTicket, ended_at: datetime
         ) -> None: ...
 
-        async def _resolve_incident_end_time(
+        async def _resolve_incident_closeout(
             self,
             root_post: MattermostPost,
             *,
             reacted_by_user_id: str,
             reaction_ended_at: datetime,
             ticket: AlertTicket | None,
-        ) -> datetime: ...
+        ) -> tuple[datetime, str | None]: ...
 
         # --- SharedMixin ---
         def _is_incident_channel(self, channel_id: str) -> bool: ...
@@ -259,14 +260,15 @@ class IncidentMixin:
                 incident_message_url=ticket.incident_message_url,
             )
 
-        # Prefer the real recovery time inferred by the LLM from the thread
-        # chronology over the raw reaction timestamp, and feed that single value
-        # to every downstream END / Time-to-Fix write (both apply_incident_end_time
-        # and the postmortem). Falls back to the reaction time when undeterminable.
-        # ``override_end_time`` skips this: an admin who typed an explicit END time
-        # in the UI gets that exact value, not the model's guess.
+        # One LLM call infers both the real recovery time AND the incident title
+        # from the thread chronology. The end time feeds every downstream END /
+        # Time-to-Fix write (apply_incident_end_time and the postmortem); the title
+        # feeds the Jira issue summary. Falls back to the reaction time / alert
+        # title when undeterminable. ``override_end_time`` skips this: an explicit
+        # END time is kept exactly, and the title falls back to the alert title.
+        resolved_title: str | None = None
         if not override_end_time:
-            ended_at = await self._resolve_incident_end_time(
+            ended_at, resolved_title = await self._resolve_incident_closeout(
                 post,
                 reacted_by_user_id=reacted_by_user_id,
                 reaction_ended_at=ended_at,
@@ -315,6 +317,7 @@ class IncidentMixin:
             source=source,
             existing_ticket=ticket,
             validity_label=validity_label,
+            title=resolved_title,
         )
         # Turn the title green once the incident has ended, even if the postmortem
         # itself failed — the end time is already set in Jira, so leaving it red

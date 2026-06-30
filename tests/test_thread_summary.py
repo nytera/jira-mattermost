@@ -120,7 +120,7 @@ async def test_llm_client_uses_openai_compatible_chat_completions(settings):
         ),
     )
     try:
-        report = await client.generate_postmortem("thread transcript")
+        report = await client.resolve_incident_closeout("thread transcript")
     finally:
         await client.aclose()
 
@@ -158,7 +158,7 @@ async def test_llm_client_assembles_streamed_sse_deltas(settings):
         ),
     )
     try:
-        report = await client.generate_postmortem("thread transcript")
+        report = await client.resolve_incident_closeout("thread transcript")
     finally:
         await client.aclose()
 
@@ -180,7 +180,7 @@ async def test_llm_client_wraps_transport_errors_as_api_error(settings):
     )
     try:
         with pytest.raises(ApiError) as excinfo:
-            await client.generate_postmortem("thread transcript")
+            await client.resolve_incident_closeout("thread transcript")
     finally:
         await client.aclose()
 
@@ -265,7 +265,7 @@ def test_thread_summary_strips_mentions_so_it_never_pings():
 
 
 @pytest.mark.asyncio
-async def test_summary_reaction_posts_thread_summary(service):
+async def test_summary_reaction_posts_thread_summary_and_jira_comment(service):
     service.llm = FakeLlmClient()
     post = make_alert()
     service.mattermost.posts[post.id] = post
@@ -275,10 +275,14 @@ async def test_summary_reaction_posts_thread_summary(service):
         ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
     )
 
-    assert "опубликовано" in result.message
+    assert "опубликовано в треде и добавлено комментарием в Jira" in result.message
     assert len(service.llm.summary_prompts) == 1
-    # Summary is LLM-only; it never touches Jira.
-    assert service.jira.generic_comments == []
+    # The thread has a Jira issue, so the summary is also posted as a comment.
+    assert len(service.jira.generic_comments) == 1
+    issue_key, comment = service.jira.generic_comments[0]
+    assert issue_key == "OPS-1"
+    assert "Саммари треда сгенерировано" in comment
+    assert "Суть: всё сломалось." in comment
 
 
 @pytest.mark.asyncio
@@ -292,7 +296,61 @@ async def test_summary_reaction_works_in_incident_thread(service):
         )
     )
 
-    assert "опубликовано" in result.message
+    assert "опубликовано в треде и добавлено комментарием в Jira" in result.message
     assert len(service.llm.summary_prompts) == 1
-    # No postmortem comment from a summary emoji.
+    # The incident thread maps to a Jira issue, so the summary lands as a comment.
+    assert len(service.jira.generic_comments) == 1
+    assert service.jira.generic_comments[0][0] == "OPS-1"
+
+
+@pytest.mark.asyncio
+async def test_summary_mention_reaches_jira_as_clickable(service):
+    # The Jira comment gets the RAW summary (mentions preserved → [~user]); the
+    # thread reply path neutralizes separately. Proves raw text flows to Jira.
+    service.llm = FakeLlmClient()
+    service.llm.summary = "Починил @ivanov.ivan"
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
+    )
+
+    _issue_key, comment = service.jira.generic_comments[-1]
+    assert "[~ivanov.ivan]" in comment
+    assert "@ivanov.ivan" not in comment
+
+
+@pytest.mark.asyncio
+async def test_summary_reaction_without_jira_issue_warns(service):
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post  # no handle_alert_post → no ticket/issue
+
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
+    )
+
+    assert "В Jira не отправлено: задача не найдена" in result.message
     assert service.jira.generic_comments == []
+
+
+@pytest.mark.asyncio
+async def test_summary_reaction_jira_failure_keeps_thread(service):
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    async def _boom(issue_key, body):
+        raise ApiError("jira down", retryable=True)
+
+    service.jira.add_comment = _boom
+
+    result = await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
+    )
+
+    # The thread reply still succeeded; only the Jira comment failed.
+    assert "отправка в Jira не удалась" in result.message

@@ -39,42 +39,45 @@ nothing to post: no mention and help disabled. Idempotency rests on
 
 The checkmark emojis (`white_check_mark`/`heavy_check_mark`/`ballot_box_with_check`,
 `INCIDENT_END_REACTION_NAMES`) are the **`Валидный` shortcut**: they finalize the
-incident — set END-time, generate the postmortem, and turn the title green.
+incident — set END-time, write the Jira description template (no narrative comment),
+and turn the title green. The fact-based narrative summary is **not** generated on
+close; it is button-only (the `memo` emoji, [../domains/thread-summary.md](../domains/thread-summary.md)).
 
 Key invariants:
 
-- **END-time is the LLM-inferred recovery moment, not the reaction time.** Before
-  any Jira write, `handle_incident_checkmark` calls `_resolve_incident_end_time`
-  (PostmortemMixin) once and substitutes the result for the reaction `ended_at`, so
-  the single value flows into **both** `apply_incident_end_time` and the postmortem
-  (no per-site injection). On no-LLM / `ApiError` / `UNKNOWN` / unparseable /
-  out-of-range it **falls back to the reaction timestamp**. The resolution / validation
-  rule lives in [../domains/postmortem.md](../domains/postmortem.md).
+- **END-time and title come from one LLM call.** Before any Jira write,
+  `handle_incident_checkmark` calls `_resolve_incident_closeout` (PostmortemMixin)
+  **once**: it returns both the inferred recovery time and a short `[INC] …` title.
+  The END value substitutes the reaction `ended_at` and flows into **both**
+  `apply_incident_end_time` and the postmortem; the title flows into the Jira issue
+  summary. On no-LLM / `ApiError` / `UNKNOWN` / unparseable / out-of-range END it
+  **falls back to the reaction timestamp** (title → `extract_alert_title`). The
+  resolution / validation rule lives in [../domains/postmortem.md](../domains/postmortem.md).
 
 - **Validity reactions finalize too.** Unlike the alert channel (where
   `Ложный`/`Ожидаемый` are label-only — see [../domains/alerts.md](../domains/alerts.md)),
   the same reactions on an **incident-thread root** route here with
   `validity_label=...` and **both** stamp `Валидность` **and** finalize with a
   postmortem, exactly like the checkmark.
-- **Postmortem is idempotent.** Once `postmortem_comment_added` is set, a second
-  checkmark/validity reaction returns early ("postmortem left unchanged") and only
-  updates the `Валидность` field via `_set_incident_validity` (which also posts the
-  templated "Валидность обновлена" notice). The flag-keyed early return means the PM
-  comment is never re-posted — this holds for **both** manual and alert-originated
-  incidents.
+- **Finalize is idempotent.** Once `postmortem_comment_added` is set (the finalize
+  marker; no comment is posted), a second checkmark/validity reaction returns early
+  ("postmortem left unchanged") and only updates the `Валидность` field via
+  `_set_incident_validity` (which also posts the templated "Валидность обновлена"
+  notice). The flag-keyed early return means the close is never re-run — this holds
+  for **both** manual and alert-originated incidents.
 - **Validity and confirmation are independent axes.** PM generation only stamps
   `Валидный` as a *default* when `ticket.validity_label is None`, so an explicit
   earlier `Ложный`/`Ожидаемый` survives the finalize step.
-- **No-LLM branch.** When `self.llm is None`, the postmortem is skipped, but the
-  checkmark still writes `Валидность` and still applies the END-time — this is the
-  non-obvious half of "🏁 needs `LLM_API_TOKEN`": only the PM text requires it.
-- **Title goes green even on PM failure** — once the END-time is in Jira, leaving
+- **No-LLM branch.** When `self.llm is None`, the closeout/finalize is skipped, but
+  the checkmark still writes `Валидность` and still applies the END-time — this is the
+  non-obvious half of "🏁 needs `LLM_API_TOKEN`": only the title resolution requires it.
+- **Title goes green even on finalize failure** — once the END-time is in Jira, leaving
   the title red would misrepresent a closed incident, so
   `_mark_incident_post_completed` runs whenever the incident ended.
 
-Postmortem **generation** itself (template, author/participants, LLM title, the
-report comment) lives in [../domains/postmortem.md](../domains/postmortem.md) —
-this mixin only orchestrates; do not duplicate it here.
+The Jira issue plumbing (description template, author/participants, title, fields)
+lives in [../domains/postmortem.md](../domains/postmortem.md) — this mixin only
+orchestrates; do not duplicate it here.
 
 ## apply_incident_end_time
 
