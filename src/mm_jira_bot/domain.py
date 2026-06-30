@@ -33,6 +33,21 @@ def backend_now() -> datetime:
     return datetime.now(_runtime_timezone)
 
 
+def incident_ttf_minutes(start: datetime | None, ended: datetime) -> int | None:
+    """Minutes between ``start`` and ``ended`` (``None`` if no start or non-positive).
+
+    Naive timestamps are localized to the runtime timezone (not assumed UTC),
+    matching the Jira Time-to-Fix definition — so SQLite (tz-stripped) and Postgres
+    agree. Shared by the Jira write path and the read-only audit params note."""
+    if start is None:
+        return None
+    start = start if start.tzinfo else start.replace(tzinfo=_runtime_timezone)
+    ended = ended if ended.tzinfo else ended.replace(tzinfo=_runtime_timezone)
+    if ended <= start:
+        return None
+    return round((ended - start).total_seconds() / 60)
+
+
 def _attachment_field_text(field: dict) -> str | None:
     title = str(field.get("title") or "").strip()
     value = str(field.get("value") or "").strip()

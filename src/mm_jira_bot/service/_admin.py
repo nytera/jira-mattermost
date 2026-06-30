@@ -70,6 +70,9 @@ class AdminMixin:
         # Стабы sibling-методов из других классов собранного IncidentBotService —
         # pyright их иначе не видит на самом миксине. Сигнатуры повторяют реальные
         # (kw-only `*` и имена параметров важны для override-совместимости).
+        # --- SharedMixin ---
+        def _is_alert_channel(self, channel_id: str) -> bool: ...
+
         # --- AlertMixin ---
         async def handle_alert_post(self, post: MattermostPost) -> AlertTicket | None: ...
 
@@ -160,7 +163,7 @@ class AdminMixin:
                 mattermost_post_id=post_id,
             )
 
-        if post.channel_id != self.settings.mattermost_alert_channel_id:
+        if not self._is_alert_channel(post.channel_id):
             return AdminCreateFromLinkResult(
                 ok=False,
                 status="skipped",

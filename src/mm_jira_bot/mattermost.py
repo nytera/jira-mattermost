@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import secrets
 from collections.abc import AsyncIterator
+from dataclasses import replace
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -12,7 +15,44 @@ from mm_jira_bot.domain import MattermostPost, ReactionEvent
 from mm_jira_bot.http import AsyncApiClient
 from mm_jira_bot.logging import get_logger
 
+if TYPE_CHECKING:
+    from mm_jira_bot.audit import AuditMirror
+
 log = get_logger(__name__)
+
+#: A read-only stub post id carries this prefix so the read paths can recognise
+#: it and short-circuit instead of 404ing against the real Mattermost API.
+READONLY_POST_ID_PREFIX = "readonly-"
+
+
+def stub_mattermost_post(
+    settings: Settings,
+    *,
+    channel_id: str,
+    post_id: str | None = None,
+    message: str = "",
+    props: dict | None = None,
+    root_id: str | None = None,
+    create_at: int = 0,
+) -> MattermostPost:
+    """Fake :class:`MattermostPost` (id ``readonly-…``) returned in read-only mode
+    when no real post is created — e.g. when there is no audit channel to mirror
+    into. The recognisable id lets ``get_post``/``get_thread_posts`` answer
+    without hitting the real API.
+
+    ``post_id`` echoes a known stub id back (so a read-back round-trips:
+    ``get_post(id).id == id``); when omitted a fresh **unique** id is minted —
+    the create path relies on that uniqueness because ``incident_post_id`` /
+    ``jira_issue_key`` carry UNIQUE constraints."""
+    return MattermostPost(
+        id=post_id or f"{READONLY_POST_ID_PREFIX}{secrets.token_hex(8)}",
+        channel_id=channel_id,
+        user_id=settings.mattermost_bot_user_id,
+        message=message,
+        create_at=create_at,
+        root_id=root_id,
+        props=props,
+    )
 
 
 def build_mattermost_permalink(base_url: str, post_id: str) -> str:
@@ -93,6 +133,9 @@ class MattermostClient(AsyncApiClient):
             },
         )
         super().__init__(settings, client, own_client=http_client is None, log=log)
+        # Set by ``create_app`` in read-only mode; when present, suppressed writes
+        # are redirected here (the audit channel) instead of the real API.
+        self.audit: AuditMirror | None = None
 
     def permalink(self, post_id: str) -> str:
         return build_mattermost_permalink(self._settings.mattermost_url, post_id)
@@ -138,7 +181,37 @@ class MattermostClient(AsyncApiClient):
             "incident_channel_name": incident_channel_name,
         }
 
+    async def fetch_bot_user_id(self) -> str:
+        """Resolve the bot's own user id from its token via ``/users/me``.
+
+        Used at startup to auto-populate ``MATTERMOST_BOT_USER_ID`` when it is not
+        configured — the token already determines identity. A read, so it is allowed
+        in read-only mode."""
+        return await self._request(
+            "GET",
+            "/api/v4/users/me",
+            error_message="Failed to resolve Mattermost bot user id",
+            event="mattermost.users_me",
+            parse=lambda response: str(response.json().get("id") or ""),
+        )
+
+    def adopt_resolved_bot_user_id(self, bot_user_id: str) -> None:
+        """Swap in settings carrying the resolved bot id, so paths that send it
+        (``add_reaction`` posts ``user_id``) use the real id, not an empty string."""
+        self._settings = replace(self._settings, mattermost_bot_user_id=bot_user_id)
+
     async def get_post(self, post_id: str) -> MattermostPost:
+        if post_id.startswith(READONLY_POST_ID_PREFIX):
+            # A shadow-minted stub id has no real post behind it; echo it back
+            # benignly instead of 404ing against the real API. The id MUST be
+            # preserved — callers re-key on ``post.id`` (e.g. the incident-checkmark
+            # flow does get_by_incident_post_id(post.id)), so minting a fresh id
+            # here would silently break the lookup.
+            return stub_mattermost_post(
+                self._settings,
+                channel_id=self._settings.mattermost_audit_channel_id or "",
+                post_id=post_id,
+            )
         return await self._request(
             "GET",
             f"/api/v4/posts/{post_id}",
@@ -149,6 +222,9 @@ class MattermostClient(AsyncApiClient):
         )
 
     async def get_thread_posts(self, post_id: str) -> list[MattermostPost]:
+        if post_id.startswith(READONLY_POST_ID_PREFIX):
+            return []
+
         def parse(response: httpx.Response) -> list[MattermostPost]:
             data = response.json()
             posts = data.get("posts", {})
@@ -211,6 +287,8 @@ class MattermostClient(AsyncApiClient):
             error_message="Failed to resolve Mattermost usernames",
             event="mattermost.users_by_usernames",
             parse=parse,
+            # POST, but a pure read — allow it through the read-only backstop.
+            allow_in_read_only=True,
         )
 
     async def get_group_ids_by_names(self, names: list[str]) -> dict[str, str]:
@@ -290,7 +368,21 @@ class MattermostClient(AsyncApiClient):
         message: str,
         props: dict | None = None,
         root_id: str | None = None,
+        allow_in_read_only: bool = False,
     ) -> MattermostPost:
+        if self._settings.read_only_mode and not allow_in_read_only:
+            # Suppress the real write; reproduce it in the audit channel instead.
+            if self.audit is not None:
+                return await self.audit.mirror_create_post(
+                    channel_id=channel_id, message=message, props=props, root_id=root_id
+                )
+            return stub_mattermost_post(
+                self._settings,
+                channel_id=channel_id,
+                message=message,
+                props=props,
+                root_id=root_id,
+            )
         payload: dict = {"channel_id": channel_id, "message": message}
         if root_id:
             payload["root_id"] = root_id
@@ -304,11 +396,18 @@ class MattermostClient(AsyncApiClient):
             event="mattermost.create_post",
             parse=lambda response: MattermostPost.from_api(response.json()),
             mattermost_channel_id=channel_id,
+            allow_in_read_only=allow_in_read_only,
         )
 
-    async def add_reaction(self, post_id: str, emoji_name: str) -> None:
+    async def add_reaction(
+        self, post_id: str, emoji_name: str, *, allow_in_read_only: bool = False
+    ) -> None:
         """Add an emoji reaction as the bot user. Idempotent — Mattermost does
         not duplicate an existing (user, post, emoji) reaction."""
+        if self._settings.read_only_mode and not allow_in_read_only:
+            if self.audit is not None:
+                await self.audit.mirror_reaction(post_id, emoji_name)
+            return
         await self._request(
             "POST",
             "/api/v4/reactions",
@@ -320,12 +419,22 @@ class MattermostClient(AsyncApiClient):
             error_message="Failed to add Mattermost reaction",
             event="mattermost.add_reaction",
             mattermost_post_id=post_id,
+            allow_in_read_only=allow_in_read_only,
         )
 
     async def update_post(
-        self, post_id: str, *, message: str | None = None, props: dict | None = None
+        self,
+        post_id: str,
+        *,
+        message: str | None = None,
+        props: dict | None = None,
+        allow_in_read_only: bool = False,
     ) -> None:
         """Patch an existing post's message and/or props (Mattermost `PUT .../patch`)."""
+        if self._settings.read_only_mode and not allow_in_read_only:
+            if self.audit is not None:
+                await self.audit.mirror_update(post_id, message=message, props=props)
+            return
         payload: dict = {}
         if message is not None:
             payload["message"] = message
@@ -338,6 +447,7 @@ class MattermostClient(AsyncApiClient):
             error_message="Failed to update Mattermost post",
             event="mattermost.update_post",
             mattermost_post_id=post_id,
+            allow_in_read_only=allow_in_read_only,
         )
 
     async def open_dialog(
@@ -347,6 +457,10 @@ class MattermostClient(AsyncApiClient):
         url: str,
         dialog: dict,
     ) -> None:
+        # Interactive dialogs are deprecated and have no audit representation;
+        # in read-only mode just drop the call (no prod side effect).
+        if self._settings.read_only_mode:
+            return
         await self._request(
             "POST",
             "/api/v4/actions/dialogs/open",

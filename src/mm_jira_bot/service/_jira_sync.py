@@ -19,7 +19,7 @@ from mm_jira_bot.formatting import (
     format_thread_issue_created,
     format_thread_linked_to_root,
 )
-from mm_jira_bot.jira import VALID_INCIDENT_EXPECTED_VALUE, stub_jira_issue
+from mm_jira_bot.jira import STUB_ISSUE_KEY, VALID_INCIDENT_EXPECTED_VALUE, stub_jira_issue
 from mm_jira_bot.jira_payload import (
     build_expected_alert_block,
     build_jira_description,
@@ -286,7 +286,7 @@ class JiraSyncMixin:
         )
 
     async def _create_jira_issue(self, ticket: AlertTicket) -> JiraIssue:
-        if not self.settings.jira_create_enabled:
+        if self.settings.read_only_mode:
             return self._stub_jira_issue(ticket)
         post = ticket_to_post(ticket)
         return await self.jira.create_issue(
@@ -306,12 +306,14 @@ class JiraSyncMixin:
         return issue
 
     def _display_jira_issue(self, issue: JiraIssue) -> JiraIssue:
-        if self.settings.jira_create_enabled or not self.settings.jira_stub_issue_key:
+        """In read-only mode the DB key is the ``ADS-TEST-<postid>`` stub (unique);
+        show the clean ``ADS-TEST`` in the thread. An adopted real prod key (no
+        stub prefix) is shown as-is. Outside read-only the issue is always real."""
+        if not self.settings.read_only_mode or not issue.key.startswith(STUB_ISSUE_KEY):
             return issue
-        issue_key = self.settings.jira_stub_issue_key
         return JiraIssue(
-            key=issue_key,
-            url=f"{self.settings.jira_base_url}/browse/{issue_key}",
+            key=STUB_ISSUE_KEY,
+            url=f"{self.settings.jira_base_url}/browse/{STUB_ISSUE_KEY}",
         )
 
     async def _update_jira_for_confirmation(

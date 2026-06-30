@@ -14,34 +14,35 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | Module | Lines |
 |---|---:|
 | `__init__.py` | 3 |
-| `__main__.py` | 18 |
+| `__main__.py` | 20 |
 | `actions.py` | 291 |
 | `admin_api.py` | 317 |
-| `config.py` | 238 |
-| `domain.py` | 154 |
+| `audit.py` | 199 |
+| `config.py` | 249 |
+| `domain.py` | 169 |
 | `formatting.py` | 309 |
-| `http.py` | 137 |
-| `jira.py` | 810 |
-| `jira_payload.py` | 215 |
-| `llm.py` | 299 |
+| `http.py` | 159 |
+| `jira.py` | 807 |
+| `jira_payload.py` | 243 |
+| `llm.py` | 305 |
 | `logging.py` | 276 |
-| `mattermost.py` | 392 |
+| `mattermost.py` | 506 |
 | `metrics.py` | 113 |
 | `ops.py` | 160 |
 | `postmortem.py` | 359 |
-| `repository.py` | 806 |
+| `repository.py` | 840 |
 | `retry.py` | 56 |
 | `service/__init__.py` | 20 |
-| `service/_admin.py` | 382 |
-| `service/_alerts.py` | 607 |
-| `service/_incidents.py` | 870 |
-| `service/_jira_sync.py` | 369 |
-| `service/_postmortem.py` | 563 |
-| `service/_shared.py` | 171 |
+| `service/_admin.py` | 385 |
+| `service/_alerts.py` | 629 |
+| `service/_incidents.py` | 906 |
+| `service/_jira_sync.py` | 371 |
+| `service/_postmortem.py` | 561 |
+| `service/_shared.py` | 199 |
 | `service/_thread_summary.py` | 392 |
-| `service/coordinator.py` | 479 |
+| `service/coordinator.py` | 638 |
 | `summary.py` | 30 |
-| `web.py` | 470 |
+| `web.py` | 548 |
 
 ## Service assembly (MRO)
 
@@ -101,6 +102,14 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 - `def mount_admin_ui(app: FastAPI) -> None`
 - `def register_admin_api(app: FastAPI, service: IncidentBotService) -> None`
 
+### `audit.py`
+
+- **class `AuditMirror`**
+  - `async def mirror_create_post(self, *, channel_id: str, message: str, props: dict | None = None, root_id: str | None = None) -> MattermostPost`
+  - `async def mirror_reaction(self, post_id: str, emoji_name: str) -> None`
+  - `async def mirror_update(self, post_id: str, *, message: str | None = None, props: dict | None = None) -> None`
+  - `def adopt_alias(self, original_id: str, alias_id: str) -> None`
+
 ### `config.py`
 
 - **class `Settings`**
@@ -121,6 +130,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 - `def backend_now() -> datetime`
 - `def configure_runtime_timezone(timezone_name: str) -> None`
 - `def datetime_from_mattermost_ms(value: int | None) -> datetime | None`
+- `def incident_ttf_minutes(start: datetime | None, ended: datetime) -> int | None`
 - `def runtime_timezone() -> ZoneInfo`
 
 ### `formatting.py`
@@ -173,6 +183,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 - `def build_jira_issue_payload(settings: Settings, valid_incident_field_id: str, source_field_id: str, is_crit_alert_field_id: str, post: MattermostPost, *, message_url: str, channel_name: str | None, start_field_id: str | None = None, valid_incident_option: dict[str, str] | None = None, source_option: dict[str, str] | None = None, is_crit_alert_option: dict[str, str] | None = None, summary: str | None = None, description: str | None = None, labels: list[str] | None = None, include_alert_fields: bool = True) -> dict[str, Any]`
 - `def build_postmortem_description(*, incident_message_url: str, alert_message_url: str | None, postmortem_author: str | None = None, participants: list[str] | None = None) -> str`
 - `def format_jira_datetime(value: datetime) -> str`
+- `def format_readonly_jira_params(*, jira_issue_key: str | None, start: datetime | None, ended_at: datetime | None, ttf_minutes: int | None, validity_label: str | None) -> str`
 - `def jira_option(value: str, option_id: str | None = None) -> dict[str, str]`
 
 ### `llm.py`
@@ -213,8 +224,9 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 ### `mattermost.py`
 
 - **class `MattermostClient(AsyncApiClient)`**
-  - `async def add_reaction(self, post_id: str, emoji_name: str) -> None`
-  - `async def create_post(self, *, channel_id: str, message: str, props: dict | None = None, root_id: str | None = None) -> MattermostPost`
+  - `async def add_reaction(self, post_id: str, emoji_name: str, *, allow_in_read_only: bool = False) -> None`
+  - `async def create_post(self, *, channel_id: str, message: str, props: dict | None = None, root_id: str | None = None, allow_in_read_only: bool = False) -> MattermostPost`
+  - `async def fetch_bot_user_id(self) -> str`
   - `async def fetch_recent_channel_posts(self, channel_id: str, *, limit: int) -> list[MattermostPost]`
   - `async def get_channel_name(self, channel_id: str) -> str | None`
   - `async def get_group_ids_by_names(self, names: list[str]) -> dict[str, str]`
@@ -225,13 +237,15 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
   - `async def get_user_ids_by_usernames(self, usernames: list[str]) -> dict[str, str]`
   - `async def open_dialog(self, *, trigger_id: str, url: str, dialog: dict) -> None`
   - `async def preflight_check(self) -> dict[str, object]`
-  - `async def update_post(self, post_id: str, *, message: str | None = None, props: dict | None = None) -> None`
+  - `async def update_post(self, post_id: str, *, message: str | None = None, props: dict | None = None, allow_in_read_only: bool = False) -> None`
   - `async def websocket_events(self) -> AsyncIterator[dict]`
+  - `def adopt_resolved_bot_user_id(self, bot_user_id: str) -> None`
   - `def permalink(self, post_id: str) -> str`
 - `def build_mattermost_permalink(base_url: str, post_id: str) -> str`
 - `def format_user_display(data: dict) -> str`
 - `def parse_posted_event(payload: dict) -> MattermostPost | None`
 - `def parse_reaction_event(payload: dict) -> ReactionEvent | None`
+- `def stub_mattermost_post(settings: Settings, *, channel_id: str, post_id: str | None = None, message: str = '', props: dict | None = None, root_id: str | None = None, create_at: int = 0) -> MattermostPost`
 - `def websocket_url(base_url: str) -> str`
 
 ### `metrics.py`
@@ -298,6 +312,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
   - `def replace_jira_issue(self, post_id: str, issue_key: str, issue_url: str, *, reset_confirmation_comment: bool = False) -> None`
   - `def set_incident_message(self, post_id: str, incident_post_id: str, incident_message_url: str) -> None`
   - `def set_last_error(self, post_id: str, error: str) -> None`
+  - `def set_prod_incident_post_id(self, post_id: str, prod_incident_post_id: str) -> None`
   - `def set_setting(self, key: str, value: str) -> None`
   - `def set_validity_label(self, post_id: str, label: str) -> None`
   - `def stats_summary(self) -> dict`
@@ -377,6 +392,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
   - `async def handle_slash_command(self, *, user_id: str, text: str) -> CommandResponse`
   - `async def handle_websocket_event(self, event: dict) -> None`
   - `async def resolve_authorized_users(self) -> None`
+  - `async def resolve_bot_user_id(self) -> None`
 
 ### `summary.py`
 

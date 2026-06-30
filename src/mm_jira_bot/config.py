@@ -120,8 +120,12 @@ class Settings:
     jira_start_field: str | None
     jira_end_field: str | None
     database_url: str
-    jira_create_enabled: bool = True
-    jira_stub_issue_key: str | None = None
+    read_only_mode: bool = False
+    mattermost_audit_channel_id: str | None = None
+    mattermost_test_alert_channel_id: str | None = None
+    mattermost_test_incident_channel_id: str | None = None
+    bind_host: str = "0.0.0.0"
+    bind_port: int = 8080
     incident_timezone: str = "Europe/Moscow"
     mattermost_slash_token: str | None = None
     service_public_url: str | None = None
@@ -174,7 +178,10 @@ class Settings:
             mattermost_alert_channel_id=_required("MATTERMOST_ALERT_CHANNEL_ID"),
             mattermost_incident_channel_id=_required("MATTERMOST_INCIDENT_CHANNEL_ID"),
             mattermost_incident_reaction_name=_env("MATTERMOST_INCIDENT_REACTION_NAME", "incident"),
-            mattermost_bot_user_id=_required("MATTERMOST_BOT_USER_ID"),
+            # Optional: empty ⇒ resolved from the bot token via /users/me at startup
+            # (see IncidentBotService.resolve_bot_user_id). When set, preflight
+            # cross-checks it against the token's real id.
+            mattermost_bot_user_id=_env("MATTERMOST_BOT_USER_ID", ""),
             jira_base_url=_required("JIRA_BASE_URL").rstrip("/"),
             jira_api_token=_required("JIRA_API_TOKEN"),
             jira_project_key=_required("JIRA_PROJECT_KEY"),
@@ -190,9 +197,13 @@ class Settings:
             jira_end_field=_env("JIRA_END_FIELD"),
             jira_time_to_fix_field=_env("JIRA_TIME_TO_FIX_FIELD"),
             jira_repeat_link_inward=_env("JIRA_REPEAT_LINK_INWARD", "is child of"),
-            jira_create_enabled=_env("JIRA_CREATE_ENABLED", "true") != "false",
-            jira_stub_issue_key=_env("JIRA_STUB_ISSUE_KEY"),
             database_url=_required("DATABASE_URL"),
+            read_only_mode=_env("READ_ONLY_MODE", "false") == "true",
+            mattermost_audit_channel_id=_env("MATTERMOST_AUDIT_CHANNEL_ID"),
+            mattermost_test_alert_channel_id=_env("MATTERMOST_TEST_ALERT_CHANNEL_ID"),
+            mattermost_test_incident_channel_id=_env("MATTERMOST_TEST_INCIDENT_CHANNEL_ID"),
+            bind_host=_env("HOST", "0.0.0.0"),
+            bind_port=_int_env("PORT", 8080),
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
             mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
             service_public_url=service_public_url.rstrip("/") if service_public_url else None,

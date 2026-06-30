@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from typing import Any
 
 from mm_jira_bot.actions import (
@@ -24,6 +25,7 @@ from mm_jira_bot.formatting import (
     mention_from_display,
 )
 from mm_jira_bot.jira import (
+    STUB_ISSUE_KEY,
     VALID_INCIDENT_EXPECTED_VALUE,
     VALID_INCIDENT_FALSE_VALUE,
 )
@@ -52,6 +54,11 @@ INCIDENT_END_REACTION_NAMES = {
     "heavy_check_mark",
     "ballot_box_with_check",
 }
+
+# A well-formed Jira issue key (``PROJECT-123``). Adoption only trusts a
+# prop-supplied key that matches this, so an attacker-influenceable prop can't
+# inject a markdown link / bogus URL into the audit channel.
+_JIRA_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 
 
 @dataclass(frozen=True)
@@ -88,6 +95,29 @@ class IncidentBotService(
         # MATTERMOST_AUTHORIZED_USERNAMES at startup via resolve_authorized_users.
         self._authorized_user_ids: frozenset[str] = frozenset()
         self._authorization_enforced: bool = False
+
+    async def resolve_bot_user_id(self) -> None:
+        """Auto-populate ``mattermost_bot_user_id`` from the bot token at startup.
+
+        The token already determines identity, so ``MATTERMOST_BOT_USER_ID`` is
+        optional: when unset, resolve it from ``/users/me`` and push it into both
+        the service settings (hot-path checks: own-reaction ignore, ``_is_bot_post``)
+        and the Mattermost client (``add_reaction`` sends ``user_id``). When set, it
+        is kept as-is and preflight cross-checks it. Runs before the websocket loop
+        so handlers see the right id. A failure here is fatal — the bot can't tell
+        its own activity apart without an identity.
+        """
+        if self.settings.mattermost_bot_user_id:
+            return
+        bot_user_id = await self.mattermost.fetch_bot_user_id()
+        if not bot_user_id:
+            raise RuntimeError(
+                "Could not resolve bot user id from Mattermost /users/me; "
+                "set MATTERMOST_BOT_USER_ID explicitly."
+            )
+        self.settings = replace(self.settings, mattermost_bot_user_id=bot_user_id)
+        self.mattermost.adopt_resolved_bot_user_id(bot_user_id)
+        log.info("bot_user_id.resolved", bot_user_id=bot_user_id)
 
     async def resolve_authorized_users(self) -> None:
         """Resolve configured logins/groups to ids and enable the allowlist gate.
@@ -182,7 +212,9 @@ class IncidentBotService(
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
         if posted:
-            if posted.channel_id == self.settings.mattermost_incident_channel_id:
+            if await self._observe_prod_artifact(posted):
+                return
+            if self._is_incident_channel(posted.channel_id):
                 await self.handle_manual_incident_post(posted)
             else:
                 await self.handle_alert_post(posted)
@@ -191,6 +223,127 @@ class IncidentBotService(
         reaction = parse_reaction_event(event)
         if reaction:
             await self.handle_reaction(reaction)
+
+    async def _observe_prod_artifact(self, post: MattermostPost) -> bool:
+        """Read-only (shadow) mode: adopt real prod artifacts from a prod-bot post.
+
+        A post in the **real** alert/incident channel that carries
+        ``props.mattermost_alert_post_id`` is a prod-bot artifact: only the prod
+        bot sets that prop (``_post_alert_thread_reply`` /
+        ``_publish_incident_message_if_needed``), humans can't set props, and the
+        shadow strips it from its own audit copies. We correlate it to the shadow's
+        ticket and adopt:
+
+        - the real Jira key (replacing the read-only ``ADS-TEST-…`` stub), so the
+          audit mirror shows the real link instead of the stub;
+        - for the incident **root** post, the real prod incident post id, so a later
+          ✅ on that real post resolves to this ticket and the shadow runs its own
+          postmortem into the audit thread.
+
+        Returns ``True`` when the post is a prod artifact and must not fall through
+        to the normal alert/incident handlers (which would only drop it).
+        """
+        if not self.settings.read_only_mode:
+            return False
+        props = post.props or {}
+        alert_post_id = props.get("mattermost_alert_post_id")
+        if not isinstance(alert_post_id, str) or not alert_post_id:
+            return False
+        # Positive channel gate: ONLY the real alert/incident channels. This is the
+        # load-bearing guard for the zero-prod-impact invariant — it excludes test,
+        # audit, and every other channel, so the shadow can never adopt its own
+        # audit post (the prop strip is then only defense-in-depth).
+        if post.channel_id not in {
+            self.settings.mattermost_alert_channel_id,
+            self.settings.mattermost_incident_channel_id,
+        }:
+            return False
+        ticket = self.repository.get_by_post_id(alert_post_id)
+        if ticket is None:
+            # A prod artifact the shadow can't correlate (it never saw the source
+            # alert). Consume it so it doesn't fall through; nothing to adopt.
+            log.info(
+                "readonly.adopt.no_ticket",
+                mattermost_post_id=post.id,
+                source_alert_post_id=alert_post_id,
+            )
+            return True
+
+        await self._adopt_prod_jira_issue(ticket, props.get("jira_issue_key"))
+        if post.channel_id == self.settings.mattermost_incident_channel_id and not post.root_id:
+            await self._adopt_prod_incident_post(ticket, post.id)
+        return True
+
+    async def _adopt_prod_jira_issue(self, ticket: AlertTicket, issue_key: object) -> None:
+        """Replace the read-only stub Jira key with the adopted real prod key.
+
+        Idempotent and self-healing: adopts only while the current key is still a
+        ``ADS-TEST-…`` stub, so the first prod reply carrying ``jira_issue_key``
+        wins and any later one is a no-op. A missing stub (shadow hasn't created
+        its own yet) is skipped — a later prod notice (every confirmed incident
+        gets several) re-attempts once the stub exists.
+        """
+        if not isinstance(issue_key, str) or not issue_key:
+            return
+        if not (ticket.jira_issue_key or "").startswith(STUB_ISSUE_KEY):
+            return
+        if not _JIRA_KEY_PATTERN.match(issue_key):
+            # The prop is attacker-influenceable (any channel member can set custom
+            # props); a malformed key would inject a markdown link into the audit
+            # note and persist a bogus URL. Only adopt a well-formed Jira key.
+            log.warning(
+                "readonly.adopt.invalid_jira_key",
+                mattermost_post_id=ticket.mattermost_post_id,
+                jira_issue_key=issue_key,
+            )
+            return
+        issue_url = f"{self.settings.jira_base_url}/browse/{issue_key}"
+        self.repository.replace_jira_issue(ticket.mattermost_post_id, issue_key, issue_url)
+        log.info(
+            "readonly.adopt.jira_issue",
+            mattermost_post_id=ticket.mattermost_post_id,
+            jira_issue_key=issue_key,
+        )
+        # The adoption note is the ONE place the real link surfaces in the audit
+        # channel (the original "Создана задача" reply keeps showing the stub).
+        await self._post_alert_thread_reply(
+            ticket.mattermost_post_id,
+            channel_id=ticket.mattermost_channel_id,
+            message=f"Усыновлён реальный Jira с прода: [{issue_key}]({issue_url})",
+            event="readonly.adopt.jira_issue_published",
+            props={"jira_issue_key": issue_key},
+        )
+
+    async def _adopt_prod_incident_post(
+        self, ticket: AlertTicket, prod_incident_post_id: str
+    ) -> None:
+        """Record the real prod incident post id and alias it to the shadow's own
+        incident audit thread (idempotent)."""
+        if ticket.prod_incident_post_id == prod_incident_post_id:
+            return
+        self.repository.set_prod_incident_post_id(ticket.mattermost_post_id, prod_incident_post_id)
+        # If the shadow already published its own incident message, alias the prod
+        # post id to that audit thread so the prod ✅'s postmortem lands there
+        # rather than under a fresh anchor. Done before the note below so the note
+        # itself threads correctly. Re-read fresh: the shadow's own confirm path may
+        # have recorded incident_post_id concurrently (same ✅-on-alert cause)
+        # since this observer snapshotted the ticket, so the snapshot can be stale.
+        current = self.repository.get_by_post_id(ticket.mattermost_post_id) or ticket
+        audit = getattr(self.mattermost, "audit", None)
+        if current.incident_post_id and audit is not None:
+            audit.adopt_alias(current.incident_post_id, prod_incident_post_id)
+        log.info(
+            "readonly.adopt.incident_post",
+            mattermost_post_id=ticket.mattermost_post_id,
+            prod_incident_post_id=prod_incident_post_id,
+        )
+        await self._post_incident_thread_reply(
+            prod_incident_post_id,
+            channel_id=self.settings.mattermost_incident_channel_id,
+            message="Инцидент усыновлён с прода — отслеживаю закрытие.",
+            event="readonly.adopt.incident_post_published",
+            color=INCIDENT_OPEN_COLOR,
+        )
 
     def _is_bot_post(self, post: MattermostPost) -> bool:
         """Posts authored by our bot or by any integration/webhook.
@@ -271,7 +424,7 @@ class IncidentBotService(
             return await self.generate_thread_summary(
                 post, requested_by_user_id=reaction.user_id, source="reaction"
             )
-        in_incident_channel = post.channel_id == self.settings.mattermost_incident_channel_id
+        in_incident_channel = self._is_incident_channel(post.channel_id)
         if is_incident_end and in_incident_channel:
             return await self.handle_incident_checkmark(
                 post,
@@ -298,7 +451,7 @@ class IncidentBotService(
                 message="Reaction ignored: checkmark only handled on incident thread roots.",
             )
 
-        if post.channel_id != self.settings.mattermost_alert_channel_id:
+        if not self._is_alert_channel(post.channel_id):
             log.info(
                 "mattermost.reaction.skipped_non_alert_channel",
                 mattermost_post_id=reaction.post_id,
@@ -395,7 +548,7 @@ class IncidentBotService(
             )
             return CommandResponse(text=f"Could not read Band post `{post_id}`.")
 
-        if post.channel_id != self.settings.mattermost_alert_channel_id:
+        if not self._is_alert_channel(post.channel_id):
             return CommandResponse(text="This message is not in the configured alerts channel.")
 
         ticket = self.repository.get_by_post_id(post_id)
@@ -412,15 +565,21 @@ class IncidentBotService(
     ) -> None:
         """Best-effort: post every newly created Jira issue to the ops channel with
         a link back to its source thread/message. Shares ``MATTERMOST_OPS_CHANNEL_ID``
-        with the error-alert feed; skips stub issues (``jira_create_enabled=false``)
-        and never breaks issue creation (a failed post is logged, not propagated).
+        with the error-alert feed and never breaks issue creation (a failed post is
+        logged, not propagated).
+
+        In read-only mode this is **not** skipped: the post is redirected to the
+        audit channel like every other write, so the shadow's ops feed is mirrored
+        there too. The displayed key is the clean ``ADS-TEST`` stub (or the adopted
+        real key), matching the thread notices.
         """
         channel_id = self.settings.mattermost_ops_channel_id
-        if not channel_id or not self.settings.jira_create_enabled:
+        if not channel_id:
             return
+        display = self._display_jira_issue(issue)
         message = format_ops_issue_created(
-            jira_issue_key=issue.key,
-            jira_issue_url=issue.url,
+            jira_issue_key=display.key,
+            jira_issue_url=display.url,
             source_title=ticket.mattermost_alert_title,
             source_message_url=ticket.mattermost_message_url,
             channel_name=ticket.mattermost_channel_name,
@@ -431,7 +590,7 @@ class IncidentBotService(
                 channel_id=channel_id,
                 message="",
                 props={
-                    "jira_issue_key": issue.key,
+                    "jira_issue_key": display.key,
                     "attachments": [
                         {"fallback": message, "color": OPS_ISSUE_CREATED_COLOR, "text": message}
                     ],
@@ -439,14 +598,14 @@ class IncidentBotService(
             )
             log.info(
                 "ops.issue_created.published",
-                jira_issue_key=issue.key,
+                jira_issue_key=display.key,
                 mattermost_post_id=ticket.mattermost_post_id,
                 source=source,
             )
         except ApiError as exc:
             log.warning(
                 "ops.issue_created.failed",
-                jira_issue_key=issue.key,
+                jira_issue_key=display.key,
                 mattermost_post_id=ticket.mattermost_post_id,
                 error=str(exc),
             )

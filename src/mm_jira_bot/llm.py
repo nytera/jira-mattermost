@@ -157,6 +157,10 @@ class PostmortemLlmClient(AsyncApiClient):
             event="llm.preflight",
             parse=_parse_chat_content,
             llm_model=self._settings.llm_model,
+            # The LLM call is read-only-safe (it mutates none of our systems) and the
+            # shadow generates its own summaries/postmortems, so it must run in
+            # read-only mode — bypass the write backstop.
+            allow_in_read_only=True,
         )
         assert isinstance(content, str)
         return {
@@ -226,6 +230,8 @@ class PostmortemLlmClient(AsyncApiClient):
                 parse=_parse_chat_content,
                 llm_model=self._settings.llm_model,
                 prompt_length=len(prompt),
+                # See preflight_check: the shadow runs the LLM in read-only mode.
+                allow_in_read_only=True,
             )
             assert isinstance(content, str)
             return content

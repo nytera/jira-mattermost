@@ -24,7 +24,6 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `MATTERMOST_TOKEN` | Bot personal access token |
 | `MATTERMOST_ALERT_CHANNEL_ID` | Channel the bot watches for alerts |
 | `MATTERMOST_INCIDENT_CHANNEL_ID` | Channel incidents are published to |
-| `MATTERMOST_BOT_USER_ID` | Bot's own user id (so it ignores its own posts) |
 | `JIRA_BASE_URL` | Jira base URL (trailing `/` stripped) |
 | `JIRA_API_TOKEN` | Jira personal access token (Bearer) |
 | `JIRA_PROJECT_KEY` | Target project key |
@@ -45,6 +44,7 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` | `arrows_counterclockwise` | `Ожидаемый` reaction; also the bot's self-added repeat marker |
 | `MATTERMOST_SUMMARY_REACTION_NAME` | `memo` | Triggers a thread summary in any channel |
 | `MATTERMOST_SLASH_TOKEN` | — | If set, validates the `/incident` slash token |
+| `MATTERMOST_BOT_USER_ID` | resolved from token | Bot's own user id (so it ignores its own posts/reactions). Unset ⇒ auto-resolved from the bot token via `/users/me` at startup; set ⇒ kept and preflight cross-checks it |
 | `MATTERMOST_AUTHORIZED_USERNAMES` | empty | Comma/`;`-separated logins **and** group names; leading `@` stripped. Empty = act on everyone |
 | `MATTERMOST_AUTHORIZED_REFRESH_SECONDS` | `300` | Allowlist re-resolve interval |
 | `MATTERMOST_DUTY_MENTION` | — | On-call mention posted as bare text (e.g. `:look: @sre-duty`) |
@@ -59,10 +59,22 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `JIRA_END_FIELD` | — | Date-time field set on validity/checkmark close |
 | `JIRA_TIME_TO_FIX_FIELD` | — | Numeric field, incident duration in minutes (best-effort) |
 | `JIRA_REPEAT_LINK_INWARD` | `is child of` | Link type for expected-repeat → root |
-| `JIRA_CREATE_ENABLED` | `true` | `false` = test mode, no Jira issue-key calls |
-| `JIRA_STUB_ISSUE_KEY` | — | Key shown in Mattermost in test mode |
 
 Field/option resolution mechanics and the date-time format are in [`jira.md`](jira.md).
+
+## Read-only / shadow mode (optional)
+
+Run a shadow instance in parallel with prod that changes nothing externally and
+mirrors everything to an audit channel. Full behavior: [`read-only.md`](read-only.md).
+
+| Var | Default | Meaning |
+|---|---|---|
+| `READ_ONLY_MODE` | `false` | `true` = suppress every Jira/Mattermost write, mirror to the audit channel; Jira keys become `ADS-TEST-…` stubs |
+| `MATTERMOST_AUDIT_CHANNEL_ID` | — | Dedicated channel the shadow mirrors into; **must differ** from every alert/incident/test/ops channel (startup refuses a collision) |
+| `MATTERMOST_TEST_ALERT_CHANNEL_ID` | — | Extra channel treated as an alert channel (push test traffic without the real one) |
+| `MATTERMOST_TEST_INCIDENT_CHANNEL_ID` | — | Extra channel treated as an incident channel |
+| `HOST` | `0.0.0.0` | uvicorn bind host |
+| `PORT` | `8080` | uvicorn bind port (set to run a shadow next to prod) |
 
 ## LLM (optional)
 

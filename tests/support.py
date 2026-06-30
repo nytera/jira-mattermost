@@ -38,9 +38,17 @@ class FakeMattermostClient:
         self.group_members: dict[str, set[str]] = {}
         self.group_lookups: list[list[str]] = []
         self.reactions: list[tuple[str, str]] = []
+        self.bot_user_id_from_api = "bot-user"
+        self.adopted_bot_user_id: str | None = None
 
     async def add_reaction(self, post_id: str, emoji_name: str) -> None:
         self.reactions.append((post_id, emoji_name))
+
+    async def fetch_bot_user_id(self) -> str:
+        return self.bot_user_id_from_api
+
+    def adopt_resolved_bot_user_id(self, bot_user_id: str) -> None:
+        self.adopted_bot_user_id = bot_user_id
 
     def permalink(self, post_id: str) -> str:
         return f"https://mattermost.example.com/_redirect/pl/{post_id}"

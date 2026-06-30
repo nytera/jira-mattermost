@@ -92,10 +92,13 @@ Re-delivered events are no-ops, guarded by idempotency keys in `AlertTicket` and
 `creation_status`/`confirmation_status` state machines. Keys and state machines are
 documented in [`persistence.md`](persistence.md).
 
-## Test mode (`JIRA_CREATE_ENABLED=false`)
+## Read-only / shadow mode (`READ_ONLY_MODE=true`)
 
-`JiraClient` makes no issue-key calls — creates return a stub `JiraIssue` and the
-follow-up field/comment writes are no-ops. Full behavior in [`jira.md`](jira.md).
+A shadow instance runs in parallel with prod, changes nothing externally, and
+mirrors every would-be write into an audit channel. Writes are suppressed at the
+client-method level (Jira no-ops; Mattermost redirects to the audit channel via
+`AuditMirror`) with a last-resort `_request` backstop. Full behavior in
+[`read-only.md`](read-only.md); the Jira no-op detail is in [`jira.md`](jira.md).
 
 ## Where to look next
 

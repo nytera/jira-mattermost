@@ -274,15 +274,15 @@ def test_builds_jira_payload_with_current_date_when_post_date_missing(settings, 
 
 
 @pytest.mark.asyncio
-async def test_jira_client_makes_no_calls_in_test_mode(settings):
-    """JIRA_CREATE_ENABLED=false must not hit Jira for issue-key operations, so a
-    bogus stub key never aborts the confirm/validity/end flows."""
+async def test_jira_client_makes_no_calls_in_read_only_mode(settings):
+    """READ_ONLY_MODE=true must not hit Jira for issue-key operations, so a
+    stub key never aborts the confirm/validity/end flows."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError(f"Unexpected Jira call in test mode: {request.method} {request.url}")
+        raise AssertionError(f"Unexpected Jira call: {request.method} {request.url}")
 
     client = jira_module.JiraClient(
-        replace(settings, jira_create_enabled=False, jira_stub_issue_key="ADSDEV-12024"),
+        replace(settings, read_only_mode=True),
         http_client=httpx.AsyncClient(
             base_url=settings.jira_base_url,
             transport=httpx.MockTransport(handler),
@@ -298,7 +298,7 @@ async def test_jira_client_makes_no_calls_in_test_mode(settings):
     issue = await client.create_postmortem_issue(
         make_alert(), message_url="u", channel_name="c", summary="s", description="d"
     )
-    assert issue.key.startswith("ADSDEV-12024-")
+    assert issue.key.startswith("ADS-TEST-")
     await client.aclose()
 
 
@@ -852,6 +852,24 @@ async def test_ops_channel_receives_created_issue_from_alert(settings):
     assert "OPS-1" in text
     assert service.mattermost.permalink(post.id) in text
     assert ops_posts[0]["root_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_ops_channel_issue_is_mirrored_in_read_only(settings):
+    """In read-only the ops issue announcement is no longer skipped — it is posted
+    (redirected to the audit channel by the mirror in a real shadow), showing the
+    clean ``ADS-TEST`` stub key."""
+    service = _build_service(
+        replace(settings, read_only_mode=True, mattermost_ops_channel_id="ops-channel")
+    )
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    ops_posts = _ops_posts(service)
+    assert len(ops_posts) == 1
+    text = ops_posts[0]["props"]["attachments"][0]["text"]
+    assert "ADS-TEST" in text and "ADS-TEST-" not in text  # clean stub, not the suffixed key
 
 
 @pytest.mark.asyncio

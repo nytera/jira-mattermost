@@ -94,6 +94,34 @@ class SharedMixin:
     repository: AlertTicketRepository
     mattermost: Any
 
+    def _is_alert_channel(self, channel_id: str) -> bool:
+        """Alert channel — the real one always, plus (read-only only) the configured
+        test alert channel.
+
+        The shadow treats the test alert channel as a first-class alert channel so
+        test traffic exercises the same path as prod traffic. The test channel is
+        folded in ONLY under ``read_only_mode``: in a normal deployment a leftover
+        ``MATTERMOST_TEST_ALERT_CHANNEL_ID`` must never route real traffic into the
+        live alert path (which would create real Jira issues / Mattermost writes).
+        """
+        if channel_id == self.settings.mattermost_alert_channel_id:
+            return True
+        return (
+            self.settings.read_only_mode
+            and channel_id == self.settings.mattermost_test_alert_channel_id
+        )
+
+    def _is_incident_channel(self, channel_id: str) -> bool:
+        """Incident channel — the real one always, plus (read-only only) the
+        configured test incident channel. See ``_is_alert_channel`` for why the test
+        channel is gated by ``read_only_mode``."""
+        if channel_id == self.settings.mattermost_incident_channel_id:
+            return True
+        return (
+            self.settings.read_only_mode
+            and channel_id == self.settings.mattermost_test_incident_channel_id
+        )
+
     def _prompt_env_default(self, key: str) -> str | None:
         """Env-configured override for a prompt key (``None`` ⇒ built-in default)."""
         if key == _PROMPT_KEY_SUMMARY:

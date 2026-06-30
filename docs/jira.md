@@ -100,14 +100,15 @@ gets rejected.
 (`set_time_to_fix` sends the raw int). Skipped silently when unset. Details of
 who computes the minutes live in [domains/postmortem.md](domains/postmortem.md).
 
-## Test mode (`JIRA_CREATE_ENABLED=false`)
+## Read-only mode (`READ_ONLY_MODE=true`)
 
-In test mode the client makes **no Jira calls for issue-key operations**:
+In read-only (shadow) mode the client makes **no Jira calls for issue-key
+operations** (the broader feature is in [read-only.md](read-only.md)):
 
 - `create_issue` / `create_postmortem_issue` return a stub `JiraIssue`
-  (`stub_jira_issue`): `JIRA_STUB_ISSUE_KEY` plus a Mattermost-post-id suffix for
-  DB uniqueness, or a generated `{JIRA_PROJECT_KEY}-NNNNN` key when unset. The
-  clean configured key is what Mattermost replies display.
+  (`stub_jira_issue`): the hardcoded `ADS-TEST` key plus a Mattermost-post-id
+  suffix for DB uniqueness (`ADS-TEST-<postid>`). The clean `ADS-TEST` key is what
+  Mattermost replies display (`_display_jira_issue`).
 - `get_valid_incident`, `set_validity`, `set_valid_incident`, `set_end_time`,
   `set_time_to_fix`, `set_description`, `add_comment`, `link_child_of` are
   **no-ops**.
@@ -116,4 +117,6 @@ These no-ops are not cosmetic: the stub key **does not exist in Jira**, so witho
 them a follow-up call (e.g. setting `Валидность` during `confirm_incident`) would
 404 and abort the flow after the incident-channel post but before the
 alert-thread reply. Field/option **metadata** reads are global (not issue-scoped)
-and are **not** stubbed — they still hit Jira.
+and are **not** stubbed — they still hit Jira. (Read-only writes that somehow reach
+the HTTP layer are caught by the `_request` backstop, which raises instead of
+mutating prod.)

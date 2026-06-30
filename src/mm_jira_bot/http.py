@@ -13,6 +13,12 @@ from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
 
 T = TypeVar("T")
 
+#: HTTP methods that mutate server state. In read-only mode any such request is
+#: blocked by the ``_request`` backstop unless the caller passes
+#: ``allow_in_read_only=True`` (the audit-channel post, or a read that happens to
+#: use POST, e.g. ``/users/usernames``).
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
 
 def wrap_transport_error(message: str, exc: httpx.HTTPError) -> ApiError:
     """Turn a transport-level httpx error into a retryable :class:`ApiError`.
@@ -82,6 +88,7 @@ class AsyncApiClient:
         json: Any = None,
         params: dict[str, Any] | None = None,
         parse: Callable[[httpx.Response], T],
+        allow_in_read_only: bool = False,
         **fields: Any,
     ) -> T: ...
 
@@ -96,6 +103,7 @@ class AsyncApiClient:
         json: Any = None,
         params: dict[str, Any] | None = None,
         parse: None = None,
+        allow_in_read_only: bool = False,
         **fields: Any,
     ) -> None: ...
 
@@ -109,8 +117,22 @@ class AsyncApiClient:
         json: Any = None,
         params: dict[str, Any] | None = None,
         parse: Callable[[httpx.Response], T] | None = None,
+        allow_in_read_only: bool = False,
         **fields: Any,
     ) -> T | None:
+        if (
+            self._settings.read_only_mode
+            and method.upper() in _WRITE_METHODS
+            and not allow_in_read_only
+        ):
+            # Last-resort backstop: every write is supposed to be suppressed or
+            # redirected to the audit channel at the client-method level. Reaching
+            # here means one slipped through — fail loudly rather than mutate prod.
+            raise RuntimeError(
+                f"read-only backstop blocked {method.upper()} {path} "
+                f"({self.metrics_client_name}); writes must be suppressed before _request"
+            )
+
         async def operation() -> T | None:
             started = perf_counter()
             status = "error"

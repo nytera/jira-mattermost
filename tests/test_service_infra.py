@@ -83,7 +83,7 @@ def test_settings_do_not_backfill_old_messages_by_default(tmp_path, monkeypatch)
     assert loaded_settings.enable_backfill_on_startup is False
 
 
-def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
+def test_settings_loads_read_only_mode(tmp_path, monkeypatch):
     required_env = {
         "MATTERMOST_URL": "https://mattermost.example.com",
         "MATTERMOST_TOKEN": "mm-token",
@@ -97,8 +97,9 @@ def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
         "JIRA_VALID_INCIDENT_FIELD": "Валидность",
         "JIRA_SOURCE_FIELD": "Источник",
         "JIRA_IS_CRIT_ALERT_FIELD": "Был ли крит алерт?",
-        "JIRA_CREATE_ENABLED": "false",
-        "JIRA_STUB_ISSUE_KEY": "ADSDEV-12024",
+        "READ_ONLY_MODE": "true",
+        "MATTERMOST_AUDIT_CHANNEL_ID": "audit-channel",
+        "MATTERMOST_TEST_ALERT_CHANNEL_ID": "test-alert",
         "DATABASE_URL": f"sqlite:///{tmp_path / 'bot.db'}",
     }
     for key, value in required_env.items():
@@ -106,8 +107,73 @@ def test_settings_loads_jira_create_stub_mode(tmp_path, monkeypatch):
 
     loaded_settings = Settings.from_env(tmp_path / "missing.env")
 
-    assert loaded_settings.jira_create_enabled is False
-    assert loaded_settings.jira_stub_issue_key == "ADSDEV-12024"
+    assert loaded_settings.read_only_mode is True
+    assert loaded_settings.mattermost_audit_channel_id == "audit-channel"
+    assert loaded_settings.mattermost_test_alert_channel_id == "test-alert"
+
+
+def test_test_channels_route_to_live_path_only_in_read_only(settings):
+    """A leftover test-channel env var must never route real traffic into the live
+    alert/incident path in a normal (non-read-only) deployment — the test channels
+    are a shadow-only concept, folded in only under read_only_mode."""
+    with_test = replace(
+        settings,
+        mattermost_test_alert_channel_id="test-alert",
+        mattermost_test_incident_channel_id="test-incident",
+    )
+
+    prod = _build_service(replace(with_test, read_only_mode=False))
+    # Real channels are always recognised.
+    assert prod._is_alert_channel("alerts-channel")
+    assert prod._is_incident_channel("incidents-channel")
+    # Test channels are NOT live in prod mode (would otherwise create real Jira
+    # issues / Mattermost writes from test traffic).
+    assert not prod._is_alert_channel("test-alert")
+    assert not prod._is_incident_channel("test-incident")
+
+    shadow = _build_service(replace(with_test, read_only_mode=True))
+    assert shadow._is_alert_channel("test-alert")
+    assert shadow._is_incident_channel("test-incident")
+
+
+def test_settings_bot_user_id_optional(tmp_path, monkeypatch):
+    """MATTERMOST_BOT_USER_ID is optional: unset ⇒ empty string (resolved from the
+    token at startup), not a startup failure."""
+    _set_env(monkeypatch, _full_valid_env())
+    monkeypatch.delenv("MATTERMOST_BOT_USER_ID", raising=False)
+
+    loaded = Settings.from_env(tmp_path / "missing.env")
+
+    assert loaded.mattermost_bot_user_id == ""
+
+
+async def test_resolve_bot_user_id_from_token_when_unset(settings):
+    service = _build_service(replace(settings, mattermost_bot_user_id=""))
+    service.mattermost.bot_user_id_from_api = "resolved-bot"
+
+    await service.resolve_bot_user_id()
+
+    # Pushed into both the service settings (hot path) and the client (add_reaction).
+    assert service.settings.mattermost_bot_user_id == "resolved-bot"
+    assert service.mattermost.adopted_bot_user_id == "resolved-bot"
+
+
+async def test_resolve_bot_user_id_keeps_configured(settings):
+    service = _build_service(settings)  # conftest sets bot-user
+    service.mattermost.bot_user_id_from_api = "should-not-be-used"
+
+    await service.resolve_bot_user_id()
+
+    assert service.settings.mattermost_bot_user_id == "bot-user"
+    assert service.mattermost.adopted_bot_user_id is None
+
+
+async def test_resolve_bot_user_id_raises_on_empty_api(settings):
+    service = _build_service(replace(settings, mattermost_bot_user_id=""))
+    service.mattermost.bot_user_id_from_api = ""
+
+    with pytest.raises(RuntimeError, match="resolve bot user id"):
+        await service.resolve_bot_user_id()
 
 
 def test_settings_load_llm_prompt_overrides(tmp_path, monkeypatch):
@@ -933,7 +999,6 @@ def _set_env(monkeypatch, env: dict[str, str]) -> None:
         "MATTERMOST_TOKEN",
         "DATABASE_URL",
         "JIRA_BASE_URL",
-        "MATTERMOST_BOT_USER_ID",
         "JIRA_PROJECT_KEY",
         "JIRA_ISSUE_TYPE",
         "JIRA_SOURCE_FIELD",

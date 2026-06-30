@@ -22,9 +22,12 @@ init expectations aligned.
 
 - **`alert_tickets`** — the core table. Notable columns: `mattermost_post_id`
   (unique index), `mattermost_alert_title` (extracted from the alert's first line),
-  `jira_issue_key`, `valid_incident`, `incident_post_id`, episode columns
-  (`root_post_id`, `resolved_at`, `validity_label`, `expected_repeat_linked`), and
-  the `creation_status` / `confirmation_status` state machines.
+  `jira_issue_key`, `valid_incident`, `incident_post_id`, `prod_incident_post_id`
+  (read-only adoption — the real prod incident post id, kept separate from the
+  shadow's own `incident_post_id` stub; see [`read-only.md`](read-only.md)),
+  episode columns (`root_post_id`, `resolved_at`, `validity_label`,
+  `expected_repeat_linked`), and the `creation_status` / `confirmation_status`
+  state machines.
 - **`alert_feedback`** — `mattermost_post_id`, `user_id`, display name, message text,
   created-at.
 - **`app_settings`** — a `key`/`value` store for runtime-editable config (the

@@ -20,6 +20,7 @@ from mm_jira_bot.domain import (
     ConfirmationStatus,
     MattermostPost,
     backend_now,
+    incident_ttf_minutes,
     runtime_timezone,
 )
 from mm_jira_bot.formatting import extract_alert_title
@@ -341,17 +342,14 @@ class PostmortemMixin:
                 jira_issue_key=issue_key,
             )
             return
-        tz = runtime_timezone()
-        start = start if start.tzinfo else start.replace(tzinfo=tz)
-        ended = ended_at if ended_at.tzinfo else ended_at.replace(tzinfo=tz)
-        if ended <= start:
+        minutes = incident_ttf_minutes(start, ended_at)
+        if minutes is None:
             log.warning(
                 "jira.time_to_fix.skipped_non_positive",
                 mattermost_post_id=ticket.mattermost_post_id,
                 jira_issue_key=issue_key,
             )
             return
-        minutes = round((ended - start).total_seconds() / 60)
         try:
             await self.jira.set_time_to_fix(issue_key, minutes)
         except ApiError as exc:

@@ -59,14 +59,28 @@ move-only рефакторов.
 `.venv/bin/python scripts/gen_service_map.py && git add docs/reference/service-map.md`.
 Иначе шаг `--check` в `/gate full` упадёт.
 
+## Релизный цикл
+
+Разработка идёт в **ветке версии** (напр. `0.9.0`), не в `main` напрямую.
+
+- **Фича = отдельный коммит** в ветку версии. Дробно и сфокусированно, не «всё одним
+  комком».
+- **Хотфикс — исключение:** срочную правку можно вести отдельной hotfix-веткой, минуя
+  ветку версии.
+- **Запись в CHANGELOG** идёт под секцию текущей версии `## [X.Y.Z]` (а не в
+  `[Unreleased]`). Заголовок версии создаётся при старте ветки.
+- **Мерж в `main`:** когда изменений накопилось достаточно, Claude **сам предлагает**
+  влить ветку версии в `main` — с датой в заголовке `## [X.Y.Z] - YYYY-MM-DD`, git-тегом
+  `vX.Y.Z` и (если нужно) бампом версии под следующий цикл.
+
 ## Doc-sync (перед PR)
 
 При изменении поведения/архитектуры приведи в соответствие нужный документ и добавь
-запись в `[Unreleased]` в [CHANGELOG.md](CHANGELOG.md):
+запись в секцию текущей версии `## [X.Y.Z]` в [CHANGELOG.md](CHANGELOG.md):
 
 - домен/архитектура → нужный файл в [`docs/`](docs/);
 - пользовательское поведение/конфиг → [README.md](README.md) / [docs/config.md](docs/config.md);
-- любое изменение → запись `[Unreleased]` в [CHANGELOG.md](CHANGELOG.md).
+- любое изменение → запись `## [X.Y.Z]` в [CHANGELOG.md](CHANGELOG.md).
 
 `service-map.md` руками НЕ синкается — его держит шаг `--check` в `/gate full`. Эталон
 «что генерируется vs что пишется руками» — [docs/architecture.md](docs/architecture.md).
@@ -133,7 +147,8 @@ Jira payload/опций. Полный харнес — [docs/testing.md](docs/te
 | Саммари треда (`_thread_summary.py`) | [docs/domains/thread-summary.md](docs/domains/thread-summary.md) |
 | Админ-бэкенд: create-from-link, recreate, обёртки жизненного цикла (`_admin.py`, `admin_api.py`) | [docs/domains/admin.md](docs/domains/admin.md) |
 | Админ-фронтенд: web-UI (Vite+React+Tailwind, `web_ui/`) | [docs/admin-ui.md](docs/admin-ui.md) |
-| Резолв полей/опций Jira, формат date-time, тестовый режим | [docs/jira.md](docs/jira.md) |
+| Резолв полей/опций Jira, формат date-time, read-only стаб | [docs/jira.md](docs/jira.md) |
+| Read-only / shadow-режим: зеркало в аудит-канал, подавление записей, тест-каналы | [docs/read-only.md](docs/read-only.md) |
 | Схема БД, миграции, идемпотентность, таймзона | [docs/persistence.md](docs/persistence.md) |
 | Переменные окружения (матрица required/optional) | [docs/config.md](docs/config.md) |
 | Preflight, ops-канал, метрики, recovery/retry, логи | [docs/operations.md](docs/operations.md) |
