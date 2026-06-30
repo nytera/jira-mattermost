@@ -13,8 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import NOTICE_ATTACHMENT_COLOR
-from mm_jira_bot.domain import ConfirmationResult, ConfirmationStatus
+from mm_jira_bot.colors import NOTICE_ATTACHMENT_COLOR
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.retry import ApiError
 
@@ -22,10 +21,8 @@ if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
     from mm_jira_bot.repository import AlertTicketRepository
 
-# Распознавание Mattermost post id в ссылке/тексте (`/incident <permalink>` и
-# админ-панель). Жил в `coordinator`, переехал сюда (лист графа импортов), чтобы
-# `_admin.py` мог импортировать функцию без цикла; `coordinator` ре-импортирует её
-# (ре-экспорт в `service/__init__.py` и тесты продолжают работать без правок).
+# Распознавание Mattermost post id в ссылке/тексте (`/incident <permalink>`).
+# Живут здесь (лист графа импортов) и ре-экспортируются через `service/__init__.py`.
 POST_ID_PATTERN = re.compile(r"(?:^|/)(?:_redirect/)?pl/([a-z0-9]{20,32})(?:$|[/?#])")
 BARE_POST_ID_PATTERN = re.compile(r"^[a-z0-9]{20,32}$")
 
@@ -45,34 +42,12 @@ def parse_post_id_from_text(text: str) -> str | None:
 SUMMARY_PENDING_TEXT = "⏳ Генерация саммари…"
 SUMMARY_FAILED_TEXT = "Не удалось сгенерировать саммари, попробуйте позже."
 
-# DB-override keys for the runtime-editable LLM prompt templates (admin UI).
-# `_PROMPT_KEY_*` читаются снаружи из `admin_api.py` через ре-экспорт в
-# `service/__init__.py` — менять имена нельзя.
-_PROMPT_KEY_SUMMARY = "llm_summary_prompt"
-_PROMPT_KEY_POSTMORTEM = "llm_postmortem_prompt"
-
-
-def _validity_action_message(result: ConfirmationResult, validity_label: str) -> str:
-    if result.status == ConfirmationStatus.VALIDITY_SET:
-        return f"Готово: «Валидность» = {validity_label}."
-    if result.status == ConfirmationStatus.PENDING_JIRA:
-        return "Задача Jira ещё создаётся — обновлю «Валидность» автоматически."
-    if result.status == ConfirmationStatus.ERROR:
-        return "Не удалось обновить «Валидность», попробуйте ещё раз."
-    return result.message
-
 
 @dataclass(frozen=True)
 class ActionResult:
-    """Ephemeral feedback shown to the user who clicked an alert button.
-
-    ``update_attachments``, when set, replaces the originating post's attachments
-    via the Mattermost interactive-action ``update`` response (used to swap the
-    "Создать задачу" prompt for the full controls card after task creation).
-    """
+    """Short human-facing message returned by thread-summary actions."""
 
     message: str
-    update_attachments: list[dict] | None = None
 
 
 # Имя логгера держим стабильным (`mm_jira_bot.service`) во всех файлах пакета —
@@ -121,23 +96,6 @@ class SharedMixin:
             self.settings.read_only_mode
             and channel_id == self.settings.mattermost_test_incident_channel_id
         )
-
-    def _prompt_env_default(self, key: str) -> str | None:
-        """Env-configured override for a prompt key (``None`` ⇒ built-in default)."""
-        if key == _PROMPT_KEY_SUMMARY:
-            return self.settings.llm_summary_prompt
-        if key == _PROMPT_KEY_POSTMORTEM:
-            return self.settings.llm_postmortem_prompt
-        return None
-
-    def _resolve_prompt_template(self, key: str) -> str | None:
-        """Effective prompt override: DB (debug-panel edit) → env → ``None``.
-
-        ``None`` lets ``build_incident_report_prompt`` fall back to the built-in
-        default. The DB read runs only on summary/postmortem generation, so edits
-        from the debug panel apply on the next run with no restart.
-        """
-        return self.repository.get_setting(key) or self._prompt_env_default(key)
 
     @staticmethod
     def _box_thread_reply(message: str, props: dict | None, color: str) -> tuple[str, dict | None]:

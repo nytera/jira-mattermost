@@ -29,8 +29,7 @@ so re-delivery and retries never create a second issue. On `ApiError` it stamps
 
 After the issue is created it: stores the key (`attach_jira_issue`), announces to
 the ops feed (see [../operations.md](../operations.md)), and posts the boxed
-"Создана задача" thread reply (with interactive action attachments when enabled,
-plain otherwise). The on-call `MATTERMOST_DUTY_MENTION` rides as bare text above
+"Создана задача" thread reply. The on-call `MATTERMOST_DUTY_MENTION` rides as bare text above
 the box so the ping fires. A duty cheat-sheet follows when `DUTY_HELP_ENABLED`.
 
 `is_repeat=True` **suppresses the duty ping and the cheat-sheet**:

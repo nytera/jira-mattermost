@@ -6,15 +6,12 @@
 (`from mm_jira_bot.service import IncidentBotService`) продолжали работать.
 """
 
-from mm_jira_bot.service._shared import _PROMPT_KEY_POSTMORTEM, _PROMPT_KEY_SUMMARY
-from mm_jira_bot.service.coordinator import (
-    IncidentBotService,
+from mm_jira_bot.service._shared import (
     parse_post_id_from_text,
 )
+from mm_jira_bot.service.coordinator import IncidentBotService
 
 __all__ = [
     "IncidentBotService",
     "parse_post_id_from_text",
-    "_PROMPT_KEY_POSTMORTEM",
-    "_PROMPT_KEY_SUMMARY",
 ]

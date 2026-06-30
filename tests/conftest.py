@@ -35,7 +35,6 @@ def settings(tmp_path):
         jira_start_field=None,
         jira_end_field=None,
         database_url=f"sqlite:///{tmp_path / 'bot.db'}",
-        mattermost_slash_token="slash-token",
         enable_websocket=False,
         enable_backfill_on_startup=False,
     )

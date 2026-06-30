@@ -1,8 +1,8 @@
 """Инциденты (ручные и из алертов): IncidentMixin.
 
-Полный жизненный цикл инцидента: ручной incident-post (пинг дежурного + карточка
-«Создать задачу»), интерактивные кнопки/чекмарк, выставление валидности и END-
-времени, подтверждение инцидента и публикация сообщения в incident-канал. Методы
+Полный жизненный цикл инцидента: ручной incident-post (пинг дежурного), чекмарк/
+валидность-реакции, выставление валидности и END-времени, подтверждение инцидента и
+публикация сообщения в incident-канал. Методы
 вызываются собранным `IncidentBotService` (см. `coordinator.py`); state
 (`settings`/`repository`/`mattermost`/`jira`/`llm`) ставит конструктор
 координатора, Jira-проводка, постмортем и summary-механика живут в sibling-классах.
@@ -13,19 +13,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from mm_jira_bot.actions import (
-    ACTION_CREATE_TASK,
-    ACTION_END_INCIDENT,
-    ACTION_EXPECTED,
-    ACTION_FALSE,
-    ACTION_SUMMARY,
-    ACTION_VALID,
-    ACTION_VALIDITY,
+from mm_jira_bot.colors import (
     DUTY_HELP_ATTACHMENT_COLOR,
     INCIDENT_DONE_COLOR,
     INCIDENT_OPEN_COLOR,
-    build_incident_controls_attachment,
-    build_incident_create_attachment,
 )
 from mm_jira_bot.domain import (
     ConfirmationResult,
@@ -35,7 +26,6 @@ from mm_jira_bot.domain import (
     incident_ttf_minutes,
 )
 from mm_jira_bot.formatting import (
-    extract_alert_title,
     format_incident_duty_help,
     format_incident_message,
     format_thread_status_changed,
@@ -43,20 +33,13 @@ from mm_jira_bot.formatting import (
     mark_incident_message_completed,
     mention_from_display,
 )
-from mm_jira_bot.jira import (
-    VALID_INCIDENT_CONFIRMED_VALUE,
-    VALID_INCIDENT_EXPECTED_VALUE,
-    VALID_INCIDENT_FALSE_VALUE,
-)
 from mm_jira_bot.jira_payload import format_readonly_jira_params
 from mm_jira_bot.logging import get_logger
-from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
+from mm_jira_bot.repository import AlertTicket, AlertTicketRepository
 from mm_jira_bot.retry import ApiError
-from mm_jira_bot.service._shared import ActionResult, _validity_action_message
 
 if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
-    from mm_jira_bot.domain import JiraIssue
 
 # Имя логгера держим стабильным (`mm_jira_bot.service`) во всех файлах пакета —
 # тесты и настроенные логгеры завязаны на него, а не на `__name__` модуля.
@@ -86,15 +69,7 @@ class IncidentMixin:
         # pyright их иначе не видит на самом миксине. Сигнатуры повторяют реальные
         # (kw-only `*` и имена параметров важны для override-совместимости).
         # --- остаются в coordinator ---
-        def _interactive_controls_enabled(self) -> bool: ...
-
-        def _action_callback_url(self) -> str: ...
-
         def _is_bot_post(self, post: MattermostPost) -> bool: ...
-
-        async def _announce_issue_to_ops(
-            self, ticket: AlertTicket, issue: JiraIssue, *, source: str
-        ) -> None: ...
 
         async def _resolve_user_display(self, user_id: str) -> str: ...
 
@@ -111,15 +86,6 @@ class IncidentMixin:
 
         async def _alert_attachments(self, ticket: AlertTicket) -> list[dict]: ...
 
-        async def apply_validity_label(
-            self,
-            post_id: str,
-            *,
-            validity_label: str,
-            validity_set_at: datetime | None = ...,
-            source: str,
-        ) -> ConfirmationResult: ...
-
         # --- JiraSyncMixin ---
         async def _update_jira_for_confirmation(
             self, ticket: AlertTicket, *, confirmed_by: str
@@ -135,25 +101,21 @@ class IncidentMixin:
             source: str,
             existing_ticket: AlertTicket | None = ...,
             validity_label: str | None = ...,
+            title: str | None = ...,
         ) -> ConfirmationResult: ...
 
         async def _set_time_to_fix(
             self, issue_key: str, ticket: AlertTicket, ended_at: datetime
         ) -> None: ...
 
-        async def _resolve_incident_end_time(
+        async def _resolve_incident_closeout(
             self,
             root_post: MattermostPost,
             *,
             reacted_by_user_id: str,
             reaction_ended_at: datetime,
             ticket: AlertTicket | None,
-        ) -> datetime: ...
-
-        # --- ThreadSummaryMixin ---
-        async def generate_thread_summary(
-            self, alert_post: MattermostPost, *, requested_by_user_id: str, source: str
-        ) -> ActionResult: ...
+        ) -> tuple[datetime, str | None]: ...
 
         # --- SharedMixin ---
         def _is_incident_channel(self, channel_id: str) -> bool: ...
@@ -171,17 +133,16 @@ class IncidentMixin:
         ) -> None: ...
 
     async def handle_manual_incident_post(self, post: MattermostPost) -> None:
-        """A human's root post in the incident channel: ping on-call and (when
-        interactive controls are on) offer a "Создать задачу" card.
+        """A human's root post in the incident channel: ping on-call and post the
+        duty cheat-sheet.
 
-        Only root posts from real users (no bots/webhooks) qualify. The Jira
-        issue is not created here — it is created on the button click or the
-        checkmark. With interactive controls (SERVICE_PUBLIC_URL +
-        INTERACTIVE_BUTTONS_ENABLED≠false) we post the card with the duty mention
-        above it; in emoji-only mode we still post the duty mention alone so the
-        manual incident gets noticed, leaving the checkmark flow as the action
-        path. When no duty mention is configured, emoji-only mode posts nothing.
-        Idempotent: the reply is posted once, guarded by the unique ticket row.
+        Only root posts from real users (no bots/webhooks) qualify. The Jira issue
+        is not created here — it is created when the incident is closed (checkmark /
+        validity reaction) or from the admin API. A configured duty mention is
+        posted so the manual incident gets noticed; the checkmark flow is the action
+        path. When neither a duty mention nor the cheat-sheet is enabled, nothing is
+        posted. Idempotent: the reply is posted once, guarded by the unique ticket
+        row.
         """
         if not self._is_incident_channel(post.channel_id):
             return
@@ -191,11 +152,10 @@ class IncidentMixin:
             return
         if self._is_bot_post(post):
             return
-        interactive = self._interactive_controls_enabled()
         duty_mention = self.settings.mattermost_duty_mention
-        # Nothing to post (no card, no ping, no help) → leave the checkmark flow
-        # as the sole fallback, exactly as before.
-        if not interactive and not duty_mention and not self.settings.duty_help_enabled:
+        # Nothing to post (no ping, no help) → leave the checkmark flow as the sole
+        # fallback, exactly as before.
+        if not duty_mention and not self.settings.duty_help_enabled:
             return
         channel_name = post.channel_name or await self.mattermost.get_channel_name(post.channel_id)
         _ticket, created = self.repository.create_or_get_incident_thread(
@@ -205,26 +165,9 @@ class IncidentMixin:
         )
         if not created:
             return
-        if interactive:
-            callback_url = self._action_callback_url()
-            await self._post_incident_thread_reply(
-                post.id,
-                channel_id=post.channel_id,
-                # The duty mention goes in the message text (above the card) so the
-                # @group ping actually fires — attachment text does not notify.
-                message=duty_mention or "",
-                event="mattermost.incident_thread.controls_published",
-                props={
-                    "attachments": [
-                        build_incident_create_attachment(
-                            incident_post_id=post.id, callback_url=callback_url
-                        )
-                    ]
-                },
-            )
-        elif duty_mention:
-            # No controls: just ping on-call so the manual incident is noticed.
-            # Kept as a bare message (not a boxed notice) so the @mention notifies.
+        if duty_mention:
+            # Ping on-call so the manual incident is noticed. Kept as a bare message
+            # (not a boxed notice) so the @mention notifies.
             await self._post_incident_thread_mention(
                 post.id,
                 channel_id=post.channel_id,
@@ -279,161 +222,6 @@ class IncidentMixin:
             return
         log.info(event, mattermost_post_id=post_id, reply_post_id=reply.id)
 
-    def _incident_controls_attachment(
-        self, incident_post_id: str, *, completed: bool = False
-    ) -> dict:
-        """Build the incident controls card, picking the task header automatically:
-        shown for alert-originated incidents, omitted for manual ones."""
-        callback_url = self._action_callback_url()
-        ticket = self.repository.get_by_incident_post_id(incident_post_id)
-        issue_key = issue_url = None
-        if ticket is not None and ticket.incident_post_id != ticket.mattermost_post_id:
-            issue_key, issue_url = ticket.jira_issue_key, ticket.jira_issue_url
-        return build_incident_controls_attachment(
-            incident_post_id=incident_post_id,
-            callback_url=callback_url,
-            issue_key=issue_key,
-            issue_url=issue_url,
-            completed=completed,
-        )
-
-    async def handle_incident_action(
-        self,
-        *,
-        action: str,
-        incident_post_id: str,
-        user_id: str,
-        selected_option: str = "",
-    ) -> ActionResult:
-        """Dispatch a click from the manual-incident card (incident channel).
-
-        Keyed by the incident root post id (the manual ticket's own
-        ``mattermost_post_id``), so it never touches the alert-channel paths.
-        """
-        if action == ACTION_CREATE_TASK:
-            return await self._incident_create_task(incident_post_id, user_id=user_id)
-
-        try:
-            post = await self.mattermost.get_post(incident_post_id)
-        except ApiError as exc:
-            log.error(
-                "mattermost.incident_action.post_lookup_failed",
-                mattermost_post_id=incident_post_id,
-                action=action,
-                error=str(exc),
-            )
-            return ActionResult(message="Не удалось прочитать сообщение инцидента.")
-
-        if action == ACTION_SUMMARY:
-            return await self.generate_thread_summary(
-                post, requested_by_user_id=user_id, source="incident_action"
-            )
-
-        if action == ACTION_END_INCIDENT:
-            result = await self.handle_incident_checkmark(
-                post,
-                reacted_by_user_id=user_id,
-                ended_at=backend_now(),
-                source="incident_button",
-            )
-            update_attachments = None
-            if (
-                result.status == ConfirmationStatus.INCIDENT_ENDED
-                and self._interactive_controls_enabled()
-            ):
-                update_attachments = [
-                    self._incident_controls_attachment(incident_post_id, completed=True)
-                ]
-            return ActionResult(
-                message=_incident_end_message(result),
-                update_attachments=update_attachments,
-            )
-
-        if action == ACTION_VALIDITY:
-            validity_label = {
-                ACTION_VALID: VALID_INCIDENT_CONFIRMED_VALUE,
-                ACTION_FALSE: VALID_INCIDENT_FALSE_VALUE,
-                ACTION_EXPECTED: VALID_INCIDENT_EXPECTED_VALUE,
-            }.get(selected_option)
-            if validity_label is None:
-                return ActionResult(message="Не выбрана «Валидность».")
-            # apply_validity_label is keyed by the ticket's mattermost_post_id. For
-            # a manual incident that equals the incident post id; for an
-            # alert-originated incident it is the alert post id, so resolve it.
-            ticket = self.repository.get_by_incident_post_id(incident_post_id)
-            post_key = ticket.mattermost_post_id if ticket is not None else incident_post_id
-            result = await self.apply_validity_label(
-                post_key, validity_label=validity_label, source="incident_action"
-            )
-            return ActionResult(message=_validity_action_message(result, validity_label))
-
-        log.info(
-            "mattermost.incident_action.unknown",
-            action=action,
-            mattermost_post_id=incident_post_id,
-        )
-        return ActionResult(message="Неизвестное действие.")
-
-    async def _incident_create_task(self, incident_post_id: str, *, user_id: str) -> ActionResult:
-        ticket = self.repository.get_by_incident_post_id(incident_post_id)
-        if ticket is None:
-            try:
-                post = await self.mattermost.get_post(incident_post_id)
-            except ApiError:
-                return ActionResult(message="Не удалось прочитать сообщение инцидента.")
-            channel_name = post.channel_name or await self.mattermost.get_channel_name(
-                post.channel_id
-            )
-            ticket, _ = self.repository.create_or_get_incident_thread(
-                post,
-                message_url=self.mattermost.permalink(post.id),
-                channel_name=channel_name,
-            )
-
-        if ticket.jira_issue_key is None:
-            summary = (
-                ticket.mattermost_alert_title
-                or extract_alert_title(ticket.mattermost_message_text or "")
-                or "Инцидент"
-            )
-            description = (
-                "Инцидент заведён вручную из Mattermost.\n\n"
-                f"Исходное сообщение: {ticket.mattermost_message_url}"
-            )
-            try:
-                issue = await self.jira.create_postmortem_issue(
-                    ticket_to_post(ticket),
-                    message_url=ticket.mattermost_message_url,
-                    channel_name=ticket.mattermost_channel_name,
-                    summary=summary,
-                    description=description,
-                )
-            except ApiError as exc:
-                self.repository.set_last_error(ticket.mattermost_post_id, str(exc))
-                log.error(
-                    "incident.create_task.failed",
-                    mattermost_post_id=incident_post_id,
-                    error=str(exc),
-                )
-                return ActionResult(message="Не удалось создать задачу, попробуйте ещё раз.")
-            self.repository.attach_jira_issue(ticket.mattermost_post_id, issue.key, issue.url)
-            ticket = self.repository.get_by_post_id(ticket.mattermost_post_id) or ticket
-            await self._announce_issue_to_ops(ticket, issue, source="manual_incident")
-
-        update_attachments = None
-        if self._interactive_controls_enabled():
-            callback_url = self._action_callback_url()
-            update_attachments = [
-                build_incident_controls_attachment(
-                    incident_post_id=incident_post_id,
-                    callback_url=callback_url,
-                )
-            ]
-        return ActionResult(
-            message=f"Создана задача {ticket.jira_issue_key}.",
-            update_attachments=update_attachments,
-        )
-
     async def handle_incident_checkmark(
         self,
         post: MattermostPost,
@@ -472,14 +260,15 @@ class IncidentMixin:
                 incident_message_url=ticket.incident_message_url,
             )
 
-        # Prefer the real recovery time inferred by the LLM from the thread
-        # chronology over the raw reaction timestamp, and feed that single value
-        # to every downstream END / Time-to-Fix write (both apply_incident_end_time
-        # and the postmortem). Falls back to the reaction time when undeterminable.
-        # ``override_end_time`` skips this: an admin who typed an explicit END time
-        # in the UI gets that exact value, not the model's guess.
+        # One LLM call infers both the real recovery time AND the incident title
+        # from the thread chronology. The end time feeds every downstream END /
+        # Time-to-Fix write (apply_incident_end_time and the postmortem); the title
+        # feeds the Jira issue summary. Falls back to the reaction time / alert
+        # title when undeterminable. ``override_end_time`` skips this: an explicit
+        # END time is kept exactly, and the title falls back to the alert title.
+        resolved_title: str | None = None
         if not override_end_time:
-            ended_at = await self._resolve_incident_end_time(
+            ended_at, resolved_title = await self._resolve_incident_closeout(
                 post,
                 reacted_by_user_id=reacted_by_user_id,
                 reaction_ended_at=ended_at,
@@ -528,6 +317,7 @@ class IncidentMixin:
             source=source,
             existing_ticket=ticket,
             validity_label=validity_label,
+            title=resolved_title,
         )
         # Turn the title green once the incident has ended, even if the postmortem
         # itself failed — the end time is already set in Jira, so leaving it red
@@ -874,26 +664,6 @@ class IncidentMixin:
             mattermost_post_id=ticket.mattermost_post_id,
             incident_post_id=incident_post.id,
         )
-        # Same management controls as a manual incident (validity menu, end,
-        # summary), minus "Создать задачу" since the Jira issue already exists.
-        if self._interactive_controls_enabled() and ticket.jira_issue_key:
-            callback_url = self._action_callback_url()
-            await self._post_incident_thread_reply(
-                incident_post.id,
-                channel_id=self.settings.mattermost_incident_channel_id,
-                message="",
-                event="mattermost.incident_thread.controls_published",
-                props={
-                    "attachments": [
-                        build_incident_controls_attachment(
-                            incident_post_id=incident_post.id,
-                            callback_url=callback_url,
-                            issue_key=ticket.jira_issue_key,
-                            issue_url=ticket.jira_issue_url,
-                        )
-                    ]
-                },
-            )
         # The alert thread's cheat-sheet covers firing reactions; the incident
         # thread needs its own (validity = close + postmortem, summary emoji).
         if self.settings.duty_help_enabled:

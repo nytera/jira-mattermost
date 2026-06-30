@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from time import perf_counter
 from typing import Any, TypeVar, overload
 
 import httpx
 
 from mm_jira_bot.config import Settings
 from mm_jira_bot.logging import EventLogger
-from mm_jira_bot.metrics import observe_http
 from mm_jira_bot.retry import ApiError, is_retryable_status, retry_async
 
 T = TypeVar("T")
@@ -41,8 +39,9 @@ class AsyncApiClient:
     boilerplate into ``_request`` / ``_retry``.
     """
 
-    #: Label for Prometheus HTTP metrics; overridden per concrete client.
-    metrics_client_name: str = "unknown"
+    #: Human-readable client label (used in the read-only backstop error);
+    #: overridden per concrete client.
+    client_name: str = "unknown"
 
     def __init__(
         self,
@@ -130,22 +129,16 @@ class AsyncApiClient:
             # here means one slipped through — fail loudly rather than mutate prod.
             raise RuntimeError(
                 f"read-only backstop blocked {method.upper()} {path} "
-                f"({self.metrics_client_name}); writes must be suppressed before _request"
+                f"({self.client_name}); writes must be suppressed before _request"
             )
 
         async def operation() -> T | None:
-            started = perf_counter()
-            status = "error"
             try:
-                try:
-                    response = await self._client.request(method, path, json=json, params=params)
-                except httpx.HTTPError as exc:
-                    raise wrap_transport_error(error_message, exc) from exc
-                status = str(response.status_code)
-                self._raise_for_status(response, error_message)
-                return parse(response) if parse is not None else None
-            finally:
-                observe_http(self.metrics_client_name, method, status, perf_counter() - started)
+                response = await self._client.request(method, path, json=json, params=params)
+            except httpx.HTTPError as exc:
+                raise wrap_transport_error(error_message, exc) from exc
+            self._raise_for_status(response, error_message)
+            return parse(response) if parse is not None else None
 
         return await self._retry(operation, event=event, **fields)
 

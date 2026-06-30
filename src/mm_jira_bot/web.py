@@ -1,26 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from time import perf_counter
 from typing import Any, cast
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi.responses import JSONResponse
 
-from mm_jira_bot.admin_api import mount_admin_ui, register_admin_api
 from mm_jira_bot.audit import AuditMirror
 from mm_jira_bot.config import Settings
 from mm_jira_bot.jira import JiraClient
 from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.logging import configure_logging, get_logger
 from mm_jira_bot.mattermost import MattermostClient
-from mm_jira_bot.metrics import register_ticket_collector
 from mm_jira_bot.ops import OpsNotifier
 from mm_jira_bot.repository import (
     AlertTicketRepository,
@@ -159,12 +155,8 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         mattermost_incident_channel_id=settings.mattermost_incident_channel_id,
         mattermost_ops_channel_id=settings.mattermost_ops_channel_id,
         mattermost_bot_user_id=settings.mattermost_bot_user_id,
-        metrics_enabled=settings.metrics_enabled,
         enable_websocket=settings.enable_websocket,
         enable_backfill_on_startup=settings.enable_backfill_on_startup,
-        interactive_buttons_enabled=(
-            settings.interactive_buttons_enabled and bool(settings.service_public_url)
-        ),
         jira_base_url=settings.jira_base_url,
         jira_project_key=settings.jira_project_key,
         jira_issue_type=settings.jira_issue_type,
@@ -177,7 +169,6 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         llm_api_token_format=_token_format(settings.llm_api_token),
         llm_max_tokens=settings.llm_max_tokens,
         llm_thread_max_chars=settings.llm_thread_max_chars,
-        llm_postmortem_prompt_customized=settings.llm_postmortem_prompt is not None,
         llm_summary_prompt_customized=settings.llm_summary_prompt is not None,
         llm_stream=settings.llm_stream,
         llm_read_timeout=settings.llm_read_timeout,
@@ -226,7 +217,7 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
     results = await asyncio.gather(
         *[_run_dependency_check(dependency, check) for dependency, check in checks]
     )
-    failed_count = len([result for result in results if not result])
+    failed_count = sum(not r for r in results)
     log.info(
         "startup.preflight.completed",
         dependency_count=len(results),
@@ -360,21 +351,17 @@ def create_app(
                 ),
             )
 
-    # Self-health observability: the ops handler counts every error event
-    # (bot_errors_total) and, when an ops channel is set, posts it; the metrics
-    # collector exposes ticket gauges on /metrics scrape.
+    # Self-health observability: when an ops channel is configured, the ops handler
+    # forwards every ERROR-level event to it as a red attachment.
     ops_notifier: OpsNotifier | None = None
-    if settings.mattermost_ops_channel_id or settings.metrics_enabled:
+    if settings.mattermost_ops_channel_id:
         ops_notifier = OpsNotifier(service.mattermost, settings)
         ops_notifier.install()
-    if settings.metrics_enabled:
-        register_ticket_collector(service.repository)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.service = service
-        app.state.owns_clients = owns_clients
         app.state.background_tasks = []
         _warn_removed_env_vars()
         if settings.read_only_mode:
@@ -421,7 +408,7 @@ def create_app(
             for task in app.state.background_tasks:
                 with suppress(asyncio.CancelledError):
                     await task
-            if app.state.owns_clients:
+            if owns_clients:
                 await service.mattermost.aclose()
                 await service.jira.aclose()
                 if service.llm is not None:
@@ -456,93 +443,5 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, bool]:
         return {"ok": True}
-
-    if settings.metrics_enabled:
-
-        @app.get("/metrics")
-        async def metrics() -> Response:
-            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-    @app.post("/mattermost/slash/incident")
-    async def incident_slash_command(request: Request) -> JSONResponse:
-        try:
-            raw_body = (await request.body()).decode("utf-8")
-        except UnicodeDecodeError:
-            log.warning("http.request.bad_body", path=request.url.path)
-            return JSONResponse(
-                {"response_type": "ephemeral", "text": "Malformed request body."},
-                status_code=400,
-            )
-        form = {key: values[0] for key, values in parse_qs(raw_body).items()}
-
-        slash_token = settings.mattermost_slash_token
-        if slash_token and form.get("token") != slash_token:
-            log.warning(
-                "mattermost.slash_command.invalid_token",
-                user_id=form.get("user_id"),
-            )
-            return JSONResponse(
-                {"response_type": "ephemeral", "text": "Invalid slash command token."},
-                status_code=403,
-            )
-
-        response = await service.handle_slash_command(
-            user_id=form.get("user_id", ""),
-            text=form.get("text", ""),
-        )
-        return JSONResponse({"response_type": response.response_type, "text": response.text})
-
-    async def _parse_json_body(request: Request) -> dict | None:
-        """Return the JSON body, or ``None`` after logging a malformed payload."""
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            log.warning("http.request.bad_json", path=request.url.path)
-            return None
-        return body if isinstance(body, dict) else {}
-
-    @app.post("/mattermost/actions/alert")
-    async def alert_action(request: Request) -> JSONResponse:
-        payload = await _parse_json_body(request)
-        if payload is None:
-            return JSONResponse({"error": "Malformed request body."}, status_code=400)
-        context = payload.get("context") or {}
-
-        result = await service.handle_alert_action(
-            action=context.get("action", ""),
-            alert_post_id=context.get("alert_post_id", ""),
-            user_id=payload.get("user_id", ""),
-            user_name=payload.get("user_name", ""),
-            channel_id=payload.get("channel_id", ""),
-            selected_option=context.get("selected_option") or payload.get("selected_option", ""),
-            trigger_id=payload.get("trigger_id", ""),
-            source=context.get("source", "alert"),
-            incident_post_id=context.get("incident_post_id", ""),
-        )
-        body: dict = {"ephemeral_text": result.message}
-        if result.update_attachments is not None:
-            # Replace the originating post's controls (e.g. swap "Создать задачу"
-            # for the full card) via the Mattermost interactive-action update.
-            body["update"] = {"props": {"attachments": result.update_attachments}}
-        return JSONResponse(body)
-
-    @app.post("/mattermost/dialogs/feedback")
-    async def feedback_dialog(request: Request) -> JSONResponse:
-        payload = await _parse_json_body(request)
-        if payload is None:
-            return JSONResponse({"error": "Malformed request body."}, status_code=400)
-        result = await service.handle_feedback_dialog_submission(
-            user_id=payload.get("user_id", ""),
-            state=payload.get("state", ""),
-            submission=payload.get("submission") or {},
-            cancelled=bool(payload.get("cancelled")),
-        )
-        if result.message:
-            return JSONResponse({"error": result.message})
-        return JSONResponse({})
-
-    if settings.admin_ui_enabled:
-        register_admin_api(app, service)
-        mount_admin_ui(app)
 
     return app

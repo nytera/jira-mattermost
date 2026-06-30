@@ -1,11 +1,11 @@
 """Forward bot error events to a dedicated Mattermost ops channel.
 
 Every ``log.error`` from ``mm_jira_bot.*`` already names a structured event, so a
-single logging handler is the whole feature: it counts the error
-(``bot_errors_total``) and, when an ops channel is configured, enqueues a compact
-payload for :meth:`OpsNotifier.drain` to post as a colored attachment.
+single logging handler is the whole feature: when an ops channel is configured it
+enqueues a compact payload for :meth:`OpsNotifier.drain` to post as a colored
+attachment.
 
-Hardening (see plan):
+Hardening:
 
 * **Best-effort** — delivery failures are swallowed and logged at WARNING; the
   drain loop never dies.
@@ -21,12 +21,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import OPS_ALERT_COLOR
+from mm_jira_bot.colors import OPS_ALERT_COLOR
 from mm_jira_bot.logging import LOGGER_PREFIX, get_logger
-from mm_jira_bot.metrics import errors_total, ops_alerts_dropped_total
 
 if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
@@ -80,7 +80,6 @@ class OpsLogHandler(logging.Handler):
                 return
             fields = _record_fields(record)
             event = str(fields.get("event") or record.getMessage())
-            errors_total.labels(event=event).inc()
             if self._queue is None or self._loop is None:
                 return
             now = time.monotonic()
@@ -96,10 +95,9 @@ class OpsLogHandler(logging.Handler):
     def _enqueue(self, payload: dict[str, Any]) -> None:
         if self._queue is None:
             return
-        try:
+        # Drop on overflow (best-effort; the queue is intentionally bounded).
+        with suppress(asyncio.QueueFull):
             self._queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            ops_alerts_dropped_total.inc()
 
 
 class OpsNotifier:

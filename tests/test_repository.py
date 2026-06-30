@@ -418,58 +418,13 @@ def test_list_alerts_orders_created_at_desc(repo, session_factory):
 
 
 # --------------------------------------------------------------------------- #
-# _mutate / _require_ticket / add_feedback KeyError on unknown post
+# _mutate / _require_ticket KeyError on unknown post
 # --------------------------------------------------------------------------- #
 
 
 def test_mutate_raises_keyerror_on_unknown_post(repo):
     with pytest.raises(KeyError):
         repo.set_last_error("nope", "boom")
-
-
-def test_add_feedback_raises_keyerror_on_unknown_post(repo):
-    with pytest.raises(KeyError):
-        repo.add_feedback(
-            "nope",
-            user_id="u",
-            user_display_name="User",
-            message="hi",
-        )
-
-
-def test_add_feedback_persists_for_known_ticket(repo, session_factory):
-    with session_factory() as session:
-        session.add(make_ticket(mattermost_post_id="fb-post"))
-        session.commit()
-
-    fb = repo.add_feedback(
-        "fb-post",
-        user_id="u1",
-        user_display_name="User One",
-        message="looks bad",
-    )
-    assert fb.id is not None
-    assert repo.list_feedback("fb-post")[0].message == "looks bad"
-
-
-# --------------------------------------------------------------------------- #
-# Settings upsert / get / delete
-# --------------------------------------------------------------------------- #
-
-
-def test_set_setting_upsert_last_write_wins(repo):
-    repo.set_setting("prompt", "v1")
-    assert repo.get_setting("prompt") == "v1"
-    repo.set_setting("prompt", "v2")  # idempotent key, last write wins
-    assert repo.get_setting("prompt") == "v2"
-
-
-def test_get_and_delete_missing_setting_are_safe(repo):
-    assert repo.get_setting("absent") is None
-    repo.delete_setting("absent")  # must not raise
-    repo.set_setting("k", "v")
-    repo.delete_setting("k")
-    assert repo.get_setting("k") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -523,96 +478,6 @@ def test_stats_summary_counts(repo, session_factory):
     assert summary["confirmed"] == 1
     assert summary["empty_validity"] == 2
     assert summary["creation_statuses"]["pending_jira"] == 1
-
-
-# --------------------------------------------------------------------------- #
-# admin_stats
-# --------------------------------------------------------------------------- #
-
-
-def test_admin_stats_durations_timeseries_and_channels(repo, session_factory):
-    from datetime import timedelta
-
-    base = backend_now() - timedelta(days=2)
-    old = backend_now() - timedelta(days=200)
-    with session_factory() as session:
-        # A: confirmed +60s, resolved +300s, on chan-A.
-        session.add(
-            make_ticket(
-                mattermost_post_id="as-a",
-                mattermost_channel_id="chan-A",
-                mattermost_channel_name="alpha",
-                mattermost_message_created_at=base,
-                confirmed_at=base + timedelta(seconds=60),
-                resolved_at=base + timedelta(seconds=300),
-                valid_incident=True,
-            )
-        )
-        # B: confirmed +120s, never resolved (still open), on chan-A.
-        session.add(
-            make_ticket(
-                mattermost_post_id="as-b",
-                mattermost_channel_id="chan-A",
-                mattermost_channel_name="alpha",
-                mattermost_message_created_at=base,
-                confirmed_at=base + timedelta(seconds=120),
-                valid_incident=True,
-            )
-        )
-        # C: labeled false alarm, on chan-B (no durations).
-        session.add(
-            make_ticket(
-                mattermost_post_id="as-c",
-                mattermost_channel_id="chan-B",
-                mattermost_channel_name="bravo",
-                mattermost_message_created_at=base,
-                validity_label="Ложный",
-            )
-        )
-        # D: outside the timeseries window — counted in totals/channels, not in
-        # the daily series.
-        session.add(
-            make_ticket(
-                mattermost_post_id="as-d",
-                mattermost_channel_id="chan-C",
-                mattermost_channel_name="charlie",
-                mattermost_message_created_at=old,
-            )
-        )
-        session.commit()
-
-    stats = repo.admin_stats()
-
-    assert stats["total"] == 4
-    # MTTA = mean(60s, 120s); MTTR = mean(300s) — only A resolved.
-    assert stats["mtta_seconds"] == 90.0
-    assert stats["mttr_seconds"] == 300.0
-    assert stats["open"] == 1  # B: valid_incident & not resolved
-    assert stats["closed"] == 1  # A: resolved_at set
-    assert stats["by_validity_label"] == {"Не заполнено": 3, "Ложный": 1}
-    # Channels ranked by count; chan-A leads with two tickets.
-    assert stats["top_channels"][0]["channel_id"] == "chan-A"
-    assert stats["top_channels"][0]["count"] == 2
-    # D (200 days old) is excluded from the 90-day series; A+B+C remain.
-    assert sum(day["total"] for day in stats["timeseries_daily"]) == 3
-    assert sum(day["confirmed"] for day in stats["timeseries_daily"]) == 2
-
-
-def test_admin_stats_window_can_be_narrowed(repo, session_factory):
-    from datetime import timedelta
-
-    with session_factory() as session:
-        session.add(
-            make_ticket(
-                mattermost_post_id="aw-1",
-                mattermost_message_created_at=backend_now() - timedelta(days=10),
-            )
-        )
-        session.commit()
-
-    assert repo.admin_stats(timeseries_days=90)["timeseries_daily"]
-    assert repo.admin_stats(timeseries_days=5)["timeseries_daily"] == []
-    assert repo.admin_stats(timeseries_days=5)["total"] == 1
 
 
 # --------------------------------------------------------------------------- #

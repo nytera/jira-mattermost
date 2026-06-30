@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 
-from mm_jira_bot.actions import (
+from mm_jira_bot.colors import (
     INCIDENT_OPEN_COLOR,
     NOTICE_ATTACHMENT_COLOR,
     OPS_ISSUE_CREATED_COLOR,
-    alert_action_callback_url,
 )
 from mm_jira_bot.config import Settings
 from mm_jira_bot.domain import (
@@ -33,7 +32,6 @@ from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import parse_posted_event, parse_reaction_event
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository
 from mm_jira_bot.retry import ApiError
-from mm_jira_bot.service._admin import AdminMixin
 from mm_jira_bot.service._alerts import AlertMixin
 from mm_jira_bot.service._incidents import IncidentMixin
 from mm_jira_bot.service._jira_sync import JiraSyncMixin
@@ -41,7 +39,6 @@ from mm_jira_bot.service._postmortem import PostmortemMixin
 from mm_jira_bot.service._shared import (
     ActionResult,
     SharedMixin,
-    parse_post_id_from_text,
 )
 from mm_jira_bot.service._thread_summary import ThreadSummaryMixin
 
@@ -61,16 +58,9 @@ INCIDENT_END_REACTION_NAMES = {
 _JIRA_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 
 
-@dataclass(frozen=True)
-class CommandResponse:
-    text: str
-    response_type: str = "ephemeral"
-
-
 class IncidentBotService(
     SharedMixin,
     AlertMixin,
-    AdminMixin,
     IncidentMixin,
     JiraSyncMixin,
     PostmortemMixin,
@@ -192,22 +182,6 @@ class IncidentBotService(
 
     def _is_authorized(self, user_id: str) -> bool:
         return not self._authorization_enforced or user_id in self._authorized_user_ids
-
-    def _interactive_controls_enabled(self) -> bool:
-        """Whether to attach interactive button/menu cards (vs. emoji-only mode).
-
-        Controls need an absolute callback URL (``SERVICE_PUBLIC_URL``); even with
-        one configured, ``INTERACTIVE_BUTTONS_ENABLED=false`` forces emoji-only
-        mode, dropping every card and leaving the emoji-reaction flow as the only
-        entry point.
-        """
-        return bool(self.settings.service_public_url) and self.settings.interactive_buttons_enabled
-
-    def _action_callback_url(self) -> str:
-        service_public_url = self.settings.service_public_url
-        if service_public_url is None:
-            raise RuntimeError("SERVICE_PUBLIC_URL is required for interactive controls")
-        return alert_action_callback_url(service_public_url)
 
     async def handle_websocket_event(self, event: dict) -> None:
         posted = parse_posted_event(event)
@@ -519,46 +493,6 @@ class IncidentBotService(
             mattermost_post_id=post_id,
             reply_post_id=reply.id,
         )
-
-    async def handle_slash_command(self, *, user_id: str, text: str) -> CommandResponse:
-        log.info(
-            "mattermost.slash_command.received",
-            user_id=user_id,
-            text=text,
-        )
-        if not self._is_authorized(user_id):
-            log.info("mattermost.slash_command.skipped_unauthorized", user_id=user_id)
-            return CommandResponse(text="У вас нет прав на эту команду.")
-        post_id = parse_post_id_from_text(text)
-        if post_id is None:
-            return CommandResponse(
-                text=(
-                    "Invalid link. Use `/incident <band_message_link>` "
-                    "with a Band permalink to an alert message."
-                )
-            )
-
-        try:
-            post = await self.mattermost.get_post(post_id)
-        except ApiError as exc:
-            log.error(
-                "mattermost.slash_command.post_lookup_failed",
-                mattermost_post_id=post_id,
-                error=str(exc),
-            )
-            return CommandResponse(text=f"Could not read Band post `{post_id}`.")
-
-        if not self._is_alert_channel(post.channel_id):
-            return CommandResponse(text="This message is not in the configured alerts channel.")
-
-        ticket = self.repository.get_by_post_id(post_id)
-        if ticket is None or ticket.jira_issue_key is None:
-            await self.handle_alert_post(post)
-
-        result = await self.confirm_incident(
-            post_id, confirmed_by_user_id=user_id, source="slash_command"
-        )
-        return CommandResponse(text=result.message)
 
     async def _announce_issue_to_ops(
         self, ticket: AlertTicket, issue: JiraIssue, *, source: str

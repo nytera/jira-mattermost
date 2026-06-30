@@ -25,7 +25,7 @@ Two layers, primary + backstop:
      `link_child_of`) is a no-op in read-only; `create_*` return an `ADS-TEST-<postid>`
      stub. `get_valid_incident` returns `None`. See [jira.md](jira.md).
    - **Mattermost** (`mattermost.py`): `create_post` / `add_reaction` / `update_post`
-     are redirected to the `AuditMirror`; `open_dialog` (deprecated) is dropped.
+     are redirected to the `AuditMirror`.
 2. **`_request` backstop (`http.py`).** Any write method (POST/PUT/PATCH/DELETE) that
    reaches the HTTP layer in read-only **raises** unless it is explicitly marked
    `allow_in_read_only=True`. Only the audit post (and pure POST-reads like
@@ -126,10 +126,8 @@ started mid-incident) is consumed without adoption.
 
 ## Limitations
 
-- The shadow only sees an incident **closure** done via the ✅ **emoji reaction**.
-  A button-based "Завершить" is an HTTP callback to prod, invisible to the
-  shadow's websocket, so no shadow postmortem fires for it (consistent with the
-  "buttons deprecated, reactions only" stance).
+- The shadow sees an incident **closure** only via the ✅ **emoji reaction** — the
+  sole closure path now that interactive buttons are removed.
 - Prod's bot adds an "Ожидаемый" reaction on repeat alerts. The shadow's
   bot-reaction ignore keys on the *shadow's own* bot id, so a prod-bot reaction is
   not ignored — in read-only that only produces extra audit noise (the Jira write

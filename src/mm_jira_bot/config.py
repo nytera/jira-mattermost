@@ -127,9 +127,6 @@ class Settings:
     bind_host: str = "0.0.0.0"
     bind_port: int = 8080
     incident_timezone: str = "Europe/Moscow"
-    mattermost_slash_token: str | None = None
-    service_public_url: str | None = None
-    interactive_buttons_enabled: bool = False
     duty_help_enabled: bool = True
     jira_time_to_fix_field: str | None = None
     jira_repeat_link_inward: str = "is child of"
@@ -141,7 +138,6 @@ class Settings:
     mattermost_duty_mention: str | None = None
     mattermost_ops_channel_id: str | None = None
     ops_cooldown_seconds: int = 300
-    metrics_enabled: bool = True
     log_level: str = "INFO"
     log_format: str = "json"
     api_retry_attempts: int = 4
@@ -150,15 +146,11 @@ class Settings:
     backfill_recent_posts_limit: int = 0
     enable_websocket: bool = True
     enable_backfill_on_startup: bool = False
-    admin_ui_enabled: bool = False
-    admin_ui_token: str | None = None
-    admin_mm_user_id: str | None = None
     llm_base_url: str = "https://corellm.wb.ru/deepseek/v1"
     llm_api_token: str | None = None
     llm_model: str = "deepseek-chat"
     llm_max_tokens: int = 4000
     llm_thread_max_chars: int = 24000
-    llm_postmortem_prompt: str | None = None
     llm_summary_prompt: str | None = None
     llm_stream: bool = True
     llm_read_timeout: float = 120.0
@@ -171,7 +163,6 @@ class Settings:
     @classmethod
     def from_env(cls, dotenv_path: str | Path = ".env") -> Settings:
         load_dotenv_file(dotenv_path)
-        service_public_url = _env("SERVICE_PUBLIC_URL")
         return cls(
             mattermost_url=_required("MATTERMOST_URL").rstrip("/"),
             mattermost_token=_required("MATTERMOST_TOKEN"),
@@ -205,9 +196,6 @@ class Settings:
             bind_host=_env("HOST", "0.0.0.0"),
             bind_port=_int_env("PORT", 8080),
             incident_timezone=_env("INCIDENT_TIMEZONE", "Europe/Moscow"),
-            mattermost_slash_token=_env("MATTERMOST_SLASH_TOKEN"),
-            service_public_url=service_public_url.rstrip("/") if service_public_url else None,
-            interactive_buttons_enabled=_env("INTERACTIVE_BUTTONS_ENABLED", "false") == "true",
             duty_help_enabled=_env("DUTY_HELP_ENABLED", "true") != "false",
             mattermost_false_incident_reaction_name=_env(
                 "MATTERMOST_FALSE_INCIDENT_REACTION_NAME", "man_gesturing_no"
@@ -223,7 +211,6 @@ class Settings:
             mattermost_duty_mention=_env("MATTERMOST_DUTY_MENTION"),
             mattermost_ops_channel_id=_env("MATTERMOST_OPS_CHANNEL_ID"),
             ops_cooldown_seconds=_int_env("MATTERMOST_OPS_COOLDOWN_SECONDS", 300),
-            metrics_enabled=_env("METRICS_ENABLED", "true") != "false",
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),
@@ -232,15 +219,11 @@ class Settings:
             backfill_recent_posts_limit=_int_env("BACKFILL_RECENT_POSTS_LIMIT", 0),
             enable_websocket=_env("ENABLE_WEBSOCKET", "true") != "false",
             enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false") == "true",
-            admin_ui_enabled=_env("ADMIN_UI_ENABLED", "false") == "true",
-            admin_ui_token=_env("ADMIN_UI_TOKEN"),
-            admin_mm_user_id=_env("ADMIN_MM_USER_ID"),
             llm_base_url=_env("LLM_BASE_URL", "https://corellm.wb.ru/deepseek/v1").rstrip("/"),
             llm_api_token=_first_env("LLM_API_TOKEN", "CORELLM_API_TOKEN", "OPENAI_API_KEY"),
             llm_model=_env("LLM_MODEL", "deepseek-chat"),
             llm_max_tokens=_int_env("LLM_MAX_TOKENS", 4000),
             llm_thread_max_chars=_int_env("LLM_THREAD_MAX_CHARS", 24000),
-            llm_postmortem_prompt=_text_env("LLM_POSTMORTEM_PROMPT"),
             llm_summary_prompt=_text_env("LLM_SUMMARY_PROMPT"),
             llm_stream=_env("LLM_STREAM", "true") != "false",
             llm_read_timeout=_float_env("LLM_READ_TIMEOUT", 120.0),

@@ -82,7 +82,7 @@ def _next_start_at(data: dict[str, Any], values: list[Any], start_at: int) -> in
 
 
 class JiraClient(AsyncApiClient):
-    metrics_client_name = "jira"
+    client_name = "jira"
 
     def __init__(
         self,

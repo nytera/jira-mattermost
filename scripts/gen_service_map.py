@@ -31,7 +31,7 @@ SRC = ROOT / "src" / "mm_jira_bot"
 OUT = ROOT / "docs" / "reference" / "service-map.md"
 
 # Files whose ``@app.<method>("/path")`` decorators define the HTTP surface.
-ROUTE_FILES = ("web.py", "admin_api.py")
+ROUTE_FILES = ("web.py",)
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 # The assembled service class whose declared bases give the mixin MRO.
 SERVICE_MODULE = SRC / "service" / "coordinator.py"
@@ -218,12 +218,6 @@ def render() -> str:
     # 3. HTTP routes.
     routes = collect_routes()
     lines.append("## HTTP routes")
-    lines.append("")
-    lines.append(
-        "_`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` "
-        "routes show `no` because they sit at the top of `register_admin_api` / "
-        "`mount_admin_ui`, which `web.py` calls only when `admin_ui_enabled`._"
-    )
     lines.append("")
     lines.append("| Method | Path | Handler | Conditional |")
     lines.append("|---|---|---|---|")

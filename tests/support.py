@@ -29,7 +29,6 @@ class FakeMattermostClient:
     def __init__(self) -> None:
         self.posts: dict[str, MattermostPost] = {}
         self.created_posts: list[dict] = []
-        self.opened_dialogs: list[dict] = []
         self.updated_posts: list[dict] = []
         self.display_names: dict[str, str] = {}
         self.username_to_id: dict[str, str] = {}
@@ -122,15 +121,6 @@ class FakeMattermostClient:
             if props is not None:
                 changes["props"] = props
             self.posts[post_id] = replace(self.posts[post_id], **changes)
-
-    async def open_dialog(
-        self,
-        *,
-        trigger_id: str,
-        url: str,
-        dialog: dict,
-    ) -> None:
-        self.opened_dialogs.append({"trigger_id": trigger_id, "url": url, "dialog": dialog})
 
     async def fetch_recent_channel_posts(self, channel_id: str, *, limit: int):
         return []
@@ -265,21 +255,23 @@ class FakeLlmClient:
         ),
     ) -> None:
         self.report = report
+        # Closeout (END + title) prompts seen at incident finalize.
         self.prompts: list[str] = []
         self.summary_prompts: list[str] = []
         self.summary = "Суть: всё сломалось.\nСтатус: в работе."
-        # End-time extraction answer; default UNKNOWN so tests keep the legacy
-        # reaction-time behavior unless they opt into a derived value.
+        # Closeout end-time answer; default UNKNOWN so tests keep the legacy
+        # reaction-time behavior unless they opt into a derived value. The title
+        # line of the closeout answer reuses the report's first `[INC] …` line.
         self.end_time = "UNKNOWN"
-        self.end_time_prompts: list[str] = []
 
-    async def generate_postmortem(self, prompt: str) -> str:
+    @property
+    def closeout_title(self) -> str:
+        first = self.report.splitlines()[0].strip() if self.report.strip() else ""
+        return first or "[INC] Инцидент"
+
+    async def resolve_incident_closeout(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        return self.report
-
-    async def extract_incident_end_time(self, prompt: str) -> str:
-        self.end_time_prompts.append(prompt)
-        return self.end_time
+        return f"END: {self.end_time}\nTITLE: {self.closeout_title}"
 
     async def generate_summary(self, prompt: str, *, on_progress=None) -> str:
         self.summary_prompts.append(prompt)
@@ -370,16 +362,6 @@ def _reply_text(reply):
         return reply["message"]
     attachments = (reply.get("props") or {}).get("attachments") or []
     return attachments[0].get("text", "") if attachments else ""
-
-
-def _incident_service(settings):
-    return _build_service(
-        replace(
-            settings,
-            service_public_url="https://bot.example.com",
-            interactive_buttons_enabled=True,
-        )
-    )
 
 
 def _manual_post(

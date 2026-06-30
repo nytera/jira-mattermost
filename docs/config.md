@@ -43,7 +43,6 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `MATTERMOST_FALSE_INCIDENT_REACTION_NAME` | `man_gesturing_no` | Lightweight `Ложный` validity reaction |
 | `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` | `arrows_counterclockwise` | `Ожидаемый` reaction; also the bot's self-added repeat marker |
 | `MATTERMOST_SUMMARY_REACTION_NAME` | `memo` | Triggers a thread summary in any channel |
-| `MATTERMOST_SLASH_TOKEN` | — | If set, validates the `/incident` slash token |
 | `MATTERMOST_BOT_USER_ID` | resolved from token | Bot's own user id (so it ignores its own posts/reactions). Unset ⇒ auto-resolved from the bot token via `/users/me` at startup; set ⇒ kept and preflight cross-checks it |
 | `MATTERMOST_AUTHORIZED_USERNAMES` | empty | Comma/`;`-separated logins **and** group names; leading `@` stripped. Empty = act on everyone |
 | `MATTERMOST_AUTHORIZED_REFRESH_SECONDS` | `300` | Allowlist re-resolve interval |
@@ -89,23 +88,16 @@ mirrors everything to an audit channel. Full behavior: [`read-only.md`](read-onl
 | `LLM_STREAM_EDIT_INTERVAL_SECONDS` | `1.5` | Min interval between live edits |
 | `LLM_STREAM_EDIT_MIN_CHARS` | `80` | Or every N new chars (whichever first) |
 | `LLM_READ_TIMEOUT` | `120.0` | LLM read timeout (seconds) |
-| `LLM_POSTMORTEM_PROMPT` / `_FILE` | — | Override the postmortem prompt |
 | `LLM_SUMMARY_PROMPT` / `_FILE` | — | Override the summary prompt |
 
-Prompt resolution order (DB override → env → built-in default) and placeholders are in
-[`domains/postmortem.md`](domains/postmortem.md). Runtime overrides via the admin UI (Settings page).
+Prompt resolution order (env → built-in default) and placeholders are in
+[`domains/postmortem.md`](domains/postmortem.md).
 
 ## Service / behavior (optional)
 
 | Var | Default | Meaning |
 |---|---|---|
-| `SERVICE_PUBLIC_URL` | — | Public URL for interactive callback URLs (trailing `/` stripped) |
-| `INTERACTIVE_BUTTONS_ENABLED` | `false` | Buttons on (needs `SERVICE_PUBLIC_URL` too); default = emoji-only |
 | `DUTY_HELP_ENABLED` | `true` | Post the duty cheat-sheet reply |
-| `METRICS_ENABLED` | `true` | Expose `GET /metrics` |
-| `ADMIN_UI_ENABLED` | `false` | Mount the admin UI + API; see [`admin-ui.md`](admin-ui.md) |
-| `ADMIN_UI_TOKEN` | — | Bearer token for `/admin/api/*`; required when `ADMIN_UI_ENABLED` |
-| `ADMIN_MM_USER_ID` | — | Mattermost user id used to attribute UI-driven lifecycle actions (fallback label `admin-ui`) |
 | `ENABLE_WEBSOCKET` | `true` | Connect to the Mattermost WS |
 | `ENABLE_BACKFILL_ON_STARTUP` | `false` | Process recent channel history on start |
 | `BACKFILL_RECENT_POSTS_LIMIT` | `0` | How many recent posts to backfill |

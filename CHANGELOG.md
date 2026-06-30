@@ -5,6 +5,53 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [семантического версионирования](https://semver.org/lang/ru/).
 
+## [0.10.0] - 2026-06-30
+
+### Удалено
+
+- **Интерактивные кнопки/меню в треде** и **slash-команда `/incident`** убраны
+  целиком — алерты и инциденты размечаются только реакциями-эмодзи (и через
+  админ-UI/API). Удалены HTTP-роуты `POST /mattermost/actions/alert`,
+  `/mattermost/slash/incident`, `/mattermost/dialogs/feedback`, env-переменные
+  `INTERACTIVE_BUTTONS_ENABLED`, `SERVICE_PUBLIC_URL`, `MATTERMOST_SLASH_TOKEN` и
+  модуль `actions.py` (цветовые константы переехали в `colors.py`).
+- **Фича обратной связи** удалена целиком: кнопка «💬 Обратная связь» и её диалог,
+  хранилище (`add_feedback` / `list_feedback`, модель `alert_feedback`),
+  админ-эндпоинт `GET /admin/api/alerts/{post_id}/feedback` и панель «Фидбэк» в
+  админ-UI. Таблицу в БД не дропаем (миграция не пишется); reference-DDL
+  `002_create_alert_feedback.sql` удалён, чтобы зеркало-схема осталась согласованной
+  с моделью.
+- **Админский web-UI и его HTTP API** убраны целиком: SPA `web_ui/` (Vite+React),
+  модуль `admin_api.py` со всеми ручками `/admin/api/*` и SPA-mount `/admin`,
+  сервис-миксин `_admin.py` (`AdminMixin`), env-переменные `ADMIN_UI_ENABLED`,
+  `ADMIN_UI_TOKEN`, `ADMIN_MM_USER_ID`. Жизненный цикл инцидентов размечается только
+  реакциями-эмодзи. Заодно удалён in-memory ring buffer логов (кормил страницу
+  `/admin/api/logs`) и Node-стейдж сборки фронта из `Dockerfile`.
+- **Prometheus-метрики** убраны целиком: модуль `metrics.py`, эндпоинт `/metrics`,
+  флаг `METRICS_ENABLED`, зависимость `prometheus-client`, HTTP-инструментация в
+  `http.py`, счётчики ошибок в `ops.py` и admin-агрегат `admin_stats` в
+  `repository.py`. `stats_summary` остаётся — её использует startup-preflight.
+- **DB-override LLM-промптов** убран: после удаления админ-UI у него не осталось
+  интерфейса записи, промпты резолвятся `env → встроенный дефолт`. Удалены модель
+  `app_settings` (`AppSetting`), методы `get/set/delete_setting`, ключи `_PROMPT_KEY_*`
+  и индирекция `_resolve_prompt_template`/`_prompt_env_default`, reference-DDL
+  `006_create_app_settings.sql`. Живую таблицу в БД не дропаем (миграция не пишется).
+- **env `LLM_POSTMORTEM_PROMPT`** (и `_FILE`) убран: LLM-отчёт постмортема на закрытии
+  больше не генерится, override стал инертным. Саммари-промпт остаётся
+  (`LLM_SUMMARY_PROMPT`).
+
+### Изменено
+
+- **Тред-саммари — только по эмодзи `memo`, и теперь идёт в Jira.** При закрытии
+  инцидента авто-саммари в тред больше не постится, и LLM-комментарий постмортема в
+  Jira не пишется — остаётся описание-шаблон и проводка полей (END, валидность,
+  Time-to-Fix, зелёный заголовок, плашка «Инцидент закрыт»). Саммари по эмодзи
+  дополнительно отправляется комментарием в Jira, если у треда есть задача (иначе —
+  предупреждение в ответе).
+- **Закрытие инцидента: END-время и заголовок — одним LLM-запросом**
+  (`resolve_incident_closeout`) вместо двух (`extract_incident_end_time` +
+  `generate_postmortem`).
+
 ## [0.9.0] - 2026-06-30
 
 ### Добавлено

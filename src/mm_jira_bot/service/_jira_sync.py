@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import DUTY_HELP_ATTACHMENT_COLOR
+from mm_jira_bot.colors import DUTY_HELP_ATTACHMENT_COLOR
 from mm_jira_bot.domain import JiraIssue
 from mm_jira_bot.formatting import (
     format_alert_duty_help,
@@ -58,15 +58,6 @@ class JiraSyncMixin:
         async def _announce_issue_to_ops(
             self, ticket: AlertTicket, issue: JiraIssue, *, source: str
         ) -> None: ...
-
-        def _alert_action_attachments(
-            self,
-            alert_post_id: str,
-            *,
-            title: str | None = ...,
-            title_link: str | None = ...,
-            confirmed: bool = ...,
-        ) -> list[dict] | None: ...
 
         async def _post_alert_thread_reply(
             self,
@@ -146,33 +137,15 @@ class JiraSyncMixin:
                 jira_issue_key=display_issue.key,
                 jira_issue_url=display_issue.url,
             )
-            action_attachments = self._alert_action_attachments(
-                ticket.mattermost_post_id,
-                title=display_issue.key,
-                title_link=display_issue.url,
-            )
             duty_mention = None if is_repeat else self.settings.mattermost_duty_mention
-            if action_attachments is not None:
-                await self._post_alert_thread_reply(
-                    ticket.mattermost_post_id,
-                    channel_id=ticket.mattermost_channel_id,
-                    message="",
-                    event="mattermost.alert_thread.issue_notice_published",
-                    props={
-                        "jira_issue_key": issue.key,
-                        "attachments": action_attachments,
-                    },
-                    mention=duty_mention,
-                )
-            else:
-                await self._post_alert_thread_reply(
-                    ticket.mattermost_post_id,
-                    channel_id=ticket.mattermost_channel_id,
-                    message=issue_message,
-                    event="mattermost.alert_thread.issue_notice_published",
-                    props={"jira_issue_key": issue.key},
-                    mention=duty_mention,
-                )
+            await self._post_alert_thread_reply(
+                ticket.mattermost_post_id,
+                channel_id=ticket.mattermost_channel_id,
+                message=issue_message,
+                event="mattermost.alert_thread.issue_notice_published",
+                props={"jira_issue_key": issue.key},
+                mention=duty_mention,
+            )
             if self.settings.duty_help_enabled and not is_repeat:
                 await self._post_alert_thread_reply(
                     ticket.mattermost_post_id,

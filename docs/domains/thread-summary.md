@@ -2,8 +2,8 @@
 
 `ThreadSummaryMixin` (`src/mm_jira_bot/service/_thread_summary.py`) publishes an
 LLM-generated factual summary of a Mattermost thread as a visible reply in that
-thread. It is the engine behind both the 📝 Summary button and the configurable
-summary emoji (`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
+thread. It is the engine behind the configurable summary emoji
+(`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
 **any** channel/thread — alert, incident, or manual. For signatures, see
 [../reference/service-map.md](../reference/service-map.md).
 
@@ -18,9 +18,13 @@ summary emoji (`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
 - **Pure helpers** live in `src/mm_jira_bot/summary.py`:
   `format_thread_summary_reply`, `format_thread_summary_streaming`,
   `neutralize_mentions`.
-- **NOT touched:** Jira. A summary only reads the thread and posts a reply — no
-  issue, comment, transition, or field write. Authorization (the allowlist) is
-  enforced by the callers (reaction / button dispatch), not here.
+- **Jira:** the summary reads the thread and posts a Mattermost reply, and when the
+  thread maps to a Jira issue it is **also posted as a Jira comment**
+  (`build_thread_summary_comment`, wiki-converted with clickable `[~username]`
+  mentions). No issue / transition / field write. The ephemeral feedback states
+  whether the comment landed, was skipped (no linked issue), or the Jira write
+  failed. Authorization (the allowlist) is enforced by the callers (reaction
+  dispatch), not here.
 
 ## What it does
 
@@ -28,8 +32,11 @@ summary emoji (`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
 (the same transcript builder the postmortem uses), then `_publish_thread_summary`:
 posts an `⏳ Генерация саммари…` placeholder reply, runs a **single** LLM call,
 and edits the placeholder into the final summary (or an error notice on
-`ApiError`). It returns an `ActionResult` whose `message` is the ephemeral
-feedback shown to the requester.
+`ApiError`); it returns the **raw** summary text. After the thread reply,
+`_post_summary_to_jira` resolves the thread root to a ticket (`get_by_post_id` →
+`get_by_incident_post_id`) and, when a Jira issue exists, posts that raw summary as a
+wiki comment. `generate_thread_summary` returns an `ActionResult` whose `message` is
+the ephemeral feedback (thread + Jira outcome) shown to the requester.
 
 - Resolves the thread root first: if the reacted/clicked post is a reply, it
   fetches `root_id` (falling back to the original post if that lookup fails) so
@@ -38,16 +45,15 @@ feedback shown to the requester.
   `NOTICE_ATTACHMENT_COLOR`), carrying `summary_requested_by_user_id` and the
   thread-routing key in `props`.
 
-See [../domains/alerts.md](../domains/alerts.md) for the button/reaction dispatch
-that invokes this, and [../config.md](../config.md) for the env vars.
+The `memo` reaction dispatch that invokes this lives in `coordinator.handle_reaction`;
+see [../config.md](../config.md) for the env vars.
 
 ## Key invariants
 
 - **Shared prompt template, separate LLM call.** The summary uses the same
   `DEFAULT_INCIDENT_REPORT_PROMPT` / `build_incident_report_prompt` as the
-  postmortem (template key `llm_summary_prompt`, resolved via
-  `_resolve_prompt_template`: DB override → `LLM_SUMMARY_PROMPT`[`_FILE`] →
-  built-in default). It is **not** derived from the Jira postmortem — it is its
+  postmortem (resolved from `LLM_SUMMARY_PROMPT`[`_FILE`] → built-in default).
+  It is **not** derived from the Jira postmortem — it is its
   own `llm.generate_summary` call. See [../domains/postmortem.md](../domains/postmortem.md).
 - **No LLM ⇒ no-op.** When `self.llm` is `None` (`LLM_API_TOKEN` unset),
   `generate_thread_summary` posts nothing and returns an ephemeral
@@ -75,10 +81,10 @@ that invokes this, and [../config.md](../config.md) for the env vars.
 
 ## Reuse note
 
-`_publish_thread_summary` here is the standalone path (button/emoji), where no
-prior work precedes the summary, so it posts its own placeholder. The incident
-**completion** flow (see [../domains/postmortem.md](../domains/postmortem.md))
-reuses the lower-level helpers directly: it posts the placeholder earlier and
-walks it through `_set_summary_status` ("Шаг 1/3 … 3/3") before streaming, so its
-summary shares the same callback and finalize logic without going through
-`_publish_thread_summary`.
+`_publish_thread_summary` is the standalone path (the `memo` reaction): it posts its
+own placeholder, generates the summary, and returns the raw text so
+`generate_thread_summary` can post the optional Jira comment. The incident
+**completion** flow no longer generates a thread summary — closing an incident only
+resolves the title + END time (one combined LLM call) and writes the Jira
+description; the narrative summary is button-only. See
+[../domains/postmortem.md](../domains/postmortem.md).

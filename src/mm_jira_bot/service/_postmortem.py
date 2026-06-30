@@ -1,11 +1,12 @@
 """Постмортем инцидента (Jira + тред): PostmortemMixin.
 
-Генерация постмортема при завершении инцидента: LLM-отчёт в Jira-задачу, проводка
-полей (валидность, END-время, Time to Fix), затем фактологическое саммари в тред
-и зелёная плашка «инцидент закрыт». Методы вызываются собранным
-`IncidentBotService` (см. `coordinator.py`); state (`llm`/`jira`/`mattermost`/
-`repository`/`settings`) ставит конструктор координатора, summary-механика и
-ops-лента живут в sibling-классах.
+Завершение инцидента: создание/проводка Jira-задачи (описание-шаблон, валидность,
+END-время, Time to Fix) и зелёная плашка «инцидент закрыт» в треде. Заголовок и
+END-время приходят одним LLM-вызовом закрытия (`_resolve_incident_closeout`);
+нарратив-саммари теперь только по эмодзи (ThreadSummaryMixin), в комментарий Jira
+оно не пишется на закрытии. Методы вызываются собранным `IncidentBotService`
+(см. `coordinator.py`); state (`llm`/`jira`/`mattermost`/`repository`/`settings`)
+ставит конструктор координатора, summary-механика и ops-лента живут в sibling-классах.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import re
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.actions import INCIDENT_DONE_COLOR
+from mm_jira_bot.colors import INCIDENT_DONE_COLOR
 from mm_jira_bot.domain import (
     ConfirmationResult,
     ConfirmationStatus,
@@ -28,16 +29,13 @@ from mm_jira_bot.jira_payload import build_postmortem_description
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.postmortem import (
     ThreadMessage,
-    build_incident_end_time_prompt,
-    build_incident_report_prompt,
-    build_postmortem_comment,
+    build_incident_closeout_prompt,
     extract_postmortem_summary,
     format_incident_closed_notice,
     format_thread_transcript,
 )
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
 from mm_jira_bot.retry import ApiError
-from mm_jira_bot.service._shared import _PROMPT_KEY_POSTMORTEM
 
 if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
@@ -73,8 +71,6 @@ class PostmortemMixin:
         # Стабы sibling-методов из других классов собранного IncidentBotService —
         # pyright их иначе не видит на самом миксине. Сигнатуры повторяют реальные.
         # --- остаются в coordinator ---
-        def _resolve_prompt_template(self, key: str) -> str | None: ...
-
         async def _announce_issue_to_ops(
             self, ticket: AlertTicket, issue: JiraIssue, *, source: str
         ) -> None: ...
@@ -86,45 +82,6 @@ class PostmortemMixin:
         def _summary_base_props(
             thread_id_key: str, root_post_id: str, requested_by_user_id: str
         ) -> dict: ...
-
-        async def _post_summary_placeholder(
-            self, *, root_post_id: str, channel_id: str, base_props: dict, event: str
-        ) -> str | None: ...
-
-        async def _set_summary_status(
-            self,
-            reply_id: str | None,
-            post_id: str,
-            *,
-            message: str,
-            base_props: dict,
-            event: str,
-        ) -> None: ...
-
-        async def _finalize_thread_summary_reply(
-            self,
-            reply_id: str | None,
-            post_id: str,
-            *,
-            channel_id: str,
-            message: str,
-            base_props: dict,
-            event: str,
-        ) -> None: ...
-
-        async def _generate_and_finalize_summary(
-            self,
-            *,
-            placeholder_id: str | None,
-            root_post_id: str,
-            channel_id: str,
-            base_props: dict,
-            thread_url: str,
-            participants: list[str],
-            postmortem_author: str,
-            transcript: str,
-            event: str,
-        ) -> bool: ...
 
         async def _create_thread_summary_reply(
             self,
@@ -146,53 +103,27 @@ class PostmortemMixin:
         source: str,
         existing_ticket: AlertTicket | None = None,
         validity_label: str | None = None,
+        title: str | None = None,
     ) -> ConfirmationResult:
-        llm = self.llm
-        assert llm is not None
         incident_thread_url = self.mattermost.permalink(root_post.id)
         ticket = existing_ticket
         summary_base_props = self._summary_base_props(
             "mattermost_incident_post_id", root_post.id, reacted_by_user_id
         )
-        summary_event = "mattermost.incident_thread.postmortem_published"
-        placeholder_id: str | None = None
         try:
             (
-                thread_messages,
+                _thread_messages,
                 participants,
                 postmortem_author,
             ) = await self._postmortem_thread_context(
                 root_post,
                 reacted_by_user_id=reacted_by_user_id,
             )
-            transcript = format_thread_transcript(thread_messages)
-            # Placeholder up front so the whole wait (postmortem LLM + Jira calls +
-            # summary LLM) shows "Генерация саммари…"; it is edited into the final
-            # reply below, or into the error notice if the Jira step fails.
-            placeholder_id = await self._post_summary_placeholder(
-                root_post_id=root_post.id,
-                channel_id=root_post.channel_id,
-                base_props=summary_base_props,
-                event=summary_event,
-            )
-            prompt = build_incident_report_prompt(
-                thread_url=incident_thread_url,
-                participants=participants,
-                postmortem_author=postmortem_author,
-                transcript=transcript,
-                max_chars=self.settings.llm_thread_max_chars,
-                template=self._resolve_prompt_template(_PROMPT_KEY_POSTMORTEM),
-            )
-            await self._set_summary_status(
-                placeholder_id,
-                root_post.id,
-                message="⏳ Шаг 1/3: генерирую постмортем…",
-                base_props=summary_base_props,
-                event=f"{summary_event}.status",
-            )
-            report = await llm.generate_postmortem(prompt)
+            # The title comes from the single closeout LLM call (resolved in
+            # handle_incident_checkmark); fall back to the root text when it had
+            # nothing usable. The narrative summary is now button-only (memo emoji).
             summary = extract_postmortem_summary(
-                report,
+                title or "",
                 fallback=extract_alert_title(root_post.message),
             )
             if ticket is None:
@@ -215,13 +146,6 @@ class PostmortemMixin:
                 postmortem_author=postmortem_author,
                 participants=participants,
             )
-            await self._set_summary_status(
-                placeholder_id,
-                root_post.id,
-                message="⏳ Шаг 2/3: отправляю постмортем в Jira…",
-                base_props=summary_base_props,
-                event=f"{summary_event}.status",
-            )
             ticket = await self._ensure_postmortem_jira_issue(
                 ticket,
                 summary=summary,
@@ -232,14 +156,8 @@ class PostmortemMixin:
             )
             assert ticket.jira_issue_key is not None
             await self.jira.set_description(ticket.jira_issue_key, description)
-            await self.jira.add_comment(
-                ticket.jira_issue_key,
-                build_postmortem_comment(
-                    report=report,
-                    incident_thread_url=incident_thread_url,
-                    postmortem_author=postmortem_author,
-                ),
-            )
+            # No LLM postmortem comment: the narrative summary is posted only on
+            # demand (memo emoji). The marker keeps the re-entry guard idempotent.
             self.repository.mark_postmortem_comment_added(ticket.mattermost_post_id)
         except ApiError as exc:
             if ticket is not None:
@@ -251,16 +169,10 @@ class PostmortemMixin:
                 source=source,
                 error=str(exc),
             )
-            # Edit the placeholder into the failure notice so it never stays stuck
-            # on "Генерация саммари…".
-            await self._finalize_thread_summary_reply(
-                placeholder_id,
+            await self._create_thread_summary_reply(
                 root_post.id,
                 channel_id=root_post.channel_id,
-                message=(
-                    "Не удалось сгенерировать или отправить постмортем в Jira. "
-                    "Можно повторить реакцию позже."
-                ),
+                message="Не удалось завершить инцидент в Jira. Можно повторить реакцию позже.",
                 base_props=summary_base_props,
                 event="mattermost.incident_thread.postmortem_failed_notice",
             )
@@ -269,29 +181,8 @@ class PostmortemMixin:
                 message="Postmortem generation failed; please retry.",
             )
 
-        # The thread gets the fact-based incident summary (own LLM prompt); the
-        # Jira postmortem above is generated separately and stays untouched.
-        await self._set_summary_status(
-            placeholder_id,
-            root_post.id,
-            message="⏳ Шаг 3/3: генерирую саммари…",
-            base_props=summary_base_props,
-            event=f"{summary_event}.status",
-        )
-        await self._generate_and_finalize_summary(
-            placeholder_id=placeholder_id,
-            root_post_id=root_post.id,
-            channel_id=root_post.channel_id,
-            base_props=summary_base_props,
-            thread_url=incident_thread_url,
-            participants=participants,
-            postmortem_author=postmortem_author,
-            transcript=transcript,
-            event=summary_event,
-        )
-        # Reached only after the Jira postmortem succeeded, so the link is always
-        # present: announce closure in a standalone green box (replaces the old
-        # in-summary footer). Only the final-status completion flow gets here.
+        # Standalone green "incident closed" notice. No auto summary, no Jira
+        # comment — both are now button-only via the memo reaction.
         await self._create_thread_summary_reply(
             root_post.id,
             channel_id=root_post.channel_id,
@@ -480,25 +371,27 @@ class PostmortemMixin:
         postmortem_author = display_by_user_id.get(reacted_by_user_id, reacted_by_user_id)
         return thread_messages, participants, postmortem_author
 
-    async def _resolve_incident_end_time(
+    async def _resolve_incident_closeout(
         self,
         root_post: MattermostPost,
         *,
         reacted_by_user_id: str,
         reaction_ended_at: datetime,
         ticket: AlertTicket | None,
-    ) -> datetime:
-        """Derive the incident end time from the thread chronology via the LLM.
+    ) -> tuple[datetime, str | None]:
+        """Derive the incident end time AND a short title in one LLM call.
 
-        Best-effort: the LLM reads the thread and returns the recovery moment;
-        we accept it only when it parses and lands within ``[start, now + margin]``
-        (``set_end_time`` has no range guard of its own). No LLM, ApiError,
-        ``UNKNOWN``, unparseable, or out-of-range → fall back to
-        ``reaction_ended_at`` (the previous behavior), so completion never breaks
-        on this step.
+        Best-effort: the LLM reads the thread and returns both the recovery moment
+        and a ``[INC] …`` title. The end time is accepted only when it parses and
+        lands within ``[start, now + margin]`` (``set_end_time`` has no range guard
+        of its own); the title is the raw ``TITLE:`` line (clamped downstream by
+        ``extract_postmortem_summary``). No LLM, ApiError, ``UNKNOWN``, unparseable,
+        or out-of-range end time → fall back to ``reaction_ended_at``; a missing
+        title → ``None`` (the caller fills it from the alert title), so completion
+        never breaks on this step.
         """
         if self.llm is None:
-            return reaction_ended_at
+            return reaction_ended_at, None
         start = (
             ticket.mattermost_message_created_at
             if ticket is not None
@@ -509,33 +402,53 @@ class PostmortemMixin:
                 root_post, reacted_by_user_id=reacted_by_user_id
             )
             transcript = format_thread_transcript(thread_messages)
-            prompt = build_incident_end_time_prompt(
+            prompt = build_incident_closeout_prompt(
                 transcript=transcript,
                 start=start,
                 max_chars=self.settings.llm_thread_max_chars,
             )
-            raw = await self.llm.extract_incident_end_time(prompt)
-            derived = self._parse_incident_end_time(raw, start=start)
+            raw = await self.llm.resolve_incident_closeout(prompt)
+            end_line, title_line = self._split_closeout_answer(raw)
+            derived = self._parse_incident_end_time(end_line, start=start)
         except Exception as exc:
             # Deliberately broad: this is a best-effort enrichment that runs
             # *before* the END/TTF writes, so nothing it does (thread fetch, user
             # lookup, LLM call) may break incident closure. Any failure → fall back
             # to the reaction timestamp, the pre-existing behavior.
             log.warning(
-                "incident.end_time.llm_failed",
+                "incident.closeout.llm_failed",
                 incident_post_id=root_post.id,
                 error=str(exc),
             )
-            derived = None
+            return reaction_ended_at, None
+        title = title_line or None
         if derived is None:
             log.info("incident.end_time.fallback_reaction", incident_post_id=root_post.id)
-            return reaction_ended_at
+            return reaction_ended_at, title
         log.info(
             "incident.end_time.derived",
             incident_post_id=root_post.id,
             ended_at=derived.isoformat(),
         )
-        return derived
+        return derived, title
+
+    @staticmethod
+    def _split_closeout_answer(raw: str) -> tuple[str, str]:
+        """Split the two-line closeout answer into ``(end_line, title_line)``.
+
+        Tolerant of extra text: scans for the ``END:`` / ``TITLE:`` prefixes and
+        returns the content after each (empty string when a line is absent).
+        """
+        end_line = ""
+        title_line = ""
+        for line in raw.splitlines():
+            stripped = line.strip()
+            upper = stripped.upper()
+            if upper.startswith("END:"):
+                end_line = stripped[len("END:") :].strip()
+            elif upper.startswith("TITLE:"):
+                title_line = stripped[len("TITLE:") :].strip()
+        return end_line, title_line
 
     @staticmethod
     def _parse_incident_end_time(raw: str, *, start: datetime | None) -> datetime | None:

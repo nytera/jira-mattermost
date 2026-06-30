@@ -79,7 +79,6 @@ async def test_read_only_suppresses_writes_without_audit(settings):
     # Redirected writes are dropped (no audit channel) and never hit the transport.
     await client.add_reaction("realpost", "memo")
     await client.update_post("realpost", message="x")
-    await client.open_dialog(trigger_id="t", url="u", dialog={})
     # A read against a shadow-minted id short-circuits without HTTP and ECHOES the
     # requested id — callers re-key on post.id (incident-checkmark lookup), so the
     # round-trip identity get_post(id).id == id must hold.
