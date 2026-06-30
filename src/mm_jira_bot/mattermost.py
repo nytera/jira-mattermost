@@ -116,7 +116,7 @@ def parse_reaction_event(payload: dict) -> ReactionEvent | None:
 
 
 class MattermostClient(AsyncApiClient):
-    metrics_client_name = "mattermost"
+    client_name = "mattermost"
 
     def __init__(
         self,

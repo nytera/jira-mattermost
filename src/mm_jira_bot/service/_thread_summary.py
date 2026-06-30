@@ -18,7 +18,6 @@ from mm_jira_bot.logging import get_logger
 from mm_jira_bot.postmortem import build_incident_report_prompt, format_thread_transcript
 from mm_jira_bot.retry import ApiError
 from mm_jira_bot.service._shared import (
-    _PROMPT_KEY_SUMMARY,
     SUMMARY_FAILED_TEXT,
     SUMMARY_PENDING_TEXT,
     ActionResult,
@@ -56,8 +55,6 @@ class ThreadSummaryMixin:
         async def _postmortem_thread_context(
             self, root_post: MattermostPost, *, reacted_by_user_id: str
         ) -> tuple[list[ThreadMessage], list[str], str]: ...
-
-        def _resolve_prompt_template(self, key: str) -> str | None: ...
 
     async def generate_thread_summary(
         self,
@@ -318,7 +315,7 @@ class ThreadSummaryMixin:
             postmortem_author=postmortem_author,
             transcript=transcript,
             max_chars=self.settings.llm_thread_max_chars,
-            template=self._resolve_prompt_template(_PROMPT_KEY_SUMMARY),
+            template=self.settings.llm_summary_prompt,
         )
         on_progress = (
             self._make_summary_stream_callback(

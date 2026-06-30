@@ -1,7 +1,7 @@
 # Operations
 
-How to run and observe the bot: startup preflight, the ops channel, Prometheus
-metrics, recovery/retry, and logs. Background loops are described in
+How to run and observe the bot: startup preflight, the ops channel,
+recovery/retry, and logs. Background loops are described in
 [`architecture.md`](architecture.md); env vars in [`config.md`](config.md).
 
 ## Startup preflight
@@ -28,34 +28,14 @@ A channel for the **bot's own health** — not the Grafana alert channel. Two st
    Jira/LLM errors, preflight failure) posts as a red box. Anti-storm: the same event
    is muted within `MATTERMOST_OPS_COOLDOWN_SECONDS` (default 300). Delivery is
    best-effort with a `_posting` contextvar recursion guard and a **bounded queue**
-   (overflow counted by `bot_ops_alerts_dropped_total`).
+   (overflow is dropped).
 2. **Issue-created feed** — on every Jira issue create (firing alert, manual incident,
-   postmortem incident, admin UI recreate) a blue "Создана задача" box with the key and a
+   postmortem incident) a blue "Создана задача" box with the key and a
    link to the source. Posted by `_announce_issue_to_ops` as a normal message (no
    cooldown/recursion guard); **not** throttled; skipped when `jira_create_enabled=false`.
 
 The bot must be a channel member with write access. With no channel configured, errors
-are still counted (`bot_errors_total`) and logged.
-
-## Prometheus metrics (`/metrics`, default on)
-
-`GET /metrics` is enabled unless `METRICS_ENABLED=false`. Series:
-
-- `bot_http_requests_total{client,method,status}` and
-  `bot_http_request_duration_seconds{client,method}` — outbound HTTP
-  (`client` = `jira`/`mattermost`/`llm`). **Streaming LLM calls bypass the shared
-  instrumentation point** and are not counted here.
-- `bot_errors_total{event}` — `ERROR` events by event name.
-- `bot_ops_alerts_dropped_total` — ops alerts dropped on queue overflow.
-- `bot_tickets_total`, `bot_tickets_pending_jira`, `bot_tickets_failed`,
-  `bot_tickets_confirmed`, `bot_tickets_by_creation_status{status}`,
-  `bot_tickets_by_confirmation_status{status}` — sampled lazily on scrape via
-  `repository.stats_summary()`. A sampling failure logs `metrics.collect_failed`
-  (WARNING, with stack) and returns no gauges instead of blanking `/metrics`.
-
-`/metrics` has **no auth** and shares port `8080` — rely on network isolation /
-reverse proxy. (The admin API `/admin/api/*` is the exception: it requires a Bearer
-token, see [`domains/admin.md`](domains/admin.md).)
+are still logged.
 
 ## Recovery & retry
 
@@ -101,8 +81,7 @@ Logs go to stdout; `LOG_FORMAT` selects the shape:
 handler, startup backfill, HTTP endpoints) log at `ERROR` with `exc_info` and an
 `error_type` field; expected integration errors (`ApiError`) log compactly without a
 stack. uvicorn is unified via `log_config=None`, so its access/error/lifecycle lines
-use the same `LOG_FORMAT` and feed the in-memory ring buffer behind the admin UI
-(`GET /admin/api/logs`, Bearer auth, see [`domains/admin.md`](domains/admin.md)).
+use the same `LOG_FORMAT`.
 
 A few high-signal events: `mattermost.alert.received`, `jira.issue.created`,
 `incident.confirmed`, `postmortem.completed`, `summary.completed`,

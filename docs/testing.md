@@ -27,10 +27,8 @@ The service suite is split by domain to match the mixins (see
 | `tests/test_jira_sync.py` | `JiraSyncMixin` (`_jira_sync.py`) |
 | `tests/test_postmortem.py` | `PostmortemMixin` + postmortem helpers |
 | `tests/test_thread_summary.py` | `ThreadSummaryMixin` (`_thread_summary.py`) |
-| `tests/test_admin.py` | `AdminMixin` (`_admin.py`) |
-| `tests/test_admin_api.py` | `admin_api.py` — `/admin/api/*` HTTP routes + Bearer auth |
-| `tests/test_service_infra.py` | cross-cutting: config validation, DB, auth allowlist, app/lifespan, `_redact_database_url`, coordinator routing, ops/metrics |
-| `tests/test_logging.py` | `logging.py` formatters / ring buffer |
+| `tests/test_service_infra.py` | cross-cutting: config validation, DB, auth allowlist, app/lifespan, `_redact_database_url`, coordinator routing, ops |
+| `tests/test_logging.py` | `logging.py` formatters |
 
 Reliability / contract seams (not tied to one mixin):
 

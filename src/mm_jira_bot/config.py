@@ -138,7 +138,6 @@ class Settings:
     mattermost_duty_mention: str | None = None
     mattermost_ops_channel_id: str | None = None
     ops_cooldown_seconds: int = 300
-    metrics_enabled: bool = True
     log_level: str = "INFO"
     log_format: str = "json"
     api_retry_attempts: int = 4
@@ -147,9 +146,6 @@ class Settings:
     backfill_recent_posts_limit: int = 0
     enable_websocket: bool = True
     enable_backfill_on_startup: bool = False
-    admin_ui_enabled: bool = False
-    admin_ui_token: str | None = None
-    admin_mm_user_id: str | None = None
     llm_base_url: str = "https://corellm.wb.ru/deepseek/v1"
     llm_api_token: str | None = None
     llm_model: str = "deepseek-chat"
@@ -216,7 +212,6 @@ class Settings:
             mattermost_duty_mention=_env("MATTERMOST_DUTY_MENTION"),
             mattermost_ops_channel_id=_env("MATTERMOST_OPS_CHANNEL_ID"),
             ops_cooldown_seconds=_int_env("MATTERMOST_OPS_COOLDOWN_SECONDS", 300),
-            metrics_enabled=_env("METRICS_ENABLED", "true") != "false",
             log_level=_env("LOG_LEVEL", "INFO"),
             log_format=_env("LOG_FORMAT", "json"),
             api_retry_attempts=_int_env("API_RETRY_ATTEMPTS", 4),
@@ -225,9 +220,6 @@ class Settings:
             backfill_recent_posts_limit=_int_env("BACKFILL_RECENT_POSTS_LIMIT", 0),
             enable_websocket=_env("ENABLE_WEBSOCKET", "true") != "false",
             enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false") == "true",
-            admin_ui_enabled=_env("ADMIN_UI_ENABLED", "false") == "true",
-            admin_ui_token=_env("ADMIN_UI_TOKEN"),
-            admin_mm_user_id=_env("ADMIN_MM_USER_ID"),
             llm_base_url=_env("LLM_BASE_URL", "https://corellm.wb.ru/deepseek/v1").rstrip("/"),
             llm_api_token=_first_env("LLM_API_TOKEN", "CORELLM_API_TOKEN", "OPENAI_API_KEY"),
             llm_model=_env("LLM_MODEL", "deepseek-chat"),

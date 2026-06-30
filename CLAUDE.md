@@ -145,13 +145,11 @@ Jira payload/опций. Полный харнес — [docs/testing.md](docs/te
 | Создание Jira-задачи по алерту, эпизоды/повторы, pending work (`_jira_sync.py`) | [docs/domains/jira-sync.md](docs/domains/jira-sync.md) |
 | Генерация постмортема, LLM-поля Jira, стриминг (`_postmortem.py`) | [docs/domains/postmortem.md](docs/domains/postmortem.md) |
 | Саммари треда (`_thread_summary.py`) | [docs/domains/thread-summary.md](docs/domains/thread-summary.md) |
-| Админ-бэкенд: create-from-link, recreate, обёртки жизненного цикла (`_admin.py`, `admin_api.py`) | [docs/domains/admin.md](docs/domains/admin.md) |
-| Админ-фронтенд: web-UI (Vite+React+Tailwind, `web_ui/`) | [docs/admin-ui.md](docs/admin-ui.md) |
 | Резолв полей/опций Jira, формат date-time, read-only стаб | [docs/jira.md](docs/jira.md) |
 | Read-only / shadow-режим: зеркало в аудит-канал, подавление записей, тест-каналы | [docs/read-only.md](docs/read-only.md) |
 | Схема БД, миграции, идемпотентность, таймзона | [docs/persistence.md](docs/persistence.md) |
 | Переменные окружения (матрица required/optional) | [docs/config.md](docs/config.md) |
-| Preflight, ops-канал, метрики, recovery/retry, логи | [docs/operations.md](docs/operations.md) |
+| Preflight, ops-канал, recovery/retry, логи | [docs/operations.md](docs/operations.md) |
 | Тесты, харнес, как запускать | [docs/testing.md](docs/testing.md) |
 | Пользовательская настройка и поведение | [README.md](README.md) |
 | Хронология изменений | [CHANGELOG.md](CHANGELOG.md) |

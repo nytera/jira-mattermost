@@ -19,7 +19,7 @@ Invariants:
 - The `[INC] DD.MM.YYYY - …` first line is read by `extract_postmortem_summary` to build the **Jira issue title** (falling back to `extract_alert_title` of the root post when absent); `_limit_postmortem_summary` clamps it to 120 chars / 10 words.
 - **Jira path:** the LLM always emits Markdown; `markdown_to_jira_wiki` converts it to wiki markup (the v2 comment endpoint renders wiki, not Markdown) **and** turns `@username → [~username]` (clickable mentions, when MM and Jira usernames match).
 - **Mattermost path:** `summary.neutralize_mentions` strips the leading `@` so the thread summary never pings participants.
-- **Effective template is resolved at call time** by `_resolve_prompt_template` (coordinator): **DB override (admin UI) → env (`LLM_POSTMORTEM_PROMPT` / `LLM_SUMMARY_PROMPT`, plus `*_FILE`) → built-in default**.
+- **Effective template is resolved at call time** from **env (`LLM_POSTMORTEM_PROMPT` / `LLM_SUMMARY_PROMPT`, plus `*_FILE`) → built-in default**.
 - The two `SYSTEM_PROMPT`s (role / quality guidelines) stay in `llm.py` **code** — they are not env-overridable.
 
 ## `generate_incident_postmortem` — the closure flow

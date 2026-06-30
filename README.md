@@ -92,8 +92,8 @@ flowchart LR
 всему треду: бот собирает тред, отправляет его в OpenAI-совместимый endpoint
 (`LLM_BASE_URL`), кладёт PM-шаблон в Jira description, добавляет полный отчёт
 комментарием и публикует фактологическое саммари обратно в тред. Постмортем и саммари
-собираются из одного шаблона-отчёта; промпты переопределяются через env или админ-UI
-без рестарта. При `LLM_STREAM=true` текст в треде дописывается по мере генерации.
+собираются из одного шаблона-отчёта; промпты переопределяются через env без рестарта.
+При `LLM_STREAM=true` текст в треде дописывается по мере генерации.
 Эмодзи **Summary** (`:memo:`) даёт тот же отчёт в тред, но Jira не трогает. Контракт
 стриминга и настройки промптов — [`docs/domains/postmortem.md`](docs/domains/postmortem.md).
 
@@ -131,7 +131,7 @@ On-prem / Data Center Jira с personal access token. Минимум: `JIRA_BASE_
 - БД: `DATABASE_URL` (например `sqlite:///./mattermost_jira_bot.db` локально или
   `postgresql://incident_bot:incident_bot@postgres:5432/incident_bot`).
 
-Остальное (реакции, LLM, ops-канал, метрики, админ-UI,
+Остальное (реакции, LLM, ops-канал,
 read-only/shadow-режим) — опционально с дефолтами. Полная матрица —
 [`docs/config.md`](docs/config.md); параллельный теневой прогон без влияния на прод —
 [`docs/read-only.md`](docs/read-only.md).
@@ -156,19 +156,9 @@ docker compose up --build
 При Postgres из `docker-compose.yml` задайте `DATABASE_URL` на сервис `postgres` (см.
 выше).
 
-## Админ-UI
-
-По умолчанию выключен; включается `ADMIN_UI_ENABLED=true` и обязательным
-`ADMIN_UI_TOKEN` (Bearer-токен), доступен на `http://localhost:8080/admin` (дашборд
-MTTA/MTTR, инциденты с действиями жизненного цикла, создание/пересоздание задач, правка
-LLM-промптов, логи). Опционально `ADMIN_MM_USER_ID` — реальный Mattermost-id для честной
-атрибуции действий из UI. Авторизация — один общий токен, без идентификации по
-пользователю: не выставляйте наружу без reverse-proxy / firewall. Подробности —
-[`docs/admin-ui.md`](docs/admin-ui.md) и [`docs/domains/admin.md`](docs/domains/admin.md).
-
 ## Эксплуатация и разработка
 
-- Preflight, ops-канал, метрики, recovery/retry, логи — [`docs/operations.md`](docs/operations.md).
+- Preflight, ops-канал, recovery/retry, логи — [`docs/operations.md`](docs/operations.md).
 - Схема БД, миграции, идемпотентность, таймзона — [`docs/persistence.md`](docs/persistence.md).
 - Тесты и харнес — [`docs/testing.md`](docs/testing.md).
 - Линт/формат/типы, стиль, commit/PR — [`CLAUDE.md`](CLAUDE.md).

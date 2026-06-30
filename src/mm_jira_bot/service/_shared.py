@@ -44,12 +44,6 @@ def parse_post_id_from_text(text: str) -> str | None:
 SUMMARY_PENDING_TEXT = "⏳ Генерация саммари…"
 SUMMARY_FAILED_TEXT = "Не удалось сгенерировать саммари, попробуйте позже."
 
-# DB-override keys for the runtime-editable LLM prompt templates (admin UI).
-# `_PROMPT_KEY_*` читаются снаружи из `admin_api.py` через ре-экспорт в
-# `service/__init__.py` — менять имена нельзя.
-_PROMPT_KEY_SUMMARY = "llm_summary_prompt"
-_PROMPT_KEY_POSTMORTEM = "llm_postmortem_prompt"
-
 
 @dataclass(frozen=True)
 class ActionResult:
@@ -104,23 +98,6 @@ class SharedMixin:
             self.settings.read_only_mode
             and channel_id == self.settings.mattermost_test_incident_channel_id
         )
-
-    def _prompt_env_default(self, key: str) -> str | None:
-        """Env-configured override for a prompt key (``None`` ⇒ built-in default)."""
-        if key == _PROMPT_KEY_SUMMARY:
-            return self.settings.llm_summary_prompt
-        if key == _PROMPT_KEY_POSTMORTEM:
-            return self.settings.llm_postmortem_prompt
-        return None
-
-    def _resolve_prompt_template(self, key: str) -> str | None:
-        """Effective prompt override: DB (debug-panel edit) → env → ``None``.
-
-        ``None`` lets ``build_incident_report_prompt`` fall back to the built-in
-        default. The DB read runs only on summary/postmortem generation, so edits
-        from the debug panel apply on the next run with no restart.
-        """
-        return self.repository.get_setting(key) or self._prompt_env_default(key)
 
     @staticmethod
     def _box_thread_reply(message: str, props: dict | None, color: str) -> tuple[str, dict | None]:

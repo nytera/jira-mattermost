@@ -45,9 +45,8 @@ see [../config.md](../config.md) for the env vars.
 
 - **Shared prompt template, separate LLM call.** The summary uses the same
   `DEFAULT_INCIDENT_REPORT_PROMPT` / `build_incident_report_prompt` as the
-  postmortem (template key `llm_summary_prompt`, resolved via
-  `_resolve_prompt_template`: DB override → `LLM_SUMMARY_PROMPT`[`_FILE`] →
-  built-in default). It is **not** derived from the Jira postmortem — it is its
+  postmortem (resolved from `LLM_SUMMARY_PROMPT`[`_FILE`] → built-in default).
+  It is **not** derived from the Jira postmortem — it is its
   own `llm.generate_summary` call. See [../domains/postmortem.md](../domains/postmortem.md).
 - **No LLM ⇒ no-op.** When `self.llm` is `None` (`LLM_API_TOKEN` unset),
   `generate_thread_summary` posts nothing and returns an ephemeral

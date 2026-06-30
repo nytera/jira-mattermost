@@ -37,7 +37,6 @@ from mm_jira_bot.postmortem import (
 )
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
 from mm_jira_bot.retry import ApiError
-from mm_jira_bot.service._shared import _PROMPT_KEY_POSTMORTEM
 
 if TYPE_CHECKING:
     from mm_jira_bot.config import Settings
@@ -73,8 +72,6 @@ class PostmortemMixin:
         # Стабы sibling-методов из других классов собранного IncidentBotService —
         # pyright их иначе не видит на самом миксине. Сигнатуры повторяют реальные.
         # --- остаются в coordinator ---
-        def _resolve_prompt_template(self, key: str) -> str | None: ...
-
         async def _announce_issue_to_ops(
             self, ticket: AlertTicket, issue: JiraIssue, *, source: str
         ) -> None: ...
@@ -181,7 +178,7 @@ class PostmortemMixin:
                 postmortem_author=postmortem_author,
                 transcript=transcript,
                 max_chars=self.settings.llm_thread_max_chars,
-                template=self._resolve_prompt_template(_PROMPT_KEY_POSTMORTEM),
+                template=self.settings.llm_postmortem_prompt,
             )
             await self._set_summary_status(
                 placeholder_id,

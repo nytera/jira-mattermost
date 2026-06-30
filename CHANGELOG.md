@@ -21,6 +21,21 @@
   админ-UI. Таблицу в БД не дропаем (миграция не пишется); reference-DDL
   `002_create_alert_feedback.sql` удалён, чтобы зеркало-схема осталась согласованной
   с моделью.
+- **Админский web-UI и его HTTP API** убраны целиком: SPA `web_ui/` (Vite+React),
+  модуль `admin_api.py` со всеми ручками `/admin/api/*` и SPA-mount `/admin`,
+  сервис-миксин `_admin.py` (`AdminMixin`), env-переменные `ADMIN_UI_ENABLED`,
+  `ADMIN_UI_TOKEN`, `ADMIN_MM_USER_ID`. Жизненный цикл инцидентов размечается только
+  реакциями-эмодзи. Заодно удалён in-memory ring buffer логов (кормил страницу
+  `/admin/api/logs`) и Node-стейдж сборки фронта из `Dockerfile`.
+- **Prometheus-метрики** убраны целиком: модуль `metrics.py`, эндпоинт `/metrics`,
+  флаг `METRICS_ENABLED`, зависимость `prometheus-client`, HTTP-инструментация в
+  `http.py`, счётчики ошибок в `ops.py` и admin-агрегат `admin_stats` в
+  `repository.py`. `stats_summary` остаётся — её использует startup-preflight.
+- **DB-override LLM-промптов** убран: после удаления админ-UI у него не осталось
+  интерфейса записи, промпты резолвятся `env → встроенный дефолт`. Удалены модель
+  `app_settings` (`AppSetting`), методы `get/set/delete_setting`, ключи `_PROMPT_KEY_*`
+  и индирекция `_resolve_prompt_template`/`_prompt_env_default`, reference-DDL
+  `006_create_app_settings.sql`. Живую таблицу в БД не дропаем (миграция не пишется).
 
 ## [0.9.0] - 2026-06-30
 

@@ -30,7 +30,6 @@ from mm_jira_bot.domain import (
 )
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.mattermost import MattermostClient
-from mm_jira_bot.metrics import TicketStatsCollector, errors_total
 from mm_jira_bot.ops import OpsLogHandler, OpsNotifier
 from mm_jira_bot.repository import (
     create_database_engine,
@@ -356,24 +355,18 @@ def test_http_error_boundary_returns_500_and_logs(service):
     """The app-global ``@app.middleware('http')`` 500 boundary: an unhandled
     error in any route becomes a clean JSON 500 plus a structured
     ``http.request.failed`` event carrying the request path. Driven through a
-    surviving admin GET route whose repo call is monkeypatched to raise."""
+    throwaway route registered just for this test."""
+    app = create_app(service.settings, service=service)
 
-    def boom():
+    @app.get("/_boom")
+    async def _boom():
         raise RuntimeError("kaboom")
 
-    service.repository.admin_stats = boom
-    service.settings = replace(
-        service.settings, admin_ui_enabled=True, admin_ui_token="admin-token"
-    )
-    app = create_app(service.settings, service=service)
     records: list[logging.LogRecord] = []
     logger, handler = _capture_bot_logs(records)
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
-            response = client.get(
-                "/admin/api/stats",
-                headers={"authorization": "Bearer admin-token"},
-            )
+            response = client.get("/_boom")
     finally:
         logger.removeHandler(handler)
 
@@ -383,27 +376,7 @@ def test_http_error_boundary_returns_500_and_logs(service):
     assert failures
     assert failures[0].exc_info is not None
     assert _extra_fields(failures[0])["error_type"] == "RuntimeError"
-    assert _extra_fields(failures[0])["path"] == "/admin/api/stats"
-
-
-def test_ticket_collector_logs_on_repository_failure():
-    class FailingRepo:
-        def stats_summary(self):
-            raise RuntimeError("db down")
-
-    collector = TicketStatsCollector(FailingRepo())
-    records: list[logging.LogRecord] = []
-    logger, handler = _capture_bot_logs(records)
-    try:
-        result = list(collector.collect())
-    finally:
-        logger.removeHandler(handler)
-
-    assert result == []
-    failures = [r for r in records if r.msg == "metrics.collect_failed"]
-    assert failures
-    assert failures[0].exc_info is not None
-    assert _extra_fields(failures[0])["error_type"] == "RuntimeError"
+    assert _extra_fields(failures[0])["path"] == "/_boom"
 
 
 def _authorized_service(settings, usernames, resolvable):
@@ -536,28 +509,13 @@ async def test_websocket_event_routes_incident_post_to_manual_handler(settings):
     assert service.repository.get_by_incident_post_id(post.id) is not None
 
 
-# --- Ops alerts channel & Prometheus metrics ---------------------------------
+# --- Ops alerts channel ------------------------------------------------------
 
 
 def _error_record(event: str, level: int = logging.ERROR, **fields) -> logging.LogRecord:
     record = logging.LogRecord("mm_jira_bot.test", level, __file__, 1, event, None, None)
     cast(Any, record).extra_fields = {"event": event, **fields}
     return record
-
-
-def _errors_counter(event: str) -> float:
-    return errors_total.labels(event=event)._value.get()
-
-
-def test_ops_handler_counts_errors_and_skips_non_errors():
-    handler = OpsLogHandler(cooldown_seconds=300)
-    before = _errors_counter("ops.test.boom")
-    handler.emit(_error_record("ops.test.boom"))
-    handler.emit(_error_record("ops.test.boom"))
-    handler.emit(_error_record("ops.test.warn", level=logging.WARNING))
-    assert _errors_counter("ops.test.boom") - before == 2
-    # A non-error record is ignored entirely (no counter for it).
-    assert _errors_counter("ops.test.warn") == 0
 
 
 @pytest.mark.asyncio
@@ -620,52 +578,6 @@ async def test_ops_notifier_buffers_startup_errors(service, settings):
         assert service.mattermost.created_posts[0]["channel_id"] == "ops-channel"
     finally:
         logging.getLogger("mm_jira_bot").removeHandler(notifier._handler)
-
-
-def test_metrics_endpoint_exposes_series(service, settings):
-    app = create_app(settings, service=service)
-    with TestClient(app) as client:
-        response = client.get("/metrics")
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/plain")
-    body = response.text
-    assert "bot_http_requests_total" in body
-    assert "bot_tickets_total" in body
-
-
-def test_metrics_endpoint_absent_when_disabled(service, settings):
-    app = create_app(replace(settings, metrics_enabled=False), service=service)
-    with TestClient(app) as client:
-        response = client.get("/metrics")
-    assert response.status_code == 404
-
-
-# --- Runtime-editable prompt settings ---------------------------------------
-
-
-def test_repository_setting_crud(service):
-    repo = service.repository
-    assert repo.get_setting("llm_summary_prompt") is None
-    repo.set_setting("llm_summary_prompt", "custom")
-    assert repo.get_setting("llm_summary_prompt") == "custom"
-    repo.set_setting("llm_summary_prompt", "custom2")  # upsert overwrites
-    assert repo.get_setting("llm_summary_prompt") == "custom2"
-    repo.delete_setting("llm_summary_prompt")
-    assert repo.get_setting("llm_summary_prompt") is None
-
-
-def test_resolve_prompt_template_precedence(settings):
-    service = _build_service(replace(settings, llm_summary_prompt="env-template"))
-    # env override applies when there is no DB override
-    assert service._resolve_prompt_template("llm_summary_prompt") == "env-template"
-    # DB override (debug-panel edit) beats env
-    service.repository.set_setting("llm_summary_prompt", "db-template")
-    assert service._resolve_prompt_template("llm_summary_prompt") == "db-template"
-    # reset → falls back to env again
-    service.repository.delete_setting("llm_summary_prompt")
-    assert service._resolve_prompt_template("llm_summary_prompt") == "env-template"
-    # neither env nor DB → None (builder uses the built-in default)
-    assert service._resolve_prompt_template("llm_postmortem_prompt") is None
 
 
 # --- Allowlist: groups, separators, refresh ---------------------------------

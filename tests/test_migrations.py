@@ -185,7 +185,6 @@ def test_migrations_match_model_schema(tmp_path) -> None:
         == model_tables
         == {
             "alert_tickets",
-            "app_settings",
         }
     ), f"table sets differ: migrations={mig_tables} model={model_tables}"
 

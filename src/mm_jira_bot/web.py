@@ -9,17 +9,14 @@ from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi.responses import JSONResponse
 
-from mm_jira_bot.admin_api import mount_admin_ui, register_admin_api
 from mm_jira_bot.audit import AuditMirror
 from mm_jira_bot.config import Settings
 from mm_jira_bot.jira import JiraClient
 from mm_jira_bot.llm import PostmortemLlmClient
 from mm_jira_bot.logging import configure_logging, get_logger
 from mm_jira_bot.mattermost import MattermostClient
-from mm_jira_bot.metrics import register_ticket_collector
 from mm_jira_bot.ops import OpsNotifier
 from mm_jira_bot.repository import (
     AlertTicketRepository,
@@ -158,7 +155,6 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         mattermost_incident_channel_id=settings.mattermost_incident_channel_id,
         mattermost_ops_channel_id=settings.mattermost_ops_channel_id,
         mattermost_bot_user_id=settings.mattermost_bot_user_id,
-        metrics_enabled=settings.metrics_enabled,
         enable_websocket=settings.enable_websocket,
         enable_backfill_on_startup=settings.enable_backfill_on_startup,
         jira_base_url=settings.jira_base_url,
@@ -356,15 +352,12 @@ def create_app(
                 ),
             )
 
-    # Self-health observability: the ops handler counts every error event
-    # (bot_errors_total) and, when an ops channel is set, posts it; the metrics
-    # collector exposes ticket gauges on /metrics scrape.
+    # Self-health observability: when an ops channel is configured, the ops handler
+    # forwards every ERROR-level event to it as a red attachment.
     ops_notifier: OpsNotifier | None = None
-    if settings.mattermost_ops_channel_id or settings.metrics_enabled:
+    if settings.mattermost_ops_channel_id:
         ops_notifier = OpsNotifier(service.mattermost, settings)
         ops_notifier.install()
-    if settings.metrics_enabled:
-        register_ticket_collector(service.repository)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -452,15 +445,5 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, bool]:
         return {"ok": True}
-
-    if settings.metrics_enabled:
-
-        @app.get("/metrics")
-        async def metrics() -> Response:
-            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-    if settings.admin_ui_enabled:
-        register_admin_api(app, service)
-        mount_admin_ui(app)
 
     return app
