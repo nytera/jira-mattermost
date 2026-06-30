@@ -122,14 +122,6 @@ class SharedMixin:
             and channel_id == self.settings.mattermost_test_incident_channel_id
         )
 
-    def _is_test_channel(self, channel_id: str) -> bool:
-        """Whether ``channel_id`` is one of the configured test channels (alert or
-        incident). Pure membership test — kept for the shadow's test-vs-real routing."""
-        return channel_id in (
-            self.settings.mattermost_test_alert_channel_id,
-            self.settings.mattermost_test_incident_channel_id,
-        )
-
     def _prompt_env_default(self, key: str) -> str | None:
         """Env-configured override for a prompt key (``None`` ⇒ built-in default)."""
         if key == _PROMPT_KEY_SUMMARY:

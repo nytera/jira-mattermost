@@ -96,6 +96,28 @@ async def test_jira_adoption_is_idempotent_first_wins(settings):
     assert len(_adoption_notes(service, "Усыновлён реальный Jira")) == 1
 
 
+async def test_malformed_jira_key_is_not_adopted(settings):
+    """A prop-supplied jira_issue_key is attacker-influenceable, so adoption only
+    trusts a well-formed Jira key — a markdown-injection payload is rejected."""
+    service = _shadow(settings)
+    alert = await _seed_stub_ticket(service)
+
+    consumed = await service._observe_prod_artifact(
+        _prod_post(
+            "alerts-channel",
+            post_id="r1",
+            alert_post_id=alert.id,
+            jira_issue_key="x)](https://evil.example/phish",
+        )
+    )
+
+    assert consumed is True
+    # The stub key is kept; no adoption note posted.
+    key = _ticket(service, alert.id).jira_issue_key
+    assert key is not None and key.startswith("ADS-TEST")
+    assert _adoption_notes(service, "Усыновлён реальный Jira") == []
+
+
 async def test_no_stub_yet_skips_adoption(settings):
     """If the shadow hasn't created its own stub yet (no jira_issue_key), adoption
     is skipped — a later prod notice re-attempts once the stub exists."""

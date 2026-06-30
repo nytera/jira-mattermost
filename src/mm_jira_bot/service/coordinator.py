@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -53,6 +54,11 @@ INCIDENT_END_REACTION_NAMES = {
     "heavy_check_mark",
     "ballot_box_with_check",
 }
+
+# A well-formed Jira issue key (``PROJECT-123``). Adoption only trusts a
+# prop-supplied key that matches this, so an attacker-influenceable prop can't
+# inject a markdown link / bogus URL into the audit channel.
+_JIRA_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 
 
 @dataclass(frozen=True)
@@ -239,7 +245,8 @@ class IncidentBotService(
         """
         if not self.settings.read_only_mode:
             return False
-        alert_post_id = (post.props or {}).get("mattermost_alert_post_id")
+        props = post.props or {}
+        alert_post_id = props.get("mattermost_alert_post_id")
         if not isinstance(alert_post_id, str) or not alert_post_id:
             return False
         # Positive channel gate: ONLY the real alert/incident channels. This is the
@@ -262,7 +269,7 @@ class IncidentBotService(
             )
             return True
 
-        await self._adopt_prod_jira_issue(ticket, (post.props or {}).get("jira_issue_key"))
+        await self._adopt_prod_jira_issue(ticket, props.get("jira_issue_key"))
         if post.channel_id == self.settings.mattermost_incident_channel_id and not post.root_id:
             await self._adopt_prod_incident_post(ticket, post.id)
         return True
@@ -279,6 +286,16 @@ class IncidentBotService(
         if not isinstance(issue_key, str) or not issue_key:
             return
         if not (ticket.jira_issue_key or "").startswith(STUB_ISSUE_KEY):
+            return
+        if not _JIRA_KEY_PATTERN.match(issue_key):
+            # The prop is attacker-influenceable (any channel member can set custom
+            # props); a malformed key would inject a markdown link into the audit
+            # note and persist a bogus URL. Only adopt a well-formed Jira key.
+            log.warning(
+                "readonly.adopt.invalid_jira_key",
+                mattermost_post_id=ticket.mattermost_post_id,
+                jira_issue_key=issue_key,
+            )
             return
         issue_url = f"{self.settings.jira_base_url}/browse/{issue_key}"
         self.repository.replace_jira_issue(ticket.mattermost_post_id, issue_key, issue_url)

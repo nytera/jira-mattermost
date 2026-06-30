@@ -38,9 +38,9 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `service/_incidents.py` | 906 |
 | `service/_jira_sync.py` | 371 |
 | `service/_postmortem.py` | 561 |
-| `service/_shared.py` | 207 |
+| `service/_shared.py` | 199 |
 | `service/_thread_summary.py` | 392 |
-| `service/coordinator.py` | 616 |
+| `service/coordinator.py` | 633 |
 | `summary.py` | 30 |
 | `web.py` | 548 |
 

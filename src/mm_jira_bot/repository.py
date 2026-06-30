@@ -163,7 +163,7 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
                     "ADD COLUMN postmortem_comment_added BOOLEAN DEFAULT FALSE"
                 )
             )
-    episode_columns = {
+    columns_to_add = {
         "alert_signature": "VARCHAR(255)",
         "resolved_at": "TIMESTAMP WITH TIME ZONE"
         if engine.dialect.name == "postgresql"
@@ -172,7 +172,7 @@ def _ensure_alert_ticket_columns(engine: Engine) -> None:
         "expected_repeat_linked": "BOOLEAN DEFAULT FALSE",
         "prod_incident_post_id": "VARCHAR(64)",
     }
-    for column_name, column_type in episode_columns.items():
+    for column_name, column_type in columns_to_add.items():
         if column_name not in columns:
             with engine.begin() as connection:
                 connection.execute(

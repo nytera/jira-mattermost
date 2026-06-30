@@ -71,8 +71,9 @@ format. See `format_readonly_jira_params` (`jira_payload.py`).
 The shadow treats configured **test channels** (`MATTERMOST_TEST_ALERT_CHANNEL_ID`,
 `MATTERMOST_TEST_INCIDENT_CHANNEL_ID`) as first-class alert/incident channels, so you
 can push test traffic through the same path as prod traffic. The channel predicates
-`_is_alert_channel` / `_is_incident_channel` / `_is_test_channel` (in `SharedMixin`)
-encode "real ∪ test".
+`_is_alert_channel` / `_is_incident_channel` (in `SharedMixin`) encode "real ∪ test"
+— but only under `read_only_mode`, so a leftover test-channel env var never routes
+real traffic into the live path in a normal deployment.
 
 ## Adopting prod artifacts
 
@@ -135,6 +136,11 @@ started mid-incident) is consumed without adoption.
   is no-op'd), never prod impact.
 - Adoption doubles LLM token spend: the shadow generates its own postmortem/summary
   over the same real thread that prod already processed. Expected.
+- The mirrored incident message's title does not turn green on close: the bot would
+  edit the original message's attachments, but in read-only the shadow stores a
+  `readonly-` stub id for it and the stub read-back carries no attachments to re-edit.
+  Closure is still visible in the audit thread (the "🟢 Инцидент закрыт" notice and
+  the postmortem) — only the root message's colour is not flipped.
 - A firing alert that never becomes a confirmed incident is announced by prod with a
   single `jira_issue_key`-bearing post. If the shadow observes that post before its
   own ticket/stub exists (a timing inversion possible under load), adoption is
