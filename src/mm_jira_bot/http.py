@@ -6,6 +6,7 @@ from typing import Any, TypeVar, overload
 
 import httpx
 
+from mm_jira_bot.capture import get_capture
 from mm_jira_bot.config import Settings
 from mm_jira_bot.logging import EventLogger
 from mm_jira_bot.metrics import observe_http
@@ -120,6 +121,16 @@ class AsyncApiClient:
                 except httpx.HTTPError as exc:
                     raise wrap_transport_error(error_message, exc) from exc
                 status = str(response.status_code)
+                capture = get_capture(self._settings)
+                if capture is not None:
+                    capture.record_http(
+                        self.metrics_client_name,
+                        method,
+                        path,
+                        request_json=json,
+                        params=params,
+                        response=response,
+                    )
                 self._raise_for_status(response, error_message)
                 return parse(response) if parse is not None else None
             finally:

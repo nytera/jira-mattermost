@@ -148,6 +148,8 @@ class Settings:
     enable_websocket: bool = True
     enable_backfill_on_startup: bool = False
     debug_admin_enabled: bool = False
+    capture_fixtures: bool = False
+    capture_dir: str = "export/fixtures"
     llm_base_url: str = "https://corellm.wb.ru/deepseek/v1"
     llm_api_token: str | None = None
     llm_model: str = "deepseek-chat"
@@ -222,6 +224,8 @@ class Settings:
             enable_websocket=_env("ENABLE_WEBSOCKET", "true") != "false",
             enable_backfill_on_startup=_env("ENABLE_BACKFILL_ON_STARTUP", "false") == "true",
             debug_admin_enabled=_env("DEBUG_ADMIN_ENABLED", "false") == "true",
+            capture_fixtures=_env("CAPTURE_FIXTURES", "false") == "true",
+            capture_dir=_env("CAPTURE_DIR", "export/fixtures"),
             llm_base_url=_env("LLM_BASE_URL", "https://corellm.wb.ru/deepseek/v1").rstrip("/"),
             llm_api_token=_first_env("LLM_API_TOKEN", "CORELLM_API_TOKEN", "OPENAI_API_KEY"),
             llm_model=_env("LLM_MODEL", "deepseek-chat"),

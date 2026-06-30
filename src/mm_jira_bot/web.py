@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from mm_jira_bot.capture import get_capture
 from mm_jira_bot.config import Settings
 from mm_jira_bot.debug_admin import register_debug_admin
 from mm_jira_bot.jira import JiraClient
@@ -213,9 +214,12 @@ async def _handle_ws_event(service: IncidentBotService, event: dict) -> None:
 
 async def websocket_loop(service: IncidentBotService) -> None:
     handlers: set[asyncio.Task[None]] = set()
+    capture = get_capture(service.settings)
     while True:
         try:
             async for event in service.mattermost.websocket_events():
+                if capture is not None:
+                    capture.record_ws(event)
                 if event.get("event") not in _HANDLED_WS_EVENTS:
                     continue
                 # Off-load handling so a long postmortem never blocks the read
