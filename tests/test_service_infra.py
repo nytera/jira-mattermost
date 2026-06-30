@@ -136,6 +136,46 @@ def test_test_channels_route_to_live_path_only_in_read_only(settings):
     assert shadow._is_incident_channel("test-incident")
 
 
+def test_settings_bot_user_id_optional(tmp_path, monkeypatch):
+    """MATTERMOST_BOT_USER_ID is optional: unset ⇒ empty string (resolved from the
+    token at startup), not a startup failure."""
+    _set_env(monkeypatch, _full_valid_env())
+    monkeypatch.delenv("MATTERMOST_BOT_USER_ID", raising=False)
+
+    loaded = Settings.from_env(tmp_path / "missing.env")
+
+    assert loaded.mattermost_bot_user_id == ""
+
+
+async def test_resolve_bot_user_id_from_token_when_unset(settings):
+    service = _build_service(replace(settings, mattermost_bot_user_id=""))
+    service.mattermost.bot_user_id_from_api = "resolved-bot"
+
+    await service.resolve_bot_user_id()
+
+    # Pushed into both the service settings (hot path) and the client (add_reaction).
+    assert service.settings.mattermost_bot_user_id == "resolved-bot"
+    assert service.mattermost.adopted_bot_user_id == "resolved-bot"
+
+
+async def test_resolve_bot_user_id_keeps_configured(settings):
+    service = _build_service(settings)  # conftest sets bot-user
+    service.mattermost.bot_user_id_from_api = "should-not-be-used"
+
+    await service.resolve_bot_user_id()
+
+    assert service.settings.mattermost_bot_user_id == "bot-user"
+    assert service.mattermost.adopted_bot_user_id is None
+
+
+async def test_resolve_bot_user_id_raises_on_empty_api(settings):
+    service = _build_service(replace(settings, mattermost_bot_user_id=""))
+    service.mattermost.bot_user_id_from_api = ""
+
+    with pytest.raises(RuntimeError, match="resolve bot user id"):
+        await service.resolve_bot_user_id()
+
+
 def test_settings_load_llm_prompt_overrides(tmp_path, monkeypatch):
     required_env = {
         "MATTERMOST_URL": "https://mattermost.example.com",
@@ -959,7 +999,6 @@ def _set_env(monkeypatch, env: dict[str, str]) -> None:
         "MATTERMOST_TOKEN",
         "DATABASE_URL",
         "JIRA_BASE_URL",
-        "MATTERMOST_BOT_USER_ID",
         "JIRA_PROJECT_KEY",
         "JIRA_ISSUE_TYPE",
         "JIRA_SOURCE_FIELD",

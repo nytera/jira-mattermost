@@ -24,7 +24,6 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `MATTERMOST_TOKEN` | Bot personal access token |
 | `MATTERMOST_ALERT_CHANNEL_ID` | Channel the bot watches for alerts |
 | `MATTERMOST_INCIDENT_CHANNEL_ID` | Channel incidents are published to |
-| `MATTERMOST_BOT_USER_ID` | Bot's own user id (so it ignores its own posts) |
 | `JIRA_BASE_URL` | Jira base URL (trailing `/` stripped) |
 | `JIRA_API_TOKEN` | Jira personal access token (Bearer) |
 | `JIRA_PROJECT_KEY` | Target project key |
@@ -45,6 +44,7 @@ The bot refuses to start without these (`_required` / `_first_required`):
 | `MATTERMOST_EXPECTED_INCIDENT_REACTION_NAME` | `arrows_counterclockwise` | `Ожидаемый` reaction; also the bot's self-added repeat marker |
 | `MATTERMOST_SUMMARY_REACTION_NAME` | `memo` | Triggers a thread summary in any channel |
 | `MATTERMOST_SLASH_TOKEN` | — | If set, validates the `/incident` slash token |
+| `MATTERMOST_BOT_USER_ID` | resolved from token | Bot's own user id (so it ignores its own posts/reactions). Unset ⇒ auto-resolved from the bot token via `/users/me` at startup; set ⇒ kept and preflight cross-checks it |
 | `MATTERMOST_AUTHORIZED_USERNAMES` | empty | Comma/`;`-separated logins **and** group names; leading `@` stripped. Empty = act on everyone |
 | `MATTERMOST_AUTHORIZED_REFRESH_SECONDS` | `300` | Allowlist re-resolve interval |
 | `MATTERMOST_DUTY_MENTION` | — | On-call mention posted as bare text (e.g. `:look: @sre-duty`) |

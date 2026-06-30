@@ -389,6 +389,9 @@ def create_app(
         # backfill) buffer instead of being dropped before drain() starts.
         if ops_notifier is not None and ops_notifier.posts_to_channel:
             ops_notifier.activate()
+        # Resolve the bot's own id from its token before preflight / the WS loop, so
+        # MATTERMOST_BOT_USER_ID is optional (the token already determines identity).
+        await service.resolve_bot_user_id()
         await run_startup_preflight(service)
         await service.resolve_authorized_users()
         if settings.enable_backfill_on_startup:

@@ -117,8 +117,9 @@ flowchart LR
 добавьте бота в оба канала. Боту нужны: чтение сообщений и реакций + запись ответов в
 тред в алерт-канале; запись в инцидент-канал; WebSocket `/api/v4/websocket`; REST к
 постам, каналам, пользователям (показать имя подтвердившего), тредам (постмортем) и
-диалогам (форма обратной связи). `MATTERMOST_BOT_USER_ID` нужен, чтобы бот не
-обрабатывал собственные сообщения.
+диалогам (форма обратной связи). `MATTERMOST_BOT_USER_ID` (чтобы бот не обрабатывал
+собственные сообщения) можно не задавать — бот сам определит свой id из токена через
+`/users/me` на старте.
 
 ### Slash-команда `/incident`
 
@@ -148,7 +149,8 @@ On-prem / Data Center Jira с personal access token. Минимум: `JIRA_BASE_
 Скопируйте `.env.example` в `.env`. Без этих переменных бот не стартует:
 
 - Mattermost: `MATTERMOST_URL`, `MATTERMOST_TOKEN`, `MATTERMOST_ALERT_CHANNEL_ID`,
-  `MATTERMOST_INCIDENT_CHANNEL_ID`, `MATTERMOST_BOT_USER_ID`;
+  `MATTERMOST_INCIDENT_CHANNEL_ID` (`MATTERMOST_BOT_USER_ID` — опционально, бот
+  определит свой id из токена сам);
 - Jira: `JIRA_BASE_URL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE`,
   `JIRA_VALID_INCIDENT_FIELD`, `JIRA_SOURCE_FIELD`, `JIRA_IS_CRIT_ALERT_FIELD`;
 - БД: `DATABASE_URL` (например `sqlite:///./mattermost_jira_bot.db` локально или

@@ -178,7 +178,10 @@ class Settings:
             mattermost_alert_channel_id=_required("MATTERMOST_ALERT_CHANNEL_ID"),
             mattermost_incident_channel_id=_required("MATTERMOST_INCIDENT_CHANNEL_ID"),
             mattermost_incident_reaction_name=_env("MATTERMOST_INCIDENT_REACTION_NAME", "incident"),
-            mattermost_bot_user_id=_required("MATTERMOST_BOT_USER_ID"),
+            # Optional: empty ⇒ resolved from the bot token via /users/me at startup
+            # (see IncidentBotService.resolve_bot_user_id). When set, preflight
+            # cross-checks it against the token's real id.
+            mattermost_bot_user_id=_env("MATTERMOST_BOT_USER_ID", ""),
             jira_base_url=_required("JIRA_BASE_URL").rstrip("/"),
             jira_api_token=_required("JIRA_API_TOKEN"),
             jira_project_key=_required("JIRA_PROJECT_KEY"),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from mm_jira_bot.actions import (
@@ -89,6 +89,29 @@ class IncidentBotService(
         # MATTERMOST_AUTHORIZED_USERNAMES at startup via resolve_authorized_users.
         self._authorized_user_ids: frozenset[str] = frozenset()
         self._authorization_enforced: bool = False
+
+    async def resolve_bot_user_id(self) -> None:
+        """Auto-populate ``mattermost_bot_user_id`` from the bot token at startup.
+
+        The token already determines identity, so ``MATTERMOST_BOT_USER_ID`` is
+        optional: when unset, resolve it from ``/users/me`` and push it into both
+        the service settings (hot-path checks: own-reaction ignore, ``_is_bot_post``)
+        and the Mattermost client (``add_reaction`` sends ``user_id``). When set, it
+        is kept as-is and preflight cross-checks it. Runs before the websocket loop
+        so handlers see the right id. A failure here is fatal — the bot can't tell
+        its own activity apart without an identity.
+        """
+        if self.settings.mattermost_bot_user_id:
+            return
+        bot_user_id = await self.mattermost.fetch_bot_user_id()
+        if not bot_user_id:
+            raise RuntimeError(
+                "Could not resolve bot user id from Mattermost /users/me; "
+                "set MATTERMOST_BOT_USER_ID explicitly."
+            )
+        self.settings = replace(self.settings, mattermost_bot_user_id=bot_user_id)
+        self.mattermost.adopt_resolved_bot_user_id(bot_user_id)
+        log.info("bot_user_id.resolved", bot_user_id=bot_user_id)
 
     async def resolve_authorized_users(self) -> None:
         """Resolve configured logins/groups to ids and enable the allowlist gate.

@@ -18,7 +18,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `actions.py` | 291 |
 | `admin_api.py` | 317 |
 | `audit.py` | 199 |
-| `config.py` | 246 |
+| `config.py` | 249 |
 | `domain.py` | 154 |
 | `formatting.py` | 309 |
 | `http.py` | 159 |
@@ -26,7 +26,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `jira_payload.py` | 215 |
 | `llm.py` | 305 |
 | `logging.py` | 276 |
-| `mattermost.py` | 486 |
+| `mattermost.py` | 506 |
 | `metrics.py` | 113 |
 | `ops.py` | 160 |
 | `postmortem.py` | 359 |
@@ -40,9 +40,9 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `service/_postmortem.py` | 563 |
 | `service/_shared.py` | 207 |
 | `service/_thread_summary.py` | 392 |
-| `service/coordinator.py` | 593 |
+| `service/coordinator.py` | 616 |
 | `summary.py` | 30 |
-| `web.py` | 545 |
+| `web.py` | 548 |
 
 ## Service assembly (MRO)
 
@@ -224,6 +224,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 - **class `MattermostClient(AsyncApiClient)`**
   - `async def add_reaction(self, post_id: str, emoji_name: str, *, allow_in_read_only: bool = False) -> None`
   - `async def create_post(self, *, channel_id: str, message: str, props: dict | None = None, root_id: str | None = None, allow_in_read_only: bool = False) -> MattermostPost`
+  - `async def fetch_bot_user_id(self) -> str`
   - `async def fetch_recent_channel_posts(self, channel_id: str, *, limit: int) -> list[MattermostPost]`
   - `async def get_channel_name(self, channel_id: str) -> str | None`
   - `async def get_group_ids_by_names(self, names: list[str]) -> dict[str, str]`
@@ -236,6 +237,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
   - `async def preflight_check(self) -> dict[str, object]`
   - `async def update_post(self, post_id: str, *, message: str | None = None, props: dict | None = None, allow_in_read_only: bool = False) -> None`
   - `async def websocket_events(self) -> AsyncIterator[dict]`
+  - `def adopt_resolved_bot_user_id(self, bot_user_id: str) -> None`
   - `def permalink(self, post_id: str) -> str`
 - `def build_mattermost_permalink(base_url: str, post_id: str) -> str`
 - `def format_user_display(data: dict) -> str`
@@ -388,6 +390,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
   - `async def handle_slash_command(self, *, user_id: str, text: str) -> CommandResponse`
   - `async def handle_websocket_event(self, event: dict) -> None`
   - `async def resolve_authorized_users(self) -> None`
+  - `async def resolve_bot_user_id(self) -> None`
 
 ### `summary.py`
 

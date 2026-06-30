@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse, urlunparse
 
@@ -179,6 +180,25 @@ class MattermostClient(AsyncApiClient):
             "incident_channel_id": self._settings.mattermost_incident_channel_id,
             "incident_channel_name": incident_channel_name,
         }
+
+    async def fetch_bot_user_id(self) -> str:
+        """Resolve the bot's own user id from its token via ``/users/me``.
+
+        Used at startup to auto-populate ``MATTERMOST_BOT_USER_ID`` when it is not
+        configured — the token already determines identity. A read, so it is allowed
+        in read-only mode."""
+        return await self._request(
+            "GET",
+            "/api/v4/users/me",
+            error_message="Failed to resolve Mattermost bot user id",
+            event="mattermost.users_me",
+            parse=lambda response: str(response.json().get("id") or ""),
+        )
+
+    def adopt_resolved_bot_user_id(self, bot_user_id: str) -> None:
+        """Swap in settings carrying the resolved bot id, so paths that send it
+        (``add_reaction`` posts ``user_id``) use the real id, not an empty string."""
+        self._settings = replace(self._settings, mattermost_bot_user_id=bot_user_id)
 
     async def get_post(self, post_id: str) -> MattermostPost:
         if post_id.startswith(READONLY_POST_ID_PREFIX):
