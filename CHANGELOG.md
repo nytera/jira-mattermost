@@ -15,9 +15,11 @@
   воспроизведением тредов. Записи в Jira/Mattermost подавляются на уровне методов
   клиентов (Jira — no-op + стаб `ADS-TEST`; Mattermost — редирект в `AuditMirror`),
   плюс backstop в `_request`. Тест-каналы (`MATTERMOST_TEST_ALERT_CHANNEL_ID`,
-  `MATTERMOST_TEST_INCIDENT_CHANNEL_ID`) обрабатываются как алерт/инцидент. Bind-адрес
-  теперь настраивается (`HOST`/`PORT`). Старт падает, если аудит-канал совпадает с
-  любым рабочим каналом. Подробности — [docs/read-only.md](docs/read-only.md).
+  `MATTERMOST_TEST_INCIDENT_CHANNEL_ID`) обрабатываются как алерт/инцидент — но
+  только в read-only, чтобы забытая тест-переменная не маршрутизировала реальный
+  трафик в живой путь на проде. Bind-адрес теперь настраивается (`HOST`/`PORT`).
+  Старт падает, если аудит-канал совпадает с любым рабочим каналом. Подробности —
+  [docs/read-only.md](docs/read-only.md).
 
 ### Изменено
 
@@ -27,7 +29,9 @@
 ### Удалено
 
 - `JIRA_CREATE_ENABLED` и `JIRA_STUB_ISSUE_KEY`: тестовый режим заменён на
-  `READ_ONLY_MODE`, стаб-ключ зашит как `ADS-TEST`.
+  `READ_ONLY_MODE`, стаб-ключ зашит как `ADS-TEST`. Если удалённая переменная всё ещё
+  задана в окружении, старт пишет `WARNING` (молча проигнорировать `JIRA_CREATE_ENABLED=false`
+  при апгрейде значило бы превратить no-write деплой в пишущий на прод).
 
 ## Initial Release
 

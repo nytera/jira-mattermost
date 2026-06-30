@@ -112,6 +112,30 @@ def test_settings_loads_read_only_mode(tmp_path, monkeypatch):
     assert loaded_settings.mattermost_test_alert_channel_id == "test-alert"
 
 
+def test_test_channels_route_to_live_path_only_in_read_only(settings):
+    """A leftover test-channel env var must never route real traffic into the live
+    alert/incident path in a normal (non-read-only) deployment — the test channels
+    are a shadow-only concept, folded in only under read_only_mode."""
+    with_test = replace(
+        settings,
+        mattermost_test_alert_channel_id="test-alert",
+        mattermost_test_incident_channel_id="test-incident",
+    )
+
+    prod = _build_service(replace(with_test, read_only_mode=False))
+    # Real channels are always recognised.
+    assert prod._is_alert_channel("alerts-channel")
+    assert prod._is_incident_channel("incidents-channel")
+    # Test channels are NOT live in prod mode (would otherwise create real Jira
+    # issues / Mattermost writes from test traffic).
+    assert not prod._is_alert_channel("test-alert")
+    assert not prod._is_incident_channel("test-incident")
+
+    shadow = _build_service(replace(with_test, read_only_mode=True))
+    assert shadow._is_alert_channel("test-alert")
+    assert shadow._is_incident_channel("test-incident")
+
+
 def test_settings_load_llm_prompt_overrides(tmp_path, monkeypatch):
     required_env = {
         "MATTERMOST_URL": "https://mattermost.example.com",

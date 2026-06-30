@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from time import perf_counter
@@ -30,6 +31,26 @@ from mm_jira_bot.repository import (
 from mm_jira_bot.service import IncidentBotService
 
 log = get_logger(__name__)
+
+# Env vars removed in 0.9.0 (the no-write/stub behaviour is now driven solely by
+# READ_ONLY_MODE). Warn loudly if a deployment still sets one — silently ignoring
+# JIRA_CREATE_ENABLED=false on upgrade would turn a no-write deploy into a live
+# prod-writing one.
+_REMOVED_ENV_VARS = ("JIRA_CREATE_ENABLED", "JIRA_STUB_ISSUE_KEY")
+
+
+def _warn_removed_env_vars() -> None:
+    for name in _REMOVED_ENV_VARS:
+        if os.environ.get(name):
+            log.warning(
+                "config.removed_env_var",
+                variable=name,
+                detail=(
+                    f"{name} was removed in 0.9.0 and is now ignored; the no-write / "
+                    "stub behaviour is driven solely by READ_ONLY_MODE=true. Set "
+                    "READ_ONLY_MODE if you relied on the old stub mode."
+                ),
+            )
 
 
 def _assert_audit_channel_isolated(settings: Settings) -> None:
@@ -355,6 +376,7 @@ def create_app(
         app.state.service = service
         app.state.owns_clients = owns_clients
         app.state.background_tasks = []
+        _warn_removed_env_vars()
         if settings.read_only_mode:
             log.warning(
                 "readonly.enabled",

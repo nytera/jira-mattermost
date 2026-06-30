@@ -23,6 +23,7 @@ propagates, so the shadow keeps processing events.
 
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
@@ -52,10 +53,10 @@ class AuditMirror:
         # as a thread map (reply -> audit root) and a post map (update/reaction
         # -> audit post).
         self._thread_map: OrderedDict[str, str] = OrderedDict()
-
-    @property
-    def enabled(self) -> bool:
-        return bool(self._channel_id)
+        # Serialises anchor creation: WS events dispatch concurrently
+        # (asyncio.create_task per event), so two ops on the same unseen root must
+        # not each mint a duplicate anchor and split the mirrored thread.
+        self._anchor_lock = asyncio.Lock()
 
     def _remember(self, original_id: str, audit_id: str) -> None:
         self._thread_map[original_id] = audit_id
@@ -106,15 +107,22 @@ class AuditMirror:
         audit_root = self._audit_id_for(original_root_id)
         if audit_root is not None:
             return audit_root
-        anchor = await self._post(
-            message=self._anchor_text(original_root_id, source_channel_id),
-            props=None,
-            root_id=None,
-        )
-        if anchor is None:
-            return None
-        self._remember(original_root_id, anchor.id)
-        return anchor.id
+        # Hold the lock across the create-then-remember so a concurrent task for the
+        # same root blocks until the anchor is recorded; the re-check inside the lock
+        # reuses an anchor a racing task minted while we waited.
+        async with self._anchor_lock:
+            audit_root = self._audit_id_for(original_root_id)
+            if audit_root is not None:
+                return audit_root
+            anchor = await self._post(
+                message=self._anchor_text(original_root_id, source_channel_id),
+                props=None,
+                root_id=None,
+            )
+            if anchor is None:
+                return None
+            self._remember(original_root_id, anchor.id)
+            return anchor.id
 
     async def mirror_create_post(
         self,

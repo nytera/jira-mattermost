@@ -95,26 +95,36 @@ class SharedMixin:
     mattermost: Any
 
     def _is_alert_channel(self, channel_id: str) -> bool:
-        """Alert channel — the real one or the configured test alert channel.
+        """Alert channel — the real one always, plus (read-only only) the configured
+        test alert channel.
 
-        In read-only mode the shadow treats the test alert channel as a first-class
-        alert channel so test traffic exercises the same path as prod traffic.
+        The shadow treats the test alert channel as a first-class alert channel so
+        test traffic exercises the same path as prod traffic. The test channel is
+        folded in ONLY under ``read_only_mode``: in a normal deployment a leftover
+        ``MATTERMOST_TEST_ALERT_CHANNEL_ID`` must never route real traffic into the
+        live alert path (which would create real Jira issues / Mattermost writes).
         """
-        return channel_id in (
-            self.settings.mattermost_alert_channel_id,
-            self.settings.mattermost_test_alert_channel_id,
+        if channel_id == self.settings.mattermost_alert_channel_id:
+            return True
+        return (
+            self.settings.read_only_mode
+            and channel_id == self.settings.mattermost_test_alert_channel_id
         )
 
     def _is_incident_channel(self, channel_id: str) -> bool:
-        """Incident channel — the real one or the configured test incident channel."""
-        return channel_id in (
-            self.settings.mattermost_incident_channel_id,
-            self.settings.mattermost_test_incident_channel_id,
+        """Incident channel — the real one always, plus (read-only only) the
+        configured test incident channel. See ``_is_alert_channel`` for why the test
+        channel is gated by ``read_only_mode``."""
+        if channel_id == self.settings.mattermost_incident_channel_id:
+            return True
+        return (
+            self.settings.read_only_mode
+            and channel_id == self.settings.mattermost_test_incident_channel_id
         )
 
     def _is_test_channel(self, channel_id: str) -> bool:
-        """One of the configured test channels (alert or incident). Test-channel
-        traffic gets the ``ADS-TEST`` Jira stub; real channels adopt the real key."""
+        """Whether ``channel_id`` is one of the configured test channels (alert or
+        incident). Pure membership test — kept for the shadow's test-vs-real routing."""
         return channel_id in (
             self.settings.mattermost_test_alert_channel_id,
             self.settings.mattermost_test_incident_channel_id,

@@ -17,7 +17,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `__main__.py` | 20 |
 | `actions.py` | 291 |
 | `admin_api.py` | 317 |
-| `audit.py` | 179 |
+| `audit.py` | 187 |
 | `config.py` | 246 |
 | `domain.py` | 154 |
 | `formatting.py` | 309 |
@@ -26,7 +26,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `jira_payload.py` | 215 |
 | `llm.py` | 305 |
 | `logging.py` | 276 |
-| `mattermost.py` | 475 |
+| `mattermost.py` | 486 |
 | `metrics.py` | 113 |
 | `ops.py` | 160 |
 | `postmortem.py` | 359 |
@@ -38,11 +38,11 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `service/_incidents.py` | 872 |
 | `service/_jira_sync.py` | 370 |
 | `service/_postmortem.py` | 563 |
-| `service/_shared.py` | 197 |
+| `service/_shared.py` | 207 |
 | `service/_thread_summary.py` | 392 |
 | `service/coordinator.py` | 480 |
 | `summary.py` | 30 |
-| `web.py` | 523 |
+| `web.py` | 545 |
 
 ## Service assembly (MRO)
 
@@ -108,7 +108,6 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
   - `async def mirror_create_post(self, *, channel_id: str, message: str, props: dict | None = None, root_id: str | None = None) -> MattermostPost`
   - `async def mirror_reaction(self, post_id: str, emoji_name: str) -> None`
   - `async def mirror_update(self, post_id: str, *, message: str | None = None, props: dict | None = None) -> None`
-  - `def enabled(self) -> bool`
 
 ### `config.py`
 
@@ -241,7 +240,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 - `def format_user_display(data: dict) -> str`
 - `def parse_posted_event(payload: dict) -> MattermostPost | None`
 - `def parse_reaction_event(payload: dict) -> ReactionEvent | None`
-- `def stub_mattermost_post(settings: Settings, *, channel_id: str, message: str = '', props: dict | None = None, root_id: str | None = None, create_at: int = 0) -> MattermostPost`
+- `def stub_mattermost_post(settings: Settings, *, channel_id: str, post_id: str | None = None, message: str = '', props: dict | None = None, root_id: str | None = None, create_at: int = 0) -> MattermostPost`
 - `def websocket_url(base_url: str) -> str`
 
 ### `metrics.py`

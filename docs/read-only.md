@@ -77,6 +77,11 @@ encode "real ∪ test".
 
 ## Limitations
 
+- An alert-originated incident stores a `readonly-` stub as its `incident_post_id`,
+  and that stub has no real thread behind it. So a postmortem generated from the
+  admin UI in read-only runs over an empty transcript until prod **adoption** (the
+  next increment) wires the real incident thread in. The run stays audit-only and
+  idempotent — it never writes to prod.
 - After a restart the thread map is lost, so older threads mirror flat (new replies
   start fresh audit roots) until they are seen again.
 - The shadow stores `readonly-` stub ids as its own incident post id, so any

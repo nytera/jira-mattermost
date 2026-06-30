@@ -6,6 +6,7 @@ that either records audit writes or fails on any unexpected (prod) write.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 
@@ -79,9 +80,11 @@ async def test_read_only_suppresses_writes_without_audit(settings):
     await client.add_reaction("realpost", "memo")
     await client.update_post("realpost", message="x")
     await client.open_dialog(trigger_id="t", url="u", dialog={})
-    # A read against a shadow-minted id short-circuits without HTTP.
+    # A read against a shadow-minted id short-circuits without HTTP and ECHOES the
+    # requested id — callers re-key on post.id (incident-checkmark lookup), so the
+    # round-trip identity get_post(id).id == id must hold.
     stub = await client.get_post(post.id)
-    assert stub.id.startswith(READONLY_POST_ID_PREFIX)
+    assert stub.id == post.id
     assert await client.get_thread_posts(post.id) == []
     await client.aclose()
 
@@ -181,6 +184,24 @@ async def test_audit_mirror_reaction_anchors_unseen_post(settings):
     # An anchor is created on demand, then the reaction targets it.
     assert len(transport.posts) == 1
     assert transport.reactions[0]["post_id"] == "auditgen001"
+    await client.aclose()
+
+
+async def test_audit_mirror_concurrent_replies_share_single_anchor(settings):
+    client, transport = _mirrored_client(settings)
+    # Two replies to the same unseen real root, dispatched concurrently (mirrors
+    # web.py's per-event asyncio.create_task). The anchor-creation critical section
+    # must be serialised so exactly ONE anchor is minted and the thread is not split.
+    await asyncio.gather(
+        client.create_post(channel_id="alerts-channel", message="r1", root_id="realroot"),
+        client.create_post(channel_id="alerts-channel", message="r2", root_id="realroot"),
+    )
+    anchors = [p for p in transport.posts if "Зеркало треда" in p.get("message", "")]
+    assert len(anchors) == 1
+    replies = [p for p in transport.posts if p.get("message") in {"r1", "r2"}]
+    assert len(replies) == 2
+    # Both replies thread under the single shared anchor (the first audit post).
+    assert {p["root_id"] for p in replies} == {"auditgen001"}
     await client.aclose()
 
 

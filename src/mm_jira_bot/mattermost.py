@@ -28,6 +28,7 @@ def stub_mattermost_post(
     settings: Settings,
     *,
     channel_id: str,
+    post_id: str | None = None,
     message: str = "",
     props: dict | None = None,
     root_id: str | None = None,
@@ -36,9 +37,14 @@ def stub_mattermost_post(
     """Fake :class:`MattermostPost` (id ``readonly-…``) returned in read-only mode
     when no real post is created — e.g. when there is no audit channel to mirror
     into. The recognisable id lets ``get_post``/``get_thread_posts`` answer
-    without hitting the real API."""
+    without hitting the real API.
+
+    ``post_id`` echoes a known stub id back (so a read-back round-trips:
+    ``get_post(id).id == id``); when omitted a fresh **unique** id is minted —
+    the create path relies on that uniqueness because ``incident_post_id`` /
+    ``jira_issue_key`` carry UNIQUE constraints."""
     return MattermostPost(
-        id=f"{READONLY_POST_ID_PREFIX}{secrets.token_hex(8)}",
+        id=post_id or f"{READONLY_POST_ID_PREFIX}{secrets.token_hex(8)}",
         channel_id=channel_id,
         user_id=settings.mattermost_bot_user_id,
         message=message,
@@ -176,10 +182,15 @@ class MattermostClient(AsyncApiClient):
 
     async def get_post(self, post_id: str) -> MattermostPost:
         if post_id.startswith(READONLY_POST_ID_PREFIX):
-            # A shadow-minted stub id has no real post behind it; answer benignly
-            # instead of 404ing against the real API.
+            # A shadow-minted stub id has no real post behind it; echo it back
+            # benignly instead of 404ing against the real API. The id MUST be
+            # preserved — callers re-key on ``post.id`` (e.g. the incident-checkmark
+            # flow does get_by_incident_post_id(post.id)), so minting a fresh id
+            # here would silently break the lookup.
             return stub_mattermost_post(
-                self._settings, channel_id=self._settings.mattermost_audit_channel_id or ""
+                self._settings,
+                channel_id=self._settings.mattermost_audit_channel_id or "",
+                post_id=post_id,
             )
         return await self._request(
             "GET",
