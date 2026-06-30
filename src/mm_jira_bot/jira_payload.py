@@ -32,6 +32,34 @@ def format_jira_datetime(value: datetime) -> str:
     return value.astimezone(runtime_timezone()).strftime("%Y-%m-%dT%H:%M:%S.000%z")
 
 
+def format_readonly_jira_params(
+    *,
+    jira_issue_key: str | None,
+    start: datetime | None,
+    ended_at: datetime | None,
+    ttf_minutes: int | None,
+    validity_label: str | None,
+) -> str:
+    """Code-block audit note listing the Jira field values the shadow computed but
+    (read-only) did not write — so the audit thread shows the would-be parameters
+    at incident/alert close instead of dropping them into a no-op. Datetimes use
+    the exact Jira wire format, so the note reads as "what prod would have set"."""
+    rows: list[tuple[str, str]] = []
+    if jira_issue_key:
+        rows.append(("Задача", jira_issue_key))
+    if start is not None:
+        rows.append(("Старт", format_jira_datetime(start)))
+    if ended_at is not None:
+        rows.append(("Конец", format_jira_datetime(ended_at)))
+    if ttf_minutes is not None:
+        rows.append(("Time to Fix", f"{ttf_minutes} мин"))
+    if validity_label:
+        rows.append(("Валидность", validity_label))
+    width = max((len(label) for label, _ in rows), default=0)
+    body = "\n".join(f"{label.ljust(width)}  {value}" for label, value in rows)
+    return "Параметры Jira (read-only — рассчитаны, в Jira не записаны):\n```\n" + body + "\n```"
+
+
 def build_jira_description(
     post: MattermostPost,
     *,

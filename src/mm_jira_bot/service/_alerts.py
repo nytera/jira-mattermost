@@ -36,6 +36,7 @@ from mm_jira_bot.domain import (
     MattermostPost,
     backend_now,
     datetime_from_mattermost_ms,
+    incident_ttf_minutes,
 )
 from mm_jira_bot.formatting import (
     alert_signature,
@@ -47,6 +48,7 @@ from mm_jira_bot.jira import (
     VALID_INCIDENT_EXPECTED_VALUE,
     VALID_INCIDENT_FALSE_VALUE,
 )
+from mm_jira_bot.jira_payload import format_readonly_jira_params
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository
 from mm_jira_bot.retry import ApiError
@@ -590,6 +592,24 @@ class AlertMixin:
                 "validity_label": validity_label,
             },
         )
+        if self.settings.read_only_mode:
+            # Surface the Jira fields the shadow computed but did not write (validity
+            # + Time-to-Fix) as a code block, so the audit thread shows the would-be
+            # parameters instead of dropping them into the no-op.
+            await self._post_alert_thread_reply(
+                post_id,
+                channel_id=ticket.mattermost_channel_id,
+                message=format_readonly_jira_params(
+                    jira_issue_key=ticket.jira_issue_key,
+                    start=ticket.mattermost_message_created_at,
+                    ended_at=None,
+                    ttf_minutes=incident_ttf_minutes(
+                        ticket.mattermost_message_created_at, validity_set_at or backend_now()
+                    ),
+                    validity_label=validity_label,
+                ),
+                event="readonly.alert_params_published",
+            )
         return ConfirmationResult(
             status=ConfirmationStatus.VALIDITY_SET,
             message=f"Validity set to {validity_label}.",

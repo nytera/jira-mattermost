@@ -32,6 +32,7 @@ from mm_jira_bot.domain import (
     ConfirmationStatus,
     MattermostPost,
     backend_now,
+    incident_ttf_minutes,
 )
 from mm_jira_bot.formatting import (
     extract_alert_title,
@@ -47,6 +48,7 @@ from mm_jira_bot.jira import (
     VALID_INCIDENT_EXPECTED_VALUE,
     VALID_INCIDENT_FALSE_VALUE,
 )
+from mm_jira_bot.jira_payload import format_readonly_jira_params
 from mm_jira_bot.logging import get_logger
 from mm_jira_bot.repository import AlertTicket, AlertTicketRepository, ticket_to_post
 from mm_jira_bot.retry import ApiError
@@ -505,6 +507,9 @@ class IncidentMixin:
             if end_result is not None:
                 if end_result.status == ConfirmationStatus.INCIDENT_ENDED:
                     await self._mark_incident_post_completed(post.id)
+                    await self._audit_readonly_incident_params(
+                        post.id, ended_at=ended_at, validity_label=validity_label
+                    )
                 return end_result
             log.info(
                 "postmortem.skipped_llm_not_configured",
@@ -532,6 +537,9 @@ class IncidentMixin:
         )
         if ended:
             await self._mark_incident_post_completed(post.id)
+            await self._audit_readonly_incident_params(
+                post.id, ended_at=ended_at, validity_label=validity_label
+            )
         return result
 
     async def _set_incident_validity(self, ticket: AlertTicket, validity_label: str) -> None:
@@ -573,6 +581,32 @@ class IncidentMixin:
                     "validity_label": validity_label,
                 },
             )
+
+    async def _audit_readonly_incident_params(
+        self, incident_post_id: str, *, ended_at: datetime, validity_label: str | None
+    ) -> None:
+        """Read-only only: post the Jira field values computed at incident close
+        (end time, Time-to-Fix, validity) as a code block into the audit incident
+        thread — they would otherwise vanish into suppressed Jira writes."""
+        if not self.settings.read_only_mode:
+            return
+        ticket = self.repository.get_by_incident_post_id(incident_post_id)
+        if ticket is None:
+            return
+        start = ticket.mattermost_message_created_at
+        message = format_readonly_jira_params(
+            jira_issue_key=ticket.jira_issue_key,
+            start=start,
+            ended_at=ended_at,
+            ttf_minutes=incident_ttf_minutes(start, ended_at),
+            validity_label=validity_label or ticket.validity_label,
+        )
+        await self._post_incident_thread_reply(
+            incident_post_id,
+            channel_id=self.settings.mattermost_incident_channel_id,
+            message=message,
+            event="readonly.incident_params_published",
+        )
 
     async def _mark_incident_post_completed(self, incident_post_id: str) -> None:
         """Edit the incident-channel message title to the green "завершён" state.

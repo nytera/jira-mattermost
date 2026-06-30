@@ -19,11 +19,11 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `admin_api.py` | 317 |
 | `audit.py` | 199 |
 | `config.py` | 249 |
-| `domain.py` | 154 |
+| `domain.py` | 169 |
 | `formatting.py` | 309 |
 | `http.py` | 159 |
 | `jira.py` | 807 |
-| `jira_payload.py` | 215 |
+| `jira_payload.py` | 243 |
 | `llm.py` | 305 |
 | `logging.py` | 276 |
 | `mattermost.py` | 506 |
@@ -34,10 +34,10 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `retry.py` | 56 |
 | `service/__init__.py` | 20 |
 | `service/_admin.py` | 385 |
-| `service/_alerts.py` | 609 |
-| `service/_incidents.py` | 872 |
+| `service/_alerts.py` | 629 |
+| `service/_incidents.py` | 906 |
 | `service/_jira_sync.py` | 371 |
-| `service/_postmortem.py` | 563 |
+| `service/_postmortem.py` | 561 |
 | `service/_shared.py` | 207 |
 | `service/_thread_summary.py` | 392 |
 | `service/coordinator.py` | 616 |
@@ -130,6 +130,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 - `def backend_now() -> datetime`
 - `def configure_runtime_timezone(timezone_name: str) -> None`
 - `def datetime_from_mattermost_ms(value: int | None) -> datetime | None`
+- `def incident_ttf_minutes(start: datetime | None, ended: datetime) -> int | None`
 - `def runtime_timezone() -> ZoneInfo`
 
 ### `formatting.py`
@@ -182,6 +183,7 @@ _`Conditional` reflects decorator nesting inside an `if`. The `/admin/*` routes 
 - `def build_jira_issue_payload(settings: Settings, valid_incident_field_id: str, source_field_id: str, is_crit_alert_field_id: str, post: MattermostPost, *, message_url: str, channel_name: str | None, start_field_id: str | None = None, valid_incident_option: dict[str, str] | None = None, source_option: dict[str, str] | None = None, is_crit_alert_option: dict[str, str] | None = None, summary: str | None = None, description: str | None = None, labels: list[str] | None = None, include_alert_fields: bool = True) -> dict[str, Any]`
 - `def build_postmortem_description(*, incident_message_url: str, alert_message_url: str | None, postmortem_author: str | None = None, participants: list[str] | None = None) -> str`
 - `def format_jira_datetime(value: datetime) -> str`
+- `def format_readonly_jira_params(*, jira_issue_key: str | None, start: datetime | None, ended_at: datetime | None, ttf_minutes: int | None, validity_label: str | None) -> str`
 - `def jira_option(value: str, option_id: str | None = None) -> dict[str, str]`
 
 ### `llm.py`

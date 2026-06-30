@@ -56,6 +56,16 @@ The audit channel **must be dedicated** — distinct from every alert/incident/t
 channel. Startup refuses to boot on a collision (`_assert_audit_channel_isolated` in
 `web.py`), because the one permitted write would otherwise land in a real channel.
 
+## Computed Jira fields surfaced on close
+
+Some Jira writes carry no Mattermost reply of their own, so suppressing them would
+drop the value silently — notably the **end time** and **Time-to-Fix** at incident
+close, and Time-to-Fix on an alert validity change. In read-only mode the shadow
+still computes these (it even runs the LLM end-time inference) and posts them as a
+code block into the audit thread — "the Jira fields prod would have written" —
+instead of letting them vanish into the no-op. End time uses the exact Jira wire
+format. See `format_readonly_jira_params` (`jira_payload.py`).
+
 ## Test channels vs real channels
 
 The shadow treats configured **test channels** (`MATTERMOST_TEST_ALERT_CHANNEL_ID`,
