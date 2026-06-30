@@ -28,8 +28,6 @@ init expectations aligned.
   episode columns (`root_post_id`, `resolved_at`, `validity_label`,
   `expected_repeat_linked`), and the `creation_status` / `confirmation_status`
   state machines.
-- **`alert_feedback`** — `mattermost_post_id`, `user_id`, display name, message text,
-  created-at.
 - **`app_settings`** — a `key`/`value` store for runtime-editable config (the
   admin-UI LLM prompt overrides), managed by `get_setting` / `set_setting` /
   `delete_setting`. See [`domains/admin.md`](domains/admin.md).

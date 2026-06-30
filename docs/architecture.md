@@ -51,7 +51,7 @@ order, shown below (the linearized list is in
 | `ThreadSummaryMixin` | `service/_thread_summary.py` | [`domains/thread-summary.md`](domains/thread-summary.md) |
 
 `coordinator.py` keeps init/auth and the event routers
-(`handle_websocket_event`/`handle_reaction`/`handle_slash_command`) plus the
+(`handle_websocket_event`/`handle_reaction`) plus the
 cross-domain orchestration of who-calls-what.
 
 `AdminMixin` backs the admin UI: its methods are exposed as JSON routes by
@@ -83,7 +83,7 @@ sibling method it calls; `SharedMixin` is self-contained). Every file has
    and [`domains/jira-sync.md`](domains/jira-sync.md), including the episode/
    expected-repeat model.
 2. **Confirmation → valid incident** (`confirm_incident`, via the `:incident:`
-   reaction or `/incident <permalink>`): posts to the incidents channel, sets Jira
+   reaction): posts to the incidents channel, sets Jira
    `Valid Incident = Валидный`, comments, replies in the alert
    thread. If the Jira issue does not exist yet it is saved as `pending_confirmation`
    and completed by the loop. See [`domains/incidents.md`](domains/incidents.md).

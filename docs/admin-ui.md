@@ -21,7 +21,7 @@ five routes:
   `alert_signature` (root + repeats), and validity / Jira-creation distributions
   plus top channels.
 - **Incidents** (`/incidents`) — filterable table (all / open / no-validity); a
-  row opens a slide-over with full detail, feedback, and lifecycle actions:
+  row opens a slide-over with full detail and lifecycle actions:
   confirm, end, set validity, generate postmortem, generate summary.
 - **Alerts** (`/alerts`) — raw alert tickets. Create a Jira issue from a
   Mattermost link or post id, and create / recreate the Jira issue per row.

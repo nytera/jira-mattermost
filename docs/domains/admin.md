@@ -46,7 +46,7 @@ it falls back to the `admin-ui` label when unset.
 scanner in `scripts/gen_service_map.py` keeps picking them up. They group into:
 
 - **Reads** — `GET /admin/api/stats` (rich dashboard), `summary` (lean), `alerts`
-  (list + filters), `alerts/{post_id}` (+ `/feedback`), `logs`, `settings`. All
+  (list + filters), `alerts/{post_id}`, `logs`, `settings`. All
   repository reads run via `asyncio.to_thread`.
 - **Settings writes** — `POST settings/{key}` and `settings/{key}/reset` (prompt
   overrides, validated against `_EDITABLE_PROMPTS`).

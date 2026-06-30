@@ -2,8 +2,8 @@
 
 `ThreadSummaryMixin` (`src/mm_jira_bot/service/_thread_summary.py`) publishes an
 LLM-generated factual summary of a Mattermost thread as a visible reply in that
-thread. It is the engine behind both the 📝 Summary button and the configurable
-summary emoji (`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
+thread. It is the engine behind the configurable summary emoji
+(`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
 **any** channel/thread — alert, incident, or manual. For signatures, see
 [../reference/service-map.md](../reference/service-map.md).
 
@@ -20,7 +20,7 @@ summary emoji (`MATTERMOST_SUMMARY_REACTION_NAME`, default `memo`), working in
   `neutralize_mentions`.
 - **NOT touched:** Jira. A summary only reads the thread and posts a reply — no
   issue, comment, transition, or field write. Authorization (the allowlist) is
-  enforced by the callers (reaction / button dispatch), not here.
+  enforced by the callers (reaction dispatch), not here.
 
 ## What it does
 
@@ -38,8 +38,8 @@ feedback shown to the requester.
   `NOTICE_ATTACHMENT_COLOR`), carrying `summary_requested_by_user_id` and the
   thread-routing key in `props`.
 
-See [../domains/alerts.md](../domains/alerts.md) for the button/reaction dispatch
-that invokes this, and [../config.md](../config.md) for the env vars.
+The `memo` reaction dispatch that invokes this lives in `coordinator.handle_reaction`;
+see [../config.md](../config.md) for the env vars.
 
 ## Key invariants
 
@@ -75,7 +75,7 @@ that invokes this, and [../config.md](../config.md) for the env vars.
 
 ## Reuse note
 
-`_publish_thread_summary` here is the standalone path (button/emoji), where no
+`_publish_thread_summary` here is the standalone path (the `memo` reaction), where no
 prior work precedes the summary, so it posts its own placeholder. The incident
 **completion** flow (see [../domains/postmortem.md](../domains/postmortem.md))
 reuses the lower-level helpers directly: it posts the placeholder earlier and

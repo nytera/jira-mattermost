@@ -5,6 +5,23 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [семантического версионирования](https://semver.org/lang/ru/).
 
+## [0.10.0]
+
+### Удалено
+
+- **Интерактивные кнопки/меню в треде** и **slash-команда `/incident`** убраны
+  целиком — алерты и инциденты размечаются только реакциями-эмодзи (и через
+  админ-UI/API). Удалены HTTP-роуты `POST /mattermost/actions/alert`,
+  `/mattermost/slash/incident`, `/mattermost/dialogs/feedback`, env-переменные
+  `INTERACTIVE_BUTTONS_ENABLED`, `SERVICE_PUBLIC_URL`, `MATTERMOST_SLASH_TOKEN` и
+  модуль `actions.py` (цветовые константы переехали в `colors.py`).
+- **Фича обратной связи** удалена целиком: кнопка «💬 Обратная связь» и её диалог,
+  хранилище (`add_feedback` / `list_feedback`, модель `alert_feedback`),
+  админ-эндпоинт `GET /admin/api/alerts/{post_id}/feedback` и панель «Фидбэк» в
+  админ-UI. Таблицу в БД не дропаем (миграция не пишется); reference-DDL
+  `002_create_alert_feedback.sql` удалён, чтобы зеркало-схема осталась согласованной
+  с моделью.
+
 ## [0.9.0] - 2026-06-30
 
 ### Добавлено

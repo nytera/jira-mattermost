@@ -29,7 +29,7 @@ The service suite is split by domain to match the mixins (see
 | `tests/test_thread_summary.py` | `ThreadSummaryMixin` (`_thread_summary.py`) |
 | `tests/test_admin.py` | `AdminMixin` (`_admin.py`) |
 | `tests/test_admin_api.py` | `admin_api.py` — `/admin/api/*` HTTP routes + Bearer auth |
-| `tests/test_service_infra.py` | cross-cutting: config validation, DB, auth allowlist, slash-token auth, app/lifespan, `_redact_database_url`, coordinator routing, ops/metrics |
+| `tests/test_service_infra.py` | cross-cutting: config validation, DB, auth allowlist, app/lifespan, `_redact_database_url`, coordinator routing, ops/metrics |
 | `tests/test_logging.py` | `logging.py` formatters / ring buffer |
 
 Reliability / contract seams (not tied to one mixin):
@@ -61,5 +61,5 @@ in the `[test]` extras).
 ## Expectations
 
 Add or extend tests for any behavior change — especially idempotency, retry/recovery,
-slash commands, and Jira payload/option formatting. Name files `test_*.py` and
+and Jira payload/option formatting. Name files `test_*.py` and
 functions `test_<behavior>`. Conventions are in [`../CLAUDE.md`](../CLAUDE.md).
