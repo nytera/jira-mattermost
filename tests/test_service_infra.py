@@ -193,19 +193,17 @@ def test_settings_load_llm_prompt_overrides(tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
 
     # Unset → defaults stay (None means "use built-in template").
-    assert Settings.from_env(tmp_path / "missing.env").llm_postmortem_prompt is None
+    assert Settings.from_env(tmp_path / "missing.env").llm_summary_prompt is None
 
     # Inline var is used; the *_FILE variant takes precedence and its file
     # contents (including a multi-line body) become the value.
-    prompt_file = tmp_path / "pm.txt"
-    prompt_file.write_text("ПМ из файла\nвторая строка {transcript}", encoding="utf-8")
-    monkeypatch.setenv("LLM_POSTMORTEM_PROMPT", "инлайн который проиграет")
-    monkeypatch.setenv("LLM_POSTMORTEM_PROMPT_FILE", str(prompt_file))
-    monkeypatch.setenv("LLM_SUMMARY_PROMPT", "саммари инлайн")
+    prompt_file = tmp_path / "summary.txt"
+    prompt_file.write_text("Саммари из файла\nвторая строка {transcript}", encoding="utf-8")
+    monkeypatch.setenv("LLM_SUMMARY_PROMPT", "инлайн который проиграет")
+    monkeypatch.setenv("LLM_SUMMARY_PROMPT_FILE", str(prompt_file))
 
     loaded = Settings.from_env(tmp_path / "missing.env")
-    assert loaded.llm_postmortem_prompt == "ПМ из файла\nвторая строка {transcript}"
-    assert loaded.llm_summary_prompt == "саммари инлайн"
+    assert loaded.llm_summary_prompt == "Саммари из файла\nвторая строка {transcript}"
 
 
 def test_init_db_adds_alert_title_column_to_existing_schema(tmp_path):
@@ -740,9 +738,9 @@ def test_invalid_timezone_raises_zoneinfo_not_found(tmp_path, monkeypatch):
         Settings.from_env(tmp_path / "missing.env")
 
 
-def test_missing_postmortem_prompt_file_raises(tmp_path, monkeypatch):
+def test_missing_summary_prompt_file_raises(tmp_path, monkeypatch):
     _set_env(monkeypatch, _full_valid_env())
-    monkeypatch.setenv("LLM_POSTMORTEM_PROMPT_FILE", str(tmp_path / "does-not-exist.txt"))
+    monkeypatch.setenv("LLM_SUMMARY_PROMPT_FILE", str(tmp_path / "does-not-exist.txt"))
 
     with pytest.raises(FileNotFoundError):
         Settings.from_env(tmp_path / "missing.env")

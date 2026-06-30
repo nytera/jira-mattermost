@@ -88,7 +88,6 @@ mirrors everything to an audit channel. Full behavior: [`read-only.md`](read-onl
 | `LLM_STREAM_EDIT_INTERVAL_SECONDS` | `1.5` | Min interval between live edits |
 | `LLM_STREAM_EDIT_MIN_CHARS` | `80` | Or every N new chars (whichever first) |
 | `LLM_READ_TIMEOUT` | `120.0` | LLM read timeout (seconds) |
-| `LLM_POSTMORTEM_PROMPT` / `_FILE` | — | Override the postmortem prompt |
 | `LLM_SUMMARY_PROMPT` / `_FILE` | — | Override the summary prompt |
 
 Prompt resolution order (env → built-in default) and placeholders are in

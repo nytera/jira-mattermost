@@ -169,7 +169,6 @@ async def run_startup_preflight(service: IncidentBotService) -> None:
         llm_api_token_format=_token_format(settings.llm_api_token),
         llm_max_tokens=settings.llm_max_tokens,
         llm_thread_max_chars=settings.llm_thread_max_chars,
-        llm_postmortem_prompt_customized=settings.llm_postmortem_prompt is not None,
         llm_summary_prompt_customized=settings.llm_summary_prompt is not None,
         llm_stream=settings.llm_stream,
         llm_read_timeout=settings.llm_read_timeout,
