@@ -21,8 +21,10 @@ thread. It is the engine behind the configurable summary emoji
 - **Jira:** the summary reads the thread and posts a Mattermost reply, and when the
   thread maps to a Jira issue it is **also posted as a Jira comment**
   (`build_thread_summary_comment`, wiki-converted with clickable `[~username]`
-  mentions). No issue / transition / field write. The ephemeral feedback states
-  whether the comment landed, was skipped (no linked issue), or the Jira write
+  mentions). No issue / transition / field write. The Jira outcome is surfaced two
+  ways: as the **ephemeral** feedback message, and as a **second attachment block**
+  appended under the summary reply so it stays visible in the thread — green when the
+  comment landed, grey when skipped (no linked issue), red when the Jira write
   failed. Authorization (the allowlist) is enforced by the callers (reaction
   dispatch), not here.
 
@@ -32,11 +34,13 @@ thread. It is the engine behind the configurable summary emoji
 (the same transcript builder the postmortem uses), then `_publish_thread_summary`:
 posts an `⏳ Генерация саммари…` placeholder reply, runs a **single** LLM call,
 and edits the placeholder into the final summary (or an error notice on
-`ApiError`); it returns the **raw** summary text. After the thread reply,
-`_post_summary_to_jira` resolves the thread root to a ticket (`get_by_post_id` →
-`get_by_incident_post_id`) and, when a Jira issue exists, posts that raw summary as a
-wiki comment. `generate_thread_summary` returns an `ActionResult` whose `message` is
-the ephemeral feedback (thread + Jira outcome) shown to the requester.
+`ApiError`); it returns the **raw** summary text **and the reply's post id**. After
+the thread reply, `_post_summary_to_jira` resolves the thread root to a ticket
+(`get_by_post_id` → `get_by_incident_post_id`) and, when a Jira issue exists, posts
+that raw summary as a wiki comment; it returns both the ephemeral message and a
+Jira-outcome attachment block, which `_append_summary_jira_block` adds as the second
+block under the reply. `generate_thread_summary` returns an `ActionResult` whose
+`message` is the ephemeral feedback (thread + Jira outcome) shown to the requester.
 
 - Resolves the thread root first: if the reacted/clicked post is a reply, it
   fetches `root_id` (falling back to the original post if that lookup fails) so

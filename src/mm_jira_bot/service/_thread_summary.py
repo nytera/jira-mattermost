@@ -11,7 +11,11 @@ from __future__ import annotations
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
-from mm_jira_bot.colors import NOTICE_ATTACHMENT_COLOR
+from mm_jira_bot.colors import (
+    INCIDENT_DONE_COLOR,
+    NOTICE_ATTACHMENT_COLOR,
+    OPS_ALERT_COLOR,
+)
 from mm_jira_bot.domain import MattermostPost
 from mm_jira_bot.llm import StreamProgress
 from mm_jira_bot.logging import get_logger
@@ -36,6 +40,16 @@ if TYPE_CHECKING:
 # Имя логгера держим стабильным (`mm_jira_bot.service`) во всех файлах пакета —
 # тесты и настроенные логгеры завязаны на него, а не на `__name__` модуля.
 log = get_logger("mm_jira_bot.service")
+
+
+def _jira_issue_ref(issue_key: str, issue_url: str | None) -> str:
+    """A ``[KEY](url)`` markdown link when a url is known, else the bare key."""
+    return f"[{issue_key}]({issue_url})" if issue_url else issue_key
+
+
+def _jira_result_block(color: str, text: str) -> dict:
+    """A one-line Mattermost attachment block reporting the Jira-comment outcome."""
+    return {"fallback": text, "color": color, "text": text}
 
 
 class ThreadSummaryMixin:
@@ -101,7 +115,7 @@ class ThreadSummaryMixin:
             )
             return ActionResult(message=SUMMARY_FAILED_TEXT)
 
-        summary = await self._publish_thread_summary(
+        summary, reply_id = await self._publish_thread_summary(
             root_post_id=root_post.id,
             channel_id=root_post.channel_id,
             thread_url=self.mattermost.permalink(root_post.id),
@@ -119,11 +133,15 @@ class ThreadSummaryMixin:
             mattermost_post_id=root_post.id,
             source=source,
         )
-        message = await self._post_summary_to_jira(
+        message, jira_block = await self._post_summary_to_jira(
             root_post,
             summary=summary,
             requested_by_user_id=requested_by_user_id,
         )
+        # Surface the Jira outcome as a second attachment under the summary reply, so
+        # it stays visible in the thread (the ActionResult message is ephemeral).
+        if reply_id is not None:
+            await self._append_summary_jira_block(reply_id, jira_block)
         return ActionResult(message=message)
 
     async def _post_summary_to_jira(
@@ -132,21 +150,25 @@ class ThreadSummaryMixin:
         *,
         summary: str,
         requested_by_user_id: str,
-    ) -> str:
+    ) -> tuple[str, dict]:
         """Post the summary as a Jira comment when the thread maps to an issue.
 
-        Returns the human-facing message describing the thread + Jira outcome. The
-        summary is the **raw** (un-neutralized) LLM text so ``@username`` renders as
-        a Jira ``[~username]`` mention via ``markdown_to_jira_wiki``. The thread root
-        may be an alert post or an incident-message post, so both mappings are tried.
+        Returns ``(message, block)``: the human-facing ephemeral message describing
+        the thread + Jira outcome, and a Mattermost attachment block reporting the
+        same outcome (appended under the summary reply by the caller). The summary is
+        the **raw** (un-neutralized) LLM text so ``@username`` renders as a Jira
+        ``[~username]`` mention via ``markdown_to_jira_wiki``. The thread root may be
+        an alert post or an incident-message post, so both mappings are tried.
         Best-effort: a failed Jira write never undoes the thread reply.
         """
         ticket = self.repository.get_by_post_id(
             root_post.id
         ) or self.repository.get_by_incident_post_id(root_post.id)
         if ticket is None or not ticket.jira_issue_key:
-            return "Саммари опубликовано в треде. В Jira не отправлено: задача не найдена."
+            message = "Саммари опубликовано в треде. В Jira не отправлено: задача не найдена."
+            return message, _jira_result_block(NOTICE_ATTACHMENT_COLOR, "ℹ️ " + message)
         requested_by_display = await self._resolve_user_display(requested_by_user_id)
+        issue_ref = _jira_issue_ref(ticket.jira_issue_key, ticket.jira_issue_url)
         try:
             await self.jira.add_comment(
                 ticket.jira_issue_key,
@@ -163,13 +185,39 @@ class ThreadSummaryMixin:
                 jira_issue_key=ticket.jira_issue_key,
                 error=str(exc),
             )
-            return "Саммари опубликовано в треде, но отправка в Jira не удалась."
+            message = "Саммари опубликовано в треде, но отправка в Jira не удалась."
+            return message, _jira_result_block(
+                OPS_ALERT_COLOR, f"❌ Не удалось отправить саммари в Jira ({issue_ref})."
+            )
         log.info(
             "summary.jira_comment_added",
             mattermost_post_id=root_post.id,
             jira_issue_key=ticket.jira_issue_key,
         )
-        return "Саммари опубликовано в треде и добавлено комментарием в Jira."
+        message = "Саммари опубликовано в треде и добавлено комментарием в Jira."
+        return message, _jira_result_block(
+            INCIDENT_DONE_COLOR, f"✅ Саммари добавлено комментарием в Jira: {issue_ref}."
+        )
+
+    async def _append_summary_jira_block(self, reply_id: str, block: dict) -> None:
+        """Append the Jira-outcome block as a second attachment under the summary
+        reply. Best-effort: a failed read/patch just leaves the summary as-is."""
+        try:
+            post = await self.mattermost.get_post(reply_id)
+        except ApiError:
+            return
+        attachments = (post.props or {}).get("attachments")
+        if not isinstance(attachments, list) or not attachments:
+            return
+        props = {**(post.props or {}), "attachments": [*attachments, block]}
+        try:
+            await self.mattermost.update_post(reply_id, props=props)
+        except ApiError as exc:
+            log.warning(
+                "summary.jira_result_block_failed",
+                reply_post_id=reply_id,
+                error=str(exc),
+            )
 
     async def _create_thread_summary_reply(
         self,
@@ -257,24 +305,25 @@ class ThreadSummaryMixin:
         message: str,
         base_props: dict,
         event: str,
-    ) -> None:
-        """Swap the "Генерация саммари…" placeholder for the final reply.
+    ) -> str | None:
+        """Swap the "Генерация саммари…" placeholder for the final reply and return
+        its post id (``None`` if even the fallback post failed).
 
         If the placeholder was never created (post failed), fall back to a fresh
         reply so the summary still lands in the thread.
         """
         if reply_id is None:
-            await self._create_thread_summary_reply(
+            return await self._create_thread_summary_reply(
                 post_id,
                 channel_id=channel_id,
                 message=message,
                 base_props=base_props,
                 event=event,
             )
-            return
         await self._edit_summary_reply(
             reply_id, post_id, message=message, base_props=base_props, event=event
         )
+        return reply_id
 
     @staticmethod
     def _summary_base_props(
@@ -358,10 +407,11 @@ class ThreadSummaryMixin:
         postmortem_author: str,
         transcript: str,
         event: str,
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         """Generate the incident-report summary and edit the placeholder into the
-        final reply (or an error notice). Returns the **raw** summary text on
-        success (un-neutralized, for an optional Jira comment), ``None`` on failure.
+        final reply (or an error notice). Returns ``(summary, reply_id)``: the
+        **raw** summary text (un-neutralized, for an optional Jira comment) and the
+        final reply's post id on success, or ``(None, None)`` on failure.
 
         When a placeholder exists, the summary is streamed into it live (throttled);
         the final edit always overwrites the streaming state with the clean format.
@@ -399,8 +449,8 @@ class ThreadSummaryMixin:
                 base_props=base_props,
                 event=f"{event}.failed",
             )
-            return None
-        await self._finalize_thread_summary_reply(
+            return None, None
+        reply_id = await self._finalize_thread_summary_reply(
             placeholder_id,
             root_post_id,
             channel_id=channel_id,
@@ -408,7 +458,7 @@ class ThreadSummaryMixin:
             base_props=base_props,
             event=event,
         )
-        return summary
+        return summary, reply_id
 
     async def _publish_thread_summary(
         self,
@@ -422,10 +472,10 @@ class ThreadSummaryMixin:
         requested_by_user_id: str,
         thread_id_key: str,
         event: str,
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         """Post a pending placeholder, generate the incident-report summary, then
-        edit the placeholder into the final reply. Returns the raw summary text on
-        success, ``None`` on failure.
+        edit the placeholder into the final reply. Returns ``(summary, reply_id)`` on
+        success, ``(None, None)`` on failure.
 
         Used by the on-demand summary emoji, where there is no preceding work to
         cover; the completion flow posts the placeholder earlier itself.

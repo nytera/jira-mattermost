@@ -13,6 +13,7 @@ from support import (
     make_alert,
 )
 
+from mm_jira_bot.colors import INCIDENT_DONE_COLOR, NOTICE_ATTACHMENT_COLOR, OPS_ALERT_COLOR
 from mm_jira_bot.domain import (
     ReactionEvent,
 )
@@ -354,3 +355,52 @@ async def test_summary_reaction_jira_failure_keeps_thread(service):
 
     # The thread reply still succeeded; only the Jira comment failed.
     assert "отправка в Jira не удалась" in result.message
+    block = _summary_jira_block(service, post.id)
+    assert block["color"] == OPS_ALERT_COLOR
+    assert "Не удалось отправить" in block["text"]
+
+
+def _summary_jira_block(service, root_id: str) -> dict:
+    """The Jira-outcome attachment appended as the 2nd block under the summary reply."""
+    replies = [
+        c
+        for c in service.mattermost.created_posts
+        if c["root_id"] == root_id and (c["props"] or {}).get("summary_requested_by_user_id")
+    ]
+    assert replies, "no summary reply found"
+    reply = service.mattermost.posts[replies[0]["post"].id]
+    attachments = (reply.props or {}).get("attachments")
+    assert isinstance(attachments, list) and len(attachments) == 2, attachments
+    return attachments[1]
+
+
+@pytest.mark.asyncio
+async def test_summary_reply_appends_jira_success_block(service):
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post
+    await service.handle_alert_post(post)
+
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
+    )
+
+    block = _summary_jira_block(service, post.id)
+    assert block["color"] == INCIDENT_DONE_COLOR
+    assert "добавлено комментарием в Jira" in block["text"]
+    assert "OPS-1" in block["text"]
+
+
+@pytest.mark.asyncio
+async def test_summary_reply_appends_not_found_block(service):
+    service.llm = FakeLlmClient()
+    post = make_alert()
+    service.mattermost.posts[post.id] = post  # no handle_alert_post → no ticket/issue
+
+    await service.handle_reaction(
+        ReactionEvent(post_id=post.id, user_id="reader", emoji_name="memo", create_at=2)
+    )
+
+    block = _summary_jira_block(service, post.id)
+    assert block["color"] == NOTICE_ATTACHMENT_COLOR
+    assert "задача не найдена" in block["text"]
