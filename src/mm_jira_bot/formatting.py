@@ -260,16 +260,17 @@ def format_incident_duty_help(
     """Reaction cheat-sheet posted in an incident thread.
 
     Unlike the alert thread, validity reactions here also *close* the incident
-    and trigger a postmortem — spell that out so on-call doesn't mistake them
-    for the alert channel's label-only behavior.
+    (set END time + validity) — spell that out so on-call doesn't mistake them
+    for the alert channel's label-only behavior. The narrative summary is not
+    produced on close; it is the summary reaction's job (button-only).
     """
     return "\n".join(
         [
             _DUTY_HELP_HEADER,
             "Реакции на корневое сообщение инцидента:",
-            "- ✅ галочка — валидный, завершить инцидент + постмортем",
-            f"- :{false_emoji}: — ложный, завершить инцидент + постмортем",
-            f"- :{expected_emoji}: — ожидаемый, завершить инцидент + постмортем",
+            "- ✅ галочка — валидный, завершить инцидент",
+            f"- :{false_emoji}: — ложный, завершить инцидент",
+            f"- :{expected_emoji}: — ожидаемый, завершить инцидент",
             f"- :{summary_emoji}: — саммари треда",
         ]
     )

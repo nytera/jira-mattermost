@@ -214,8 +214,9 @@ def build_postmortem_description(
 ) -> str:
     """Postmortem template used as the issue description once an incident is confirmed.
 
-    The LLM-generated postmortem goes to Jira comments. The description stays as
-    a fillable PM template and only gets deterministic incident metadata.
+    The description stays as a fillable PM template and only gets deterministic
+    incident metadata. The LLM narrative is not written on close; it reaches Jira as
+    a comment only on demand, via the summary reaction (see ``_thread_summary``).
     """
     band_links = f"[Основное сообщение инцидента|{incident_message_url}]"
     if alert_message_url:

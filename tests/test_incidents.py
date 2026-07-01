@@ -555,11 +555,13 @@ def test_incident_duty_help_lists_checkmark_reaction():
         summary_emoji="memo",
     )
     assert "✅" in text
-    # Validity reactions here close the incident + postmortem (not the alert's
-    # label-only meaning), and the summary emoji is listed too.
+    # Validity reactions here close the incident (not the alert's label-only
+    # meaning), and the summary emoji is listed too. No "постмортем": the narrative
+    # is not produced on close, only via the summary reaction.
     assert ":man_gesturing_no:" in text and ":arrows_counterclockwise:" in text
     assert ":memo:" in text
-    assert "постмортем" in text.lower()
+    assert "завершить инцидент" in text.lower()
+    assert "постмортем" not in text.lower()
     assert "кнопк" not in text.lower()
 
 
@@ -606,7 +608,7 @@ async def test_duty_help_disabled_posts_nothing(settings):
 @pytest.mark.asyncio
 async def test_alert_originated_incident_posts_its_own_duty_help(service):
     # The incident-channel thread (alert-originated) gets its own cheat-sheet:
-    # validity reactions here mean "close + postmortem", unlike the alert thread.
+    # validity reactions here mean "close the incident", unlike the alert thread.
     post = make_alert()
     service.mattermost.posts[post.id] = post
     await service.handle_alert_post(post)
@@ -620,7 +622,8 @@ async def test_alert_originated_incident_posts_its_own_duty_help(service):
         if c["root_id"] == ticket.incident_post_id and "Памятка дежурному" in _reply_text(c)
     ]
     assert len(incident_help) == 1
-    assert "постмортем" in _reply_text(incident_help[0]).lower()
+    assert "завершить инцидент" in _reply_text(incident_help[0]).lower()
+    assert "постмортем" not in _reply_text(incident_help[0]).lower()
 
 
 # --- confirm_incident branches ---------------------------------------------
