@@ -70,8 +70,8 @@ mirrors everything to an audit channel. Full behavior: [`read-only.md`](read-onl
 |---|---|---|
 | `READ_ONLY_MODE` | `false` | `true` = suppress every Jira/Mattermost write, mirror to the audit channel; Jira keys become `ADS-TEST-…` stubs |
 | `MATTERMOST_AUDIT_CHANNEL_ID` | — | Dedicated channel the shadow mirrors into; **must differ** from every alert/incident/test/ops channel (startup refuses a collision) |
-| `MATTERMOST_TEST_ALERT_CHANNEL_ID` | — | Extra channel treated as an alert channel (push test traffic without the real one) |
-| `MATTERMOST_TEST_INCIDENT_CHANNEL_ID` | — | Extra channel treated as an incident channel |
+| `MATTERMOST_TEST_ALERT_CHANNEL_ID` | — | Read-only-only **live sandbox** alert channel: push test traffic here to drive a real thread (not mirrored to audit) while Jira stays stubbed. Ignored outside `READ_ONLY_MODE` |
+| `MATTERMOST_TEST_INCIDENT_CHANNEL_ID` | — | Live sandbox incident channel; a test alert confirms its incident here and can be closed in place. Read-only-only |
 | `HOST` | `0.0.0.0` | uvicorn bind host |
 | `PORT` | `8080` | uvicorn bind port (set to run a shadow next to prod) |
 

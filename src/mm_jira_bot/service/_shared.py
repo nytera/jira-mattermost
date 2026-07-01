@@ -69,6 +69,22 @@ class SharedMixin:
     repository: AlertTicketRepository
     mattermost: Any
 
+    def _is_test_channel(self, channel_id: str) -> bool:
+        """True if ``channel_id`` is a configured test alert/incident channel — but
+        only under ``read_only_mode``, mirroring ``_is_alert_channel``.
+
+        Test channels are a shadow-only live sandbox: their Mattermost traffic runs
+        the full workflow with **real** posts/threads/reactions (not mirrored to the
+        audit channel), while Jira stays globally stubbed by read-only. In a normal
+        deployment test channels are never active — a leftover env var must not spawn
+        test tickets that pollute prod state."""
+        if not self.settings.read_only_mode:
+            return False
+        return channel_id is not None and channel_id in (
+            self.settings.mattermost_test_alert_channel_id,
+            self.settings.mattermost_test_incident_channel_id,
+        )
+
     def _is_alert_channel(self, channel_id: str) -> bool:
         """Alert channel — the real one always, plus (read-only only) the configured
         test alert channel.

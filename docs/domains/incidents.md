@@ -116,6 +116,13 @@ links, confirmer `@mention`, time) in a **gray attachment block**
 `message` is empty. It is guarded by `incident_post_id` so it publishes once. After
 publishing, when `DUTY_HELP_ENABLED`, it posts the incident-thread cheat-sheet.
 
+The target channel is `_incident_channel_for(ticket)`: normally the real incident
+channel, but a ticket whose alert originated in the (read-only) test alert channel
+routes to the test incident channel so the shadow's test traffic runs a full live
+incident thread there — see [../read-only.md](../read-only.md). The validity and
+read-only Jira-params replies route through the same helper, so they land in the same
+channel as the incident post they thread under.
+
 ## See also
 
 - Reactions / allowlist / channel routing: [../domains/alerts.md](../domains/alerts.md)

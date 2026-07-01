@@ -235,6 +235,49 @@ async def test_audit_mirror_update_patches_mapped_post(settings):
     await client.aclose()
 
 
+# --- live test channels (shadow sandbox) -------------------------------------
+
+
+def _test_channel_client(settings):
+    """Shadow client with test channels configured — the live sandbox path."""
+    transport = _AuditTransport()
+    rs = replace(
+        settings,
+        read_only_mode=True,
+        mattermost_audit_channel_id="audit-channel",
+        mattermost_test_alert_channel_id="test-alert",
+        mattermost_test_incident_channel_id="test-incident",
+    )
+    client = _client(rs, transport)
+    client.audit = AuditMirror(client, rs)
+    return client, transport
+
+
+async def test_live_test_channel_write_bypasses_audit(settings):
+    client, transport = _test_channel_client(settings)
+    post = await client.create_post(channel_id="test-incident", message="incident")
+    # A real post in the test channel — not a shadow stub, and not routed to audit.
+    assert not post.id.startswith(READONLY_POST_ID_PREFIX)
+    assert len(transport.posts) == 1
+    assert transport.posts[0]["channel_id"] == "test-incident"
+    # Follow-up edit + reaction on that live post stay live too (keyed by its real
+    # id), so the whole incident lifecycle runs in the test channel.
+    await client.update_post(post.id, message="closed")
+    await client.add_reaction(post.id, "white_check_mark")
+    assert transport.updates and transport.updates[0][0] == f"/api/v4/posts/{post.id}/patch"
+    assert transport.reactions and transport.reactions[0]["post_id"] == post.id
+    await client.aclose()
+
+
+async def test_non_test_channel_still_mirrors_to_audit(settings):
+    client, transport = _test_channel_client(settings)
+    post = await client.create_post(channel_id="alerts-channel", message="root")
+    # A real (non-test) channel keeps the audit-mirror behavior unchanged.
+    assert post.id.startswith(READONLY_POST_ID_PREFIX)
+    assert transport.posts[0]["channel_id"] == "audit-channel"
+    await client.aclose()
+
+
 # --- LLM runs in read-only ---------------------------------------------------
 
 

@@ -120,6 +120,8 @@ class IncidentMixin:
         # --- SharedMixin ---
         def _is_incident_channel(self, channel_id: str) -> bool: ...
 
+        def _is_test_channel(self, channel_id: str) -> bool: ...
+
         async def _post_alert_thread_reply(
             self,
             post_id: str,
@@ -183,6 +185,21 @@ class IncidentMixin:
                 event="mattermost.incident_thread.duty_help_published",
                 color=DUTY_HELP_ATTACHMENT_COLOR,
             )
+
+    def _incident_channel_for(self, ticket: AlertTicket) -> str:
+        """Incident channel a ticket's incident message + thread replies belong to.
+
+        A ticket whose alert originated in the (read-only) test alert channel routes
+        its incident to the configured test incident channel, so the shadow's test
+        traffic drives a full live incident thread there instead of being mirrored to
+        the audit channel. Everything else — and all of prod — uses the real incident
+        channel unchanged."""
+        if (
+            self._is_test_channel(ticket.mattermost_channel_id)
+            and self.settings.mattermost_test_incident_channel_id
+        ):
+            return self.settings.mattermost_test_incident_channel_id
+        return self.settings.mattermost_incident_channel_id
 
     def _incident_duty_help(self) -> str:
         return format_incident_duty_help(
@@ -363,7 +380,7 @@ class IncidentMixin:
         if ticket.incident_post_id:
             await self._post_incident_thread_reply(
                 ticket.incident_post_id,
-                channel_id=self.settings.mattermost_incident_channel_id,
+                channel_id=self._incident_channel_for(ticket),
                 message=format_thread_validity_changed(validity_label=validity_label),
                 event="mattermost.incident_thread.validity_notice_published",
                 props={
@@ -393,7 +410,7 @@ class IncidentMixin:
         )
         await self._post_incident_thread_reply(
             incident_post_id,
-            channel_id=self.settings.mattermost_incident_channel_id,
+            channel_id=self._incident_channel_for(ticket),
             message=message,
             event="readonly.incident_params_published",
         )
@@ -650,8 +667,9 @@ class IncidentMixin:
             "confirmed_by_user_id": confirmed_by_user_id,
             "attachments": [info_block, *alert_attachments],
         }
+        incident_channel_id = self._incident_channel_for(ticket)
         incident_post = await self.mattermost.create_post(
-            channel_id=self.settings.mattermost_incident_channel_id,
+            channel_id=incident_channel_id,
             message="",
             props=props,
         )
@@ -669,7 +687,7 @@ class IncidentMixin:
         if self.settings.duty_help_enabled:
             await self._post_incident_thread_reply(
                 incident_post.id,
-                channel_id=self.settings.mattermost_incident_channel_id,
+                channel_id=incident_channel_id,
                 message=self._incident_duty_help(),
                 event="mattermost.incident_thread.duty_help_published",
                 color=DUTY_HELP_ATTACHMENT_COLOR,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -115,6 +116,11 @@ def parse_reaction_event(payload: dict) -> ReactionEvent | None:
     )
 
 
+# Bound the live-test-post set the same way ``AuditMirror`` bounds its thread map;
+# in-memory and lost on restart (an acceptable shadow limitation).
+_LIVE_POST_IDS_MAXSIZE = 2048
+
+
 class MattermostClient(AsyncApiClient):
     client_name = "mattermost"
 
@@ -136,6 +142,28 @@ class MattermostClient(AsyncApiClient):
         # Set by ``create_app`` in read-only mode; when present, suppressed writes
         # are redirected here (the audit channel) instead of the real API.
         self.audit: AuditMirror | None = None
+        # Ids of posts the bot created **live** in a (read-only) test channel. Writes
+        # to these — plus their follow-up edits/reactions — bypass the audit mirror,
+        # so a shadow's test-channel traffic reads as a real, self-contained thread
+        # in the test channel instead of being copied into the audit channel.
+        self._live_post_ids: OrderedDict[str, None] = OrderedDict()
+
+    def _is_test_channel(self, channel_id: str) -> bool:
+        """A configured test alert/incident channel — a shadow-only live sandbox.
+
+        Only consulted inside the read-only write branches; in a normal deployment
+        test channels are unset (or never reach these branches), so this is a no-op
+        there."""
+        return channel_id in (
+            self._settings.mattermost_test_alert_channel_id,
+            self._settings.mattermost_test_incident_channel_id,
+        )
+
+    def _remember_live_post(self, post_id: str) -> None:
+        self._live_post_ids[post_id] = None
+        self._live_post_ids.move_to_end(post_id)
+        while len(self._live_post_ids) > _LIVE_POST_IDS_MAXSIZE:
+            self._live_post_ids.popitem(last=False)
 
     def permalink(self, post_id: str) -> str:
         return build_mattermost_permalink(self._settings.mattermost_url, post_id)
@@ -370,7 +398,15 @@ class MattermostClient(AsyncApiClient):
         root_id: str | None = None,
         allow_in_read_only: bool = False,
     ) -> MattermostPost:
-        if self._settings.read_only_mode and not allow_in_read_only:
+        # A write to a (read-only) test channel is done live and its post id
+        # remembered, so follow-up edits/reactions stay live too — the shadow's
+        # test traffic runs a real thread there instead of mirroring to audit.
+        live_test_write = (
+            self._settings.read_only_mode
+            and not allow_in_read_only
+            and self._is_test_channel(channel_id)
+        )
+        if self._settings.read_only_mode and not allow_in_read_only and not live_test_write:
             # Suppress the real write; reproduce it in the audit channel instead.
             if self.audit is not None:
                 return await self.audit.mirror_create_post(
@@ -388,7 +424,7 @@ class MattermostClient(AsyncApiClient):
             payload["root_id"] = root_id
         if props:
             payload["props"] = props
-        return await self._request(
+        post = await self._request(
             "POST",
             "/api/v4/posts",
             json=payload,
@@ -396,18 +432,28 @@ class MattermostClient(AsyncApiClient):
             event="mattermost.create_post",
             parse=lambda response: MattermostPost.from_api(response.json()),
             mattermost_channel_id=channel_id,
-            allow_in_read_only=allow_in_read_only,
+            allow_in_read_only=allow_in_read_only or live_test_write,
         )
+        if live_test_write:
+            self._remember_live_post(post.id)
+        return post
 
     async def add_reaction(
         self, post_id: str, emoji_name: str, *, allow_in_read_only: bool = False
     ) -> None:
         """Add an emoji reaction as the bot user. Idempotent — Mattermost does
         not duplicate an existing (user, post, emoji) reaction."""
-        if self._settings.read_only_mode and not allow_in_read_only:
+        live_test_write = (
+            self._settings.read_only_mode
+            and not allow_in_read_only
+            and post_id in self._live_post_ids
+        )
+        if self._settings.read_only_mode and not allow_in_read_only and not live_test_write:
             if self.audit is not None:
                 await self.audit.mirror_reaction(post_id, emoji_name)
             return
+        if live_test_write:
+            self._remember_live_post(post_id)
         await self._request(
             "POST",
             "/api/v4/reactions",
@@ -419,7 +465,7 @@ class MattermostClient(AsyncApiClient):
             error_message="Failed to add Mattermost reaction",
             event="mattermost.add_reaction",
             mattermost_post_id=post_id,
-            allow_in_read_only=allow_in_read_only,
+            allow_in_read_only=allow_in_read_only or live_test_write,
         )
 
     async def update_post(
@@ -431,10 +477,17 @@ class MattermostClient(AsyncApiClient):
         allow_in_read_only: bool = False,
     ) -> None:
         """Patch an existing post's message and/or props (Mattermost `PUT .../patch`)."""
-        if self._settings.read_only_mode and not allow_in_read_only:
+        live_test_write = (
+            self._settings.read_only_mode
+            and not allow_in_read_only
+            and post_id in self._live_post_ids
+        )
+        if self._settings.read_only_mode and not allow_in_read_only and not live_test_write:
             if self.audit is not None:
                 await self.audit.mirror_update(post_id, message=message, props=props)
             return
+        if live_test_write:
+            self._remember_live_post(post_id)
         payload: dict = {}
         if message is not None:
             payload["message"] = message
@@ -447,7 +500,7 @@ class MattermostClient(AsyncApiClient):
             error_message="Failed to update Mattermost post",
             event="mattermost.update_post",
             mattermost_post_id=post_id,
-            allow_in_read_only=allow_in_read_only,
+            allow_in_read_only=allow_in_read_only or live_test_write,
         )
 
     async def fetch_recent_channel_posts(

@@ -10,10 +10,12 @@ Enable with `READ_ONLY_MODE=true` (see [config.md](config.md) for the full env l
 
 ## The invariant
 
-> In read-only mode the **only** permitted write is to the audit channel. Every
-> other write (Jira, the real Mattermost channels, the ops channel) is suppressed
-> and mirrored there. Reads against shadow-minted ids (`readonly-…` posts, the
-> `ADS-TEST` Jira key) never hit the real APIs; real ids are read normally.
+> In read-only mode the only permitted **Mattermost** writes are to the audit
+> channel and to the configured **test channels** (the live sandbox — see below).
+> Every other Mattermost write (the real alert/incident/ops channels) is suppressed
+> and mirrored to audit; **every Jira write is suppressed** unconditionally. Reads
+> against shadow-minted ids (`readonly-…` posts, the `ADS-TEST` Jira key) never hit
+> the real APIs; real ids are read normally.
 
 ## How writes are suppressed
 
@@ -66,7 +68,7 @@ code block into the audit thread — "the Jira fields prod would have written" �
 instead of letting them vanish into the no-op. End time uses the exact Jira wire
 format. See `format_readonly_jira_params` (`jira_payload.py`).
 
-## Test channels vs real channels
+## Test channels — a live sandbox
 
 The shadow treats configured **test channels** (`MATTERMOST_TEST_ALERT_CHANNEL_ID`,
 `MATTERMOST_TEST_INCIDENT_CHANNEL_ID`) as first-class alert/incident channels, so you
@@ -74,6 +76,28 @@ can push test traffic through the same path as prod traffic. The channel predica
 `_is_alert_channel` / `_is_incident_channel` (in `SharedMixin`) encode "real ∪ test"
 — but only under `read_only_mode`, so a leftover test-channel env var never routes
 real traffic into the live path in a normal deployment.
+
+Unlike the real channels, test-channel Mattermost traffic is **live, not mirrored**:
+the bot writes real posts, edits and reactions straight into the test channels
+instead of copying them to audit. So a test alert drives a real, self-contained
+incident thread you can actually drive — an alert in the test alert channel confirms
+into an incident **posted to the test incident channel** (`_incident_channel_for` in
+`_incidents.py`), and a ✅ there closes it and flips its title green in place, all
+without touching prod. The one thing that stays test is Jira: the ticket keeps the
+`ADS-TEST` stub (Jira is suppressed globally by read-only), so no real issue is ever
+created.
+
+The live-write bypass lives in `MattermostClient`: `create_post` to a test channel
+does the real write and records the post id in `_live_post_ids`; follow-up
+`update_post` / `add_reaction` on a remembered id also go live. The set is bounded
+and **in-memory** (lost on restart) — after a restart, edits/reactions on an older
+test post fall back to the audit mirror until the post is seen again.
+
+Because a test incident channel is a channel the bot *processes* (not audit, which it
+never reads), the bot's own live posts echo back over the websocket. That is safe:
+`handle_manual_incident_post` ignores bot-authored posts (`_is_bot_post`),
+`handle_reaction` ignores the bot's own reactions, and `post_edited` events are not
+dispatched — so the green-flip edit never re-triggers anything.
 
 ## Adopting prod artifacts
 
@@ -134,11 +158,17 @@ started mid-incident) is consumed without adoption.
   is no-op'd), never prod impact.
 - Adoption doubles LLM token spend: the shadow generates its own postmortem/summary
   over the same real thread that prod already processed. Expected.
-- The mirrored incident message's title does not turn green on close: the bot would
-  edit the original message's attachments, but in read-only the shadow stores a
-  `readonly-` stub id for it and the stub read-back carries no attachments to re-edit.
-  Closure is still visible in the audit thread (the "🟢 Инцидент закрыт" notice and
-  the postmortem) — only the root message's colour is not flipped.
+- The **audit-mirrored** incident message's title does not turn green on close: the
+  bot would edit the original message's attachments, but for a real-channel incident
+  the shadow stores a `readonly-` stub id for it and the stub read-back carries no
+  attachments to re-edit. Closure is still visible in the audit thread (the "🟢
+  Инцидент закрыт" notice and the postmortem) — only the root message's colour is not
+  flipped. (A **test-channel** incident is a real post, so it *does* flip green.)
+- The test-channel sandbox exercises the Mattermost lifecycle, not Jira read-back:
+  Jira stays stubbed, and `get_valid_incident` returns `None` in read-only, so
+  repeat/episode grouping and expected-repeat linking don't fire there. The core path
+  (alert → confirm → incident in the test channel → ✅ close → green) works fully;
+  anything that depends on reading a real Jira issue does not.
 - A firing alert that never becomes a confirmed incident is announced by prod with a
   single `jira_issue_key`-bearing post. If the shadow observes that post before its
   own ticket/stub exists (a timing inversion possible under load), adoption is
