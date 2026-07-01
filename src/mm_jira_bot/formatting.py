@@ -198,20 +198,25 @@ def format_thread_validity_changed(*, validity_label: str) -> str:
     return f"Валидность обновлена: `{validity_label}`"
 
 
-# Incident-message title prefix: red circle while open, green once closed,
-# followed by the alert name. The completion update keys off the exact open
-# prefix, so keep the two in sync.
-INCIDENT_TITLE_OPEN_PREFIX = "##### 🔴"
-INCIDENT_TITLE_DONE_PREFIX = "##### 🟢"
+# Incident-message title box: just the alert name, kept as a heading so the
+# incident is identifiable at a glance. Status is carried textually by the
+# detail box below (INCIDENT_STATUS_*), not by a circle on the title.
+INCIDENT_TITLE_PREFIX = "#####"
+
+# Status label on the first line of the incident detail box; the border color
+# also flips open→closed. ``mark_incident_message_completed`` keys off the exact
+# open label, so keep the two in sync.
+INCIDENT_STATUS_OPEN = "**Новый инцидент**"
+INCIDENT_STATUS_DONE = "**Закрытый инцидент**"
 
 
 def mark_incident_message_completed(message: str) -> str:
-    """Swap the open title prefix for the closed one in an incident message.
+    """Swap the open status label for the closed one in the incident detail box.
 
-    Only the leading status prefix changes (red→green); the alert-name suffix
-    on the title line is preserved.
+    Only the ``Новый инцидент`` → ``Закрытый инцидент`` label changes; the Jira
+    link on the same line and the rest of the box are preserved.
     """
-    return message.replace(INCIDENT_TITLE_OPEN_PREFIX, INCIDENT_TITLE_DONE_PREFIX, 1)
+    return message.replace(INCIDENT_STATUS_OPEN, INCIDENT_STATUS_DONE, 1)
 
 
 _MENTION = re.compile(r"@[^\s()]+")
@@ -276,35 +281,41 @@ def format_incident_duty_help(
     )
 
 
+def format_incident_title(ticket: TicketView) -> str:
+    """Top box of the incident post: just the alert name, as a heading."""
+    alert_title = extract_alert_title(ticket.mattermost_message_text)
+    return f"{INCIDENT_TITLE_PREFIX} {alert_title}"
+
+
 def format_incident_message(
     ticket: TicketView,
     *,
-    confirmed_by: str,
-    confirmed_at: datetime,
+    author: str,
+    alert_at: datetime | None,
     include_alert_text: bool = True,
 ) -> str:
-    confirmed_at = backend_datetime(confirmed_at)
+    """Detail box of the incident post (the box below the title box).
+
+    The first line is the status label carrying the Jira link — it flips
+    ``Новый инцидент`` → ``Закрытый инцидент`` on close. When the alert has no
+    forwarded attachment block, its full body is embedded here so it isn't lost.
+    """
     jira_part = (
         f"[{ticket.jira_issue_key}]({ticket.jira_issue_url})"
         if ticket.jira_issue_key and ticket.jira_issue_url
         else "Jira issue пока недоступна"
     )
-    # The title line is just the status circle plus the alert name, so the
-    # incident is identifiable at a glance. ``mark_incident_message_completed``
-    # swaps only the leading ``##### 🔴`` prefix on close, so the name survives.
-    alert_title = extract_alert_title(ticket.mattermost_message_text)
-    title_line = f"{INCIDENT_TITLE_OPEN_PREFIX} {alert_title}"
-    lines = [title_line, ""]
+    lines = [f"{INCIDENT_STATUS_OPEN} — {jira_part}", ""]
     if include_alert_text and ticket.mattermost_message_text.strip():
         lines.extend([ticket.mattermost_message_text, ""])
+    when = backend_datetime(alert_at).strftime("%d.%m.%Y %H:%M") if alert_at else "—"
     lines.extend(
         [
-            f"- Задача Jira: {jira_part}",
             # Alert lives in the alerts channel; always link it.
             f"- Исходный алерт: [сообщение в Band]({ticket.mattermost_message_url})",
             # Just the @mention (no name, no backticks) so it renders as a live ping.
-            f"- Подтвердил: {confirmed_by}",
-            f"- Время подтверждения: {confirmed_at.strftime('%d.%m.%Y %H:%M')}",
+            f"- Автор: {author}",
+            f"- Время алерта: {when}",
         ]
     )
     return "\n".join(lines)

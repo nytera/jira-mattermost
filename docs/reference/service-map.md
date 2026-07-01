@@ -19,7 +19,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `colors.py` | 20 |
 | `config.py` | 232 |
 | `domain.py` | 169 |
-| `formatting.py` | 310 |
+| `formatting.py` | 321 |
 | `http.py` | 152 |
 | `jira.py` | 807 |
 | `jira_payload.py` | 244 |
@@ -32,7 +32,7 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 | `retry.py` | 56 |
 | `service/__init__.py` | 17 |
 | `service/_alerts.py` | 314 |
-| `service/_incidents.py` | 694 |
+| `service/_incidents.py` | 712 |
 | `service/_jira_sync.py` | 344 |
 | `service/_postmortem.py` | 474 |
 | `service/_shared.py` | 173 |
@@ -97,7 +97,8 @@ Mechanical, generated map of the `mm_jira_bot` service surface. For the *why*
 - `def extract_alert_title(message: str, *, limit: int = 120) -> str`
 - `def format_alert_duty_help(*, incident_emoji: str, false_emoji: str, expected_emoji: str, summary_emoji: str) -> str`
 - `def format_incident_duty_help(*, false_emoji: str, expected_emoji: str, summary_emoji: str) -> str`
-- `def format_incident_message(ticket: TicketView, *, confirmed_by: str, confirmed_at: datetime, include_alert_text: bool = True) -> str`
+- `def format_incident_message(ticket: TicketView, *, author: str, alert_at: datetime | None, include_alert_text: bool = True) -> str`
+- `def format_incident_title(ticket: TicketView) -> str`
 - `def format_ops_issue_created(*, jira_issue_key: str, jira_issue_url: str | None, source_title: str | None, source_message_url: str | None, channel_name: str | None, incident_message_url: str | None = None) -> str`
 - `def format_thread_issue_created(*, jira_issue_key: str, jira_issue_url: str | None) -> str`
 - `def format_thread_linked_to_root(*, root_issue_key: str | None, root_issue_url: str | None, root_message_url: str | None) -> str`

@@ -26,8 +26,10 @@ from mm_jira_bot.domain import (
     incident_ttf_minutes,
 )
 from mm_jira_bot.formatting import (
+    INCIDENT_STATUS_OPEN,
     format_incident_duty_help,
     format_incident_message,
+    format_incident_title,
     format_thread_status_changed,
     format_thread_validity_changed,
     mark_incident_message_completed,
@@ -416,12 +418,15 @@ class IncidentMixin:
         )
 
     async def _mark_incident_post_completed(self, incident_post_id: str) -> None:
-        """Edit the incident-channel message title to the green "завершён" state.
+        """Flip the incident post to the green "завершён" state.
 
-        Only the bot-authored incident message (alert-originated path) carries
-        the title; for a manual incident the "incident post" is the human's own
-        message (`incident_post_id == mattermost_post_id`), so it is left alone.
-        Best-effort: a failed edit never breaks the end/postmortem flow.
+        Recolors every attachment box to the done color and swaps the status
+        label (``Новый инцидент`` → ``Закрытый инцидент``) in whichever box
+        carries it — so it survives the box layout, including the no-forwarded-
+        attachment case. Only the bot-authored incident message (alert path)
+        carries that label; for a manual incident the "incident post" is the
+        human's own message (`incident_post_id == mattermost_post_id`), left
+        alone. Best-effort: a failed edit never breaks the end/postmortem flow.
         """
         ticket = self.repository.get_by_incident_post_id(incident_post_id)
         if ticket is None or ticket.incident_post_id is None:
@@ -434,16 +439,25 @@ class IncidentMixin:
             attachments = props.get("attachments")
             if not isinstance(attachments, list) or not attachments:
                 return
-            info_block = attachments[0]
-            if not isinstance(info_block, dict):
+            if not any(
+                isinstance(a, dict) and INCIDENT_STATUS_OPEN in a.get("text", "")
+                for a in attachments
+            ):
                 return
-            new_text = mark_incident_message_completed(info_block.get("text", ""))
-            if new_text == info_block.get("text", ""):
-                return
-            props["attachments"] = [
-                {**info_block, "text": new_text, "color": INCIDENT_DONE_COLOR},
-                *[{**a, "color": INCIDENT_DONE_COLOR} for a in attachments[1:]],
-            ]
+            new_attachments = []
+            for a in attachments:
+                if not isinstance(a, dict):
+                    new_attachments.append(a)
+                    continue
+                text = a.get("text", "")
+                new_attachments.append(
+                    {
+                        **a,
+                        "text": mark_incident_message_completed(text),
+                        "color": INCIDENT_DONE_COLOR,
+                    }
+                )
+            props["attachments"] = new_attachments
             await self.mattermost.update_post(ticket.incident_post_id, props=props)
         except ApiError as exc:
             log.warning(
@@ -578,7 +592,6 @@ class IncidentMixin:
                 ticket,
                 confirmed_by_user_id=confirmed_by_user_id,
                 confirmed_by_display=confirmed_by_display,
-                confirmed_at=confirmed_at,
             )
             ticket = self.repository.get_by_post_id(post_id)
             assert ticket is not None
@@ -644,20 +657,25 @@ class IncidentMixin:
         *,
         confirmed_by_user_id: str,
         confirmed_by_display: str,
-        confirmed_at: datetime,
     ) -> None:
         if ticket.incident_post_id:
             return
         alert_attachments = await self._alert_attachments(ticket)
-        # Incident details go into a gray block above the forwarded alert block.
+        # Three stacked boxes: alert name, then incident details, then the
+        # forwarded alert block. All share the status color (red→green on close).
+        title_block = {
+            "fallback": "Инцидент открыт",
+            "color": INCIDENT_OPEN_COLOR,
+            "text": format_incident_title(cast(Any, ticket)),
+        }
         info_text = format_incident_message(
             cast(Any, ticket),
-            confirmed_by=mention_from_display(confirmed_by_display),
-            confirmed_at=confirmed_at,
+            author=mention_from_display(confirmed_by_display),
+            alert_at=ticket.mattermost_message_created_at,
             include_alert_text=not alert_attachments,
         )
         info_block = {
-            "fallback": "Инцидент открыт",
+            "fallback": "Детали инцидента",
             "color": INCIDENT_OPEN_COLOR,
             "text": info_text,
         }
@@ -665,7 +683,7 @@ class IncidentMixin:
             "mattermost_alert_post_id": ticket.mattermost_post_id,
             "jira_issue_key": ticket.jira_issue_key,
             "confirmed_by_user_id": confirmed_by_user_id,
-            "attachments": [info_block, *alert_attachments],
+            "attachments": [title_block, info_block, *alert_attachments],
         }
         incident_channel_id = self._incident_channel_for(ticket)
         incident_post = await self.mattermost.create_post(

@@ -90,12 +90,14 @@ success, `ERROR` on a failed Jira write (recorded as `last_error`, retried).
 
 ## _mark_incident_post_completed
 
-Edits the incident-channel message title by swapping the leading status circle
-`🔴` → `🟢` (the `##### 🔴` → `##### 🟢` prefix; first attachment's text +
-`INCIDENT_DONE_COLOR`) via `update_post`. The alert-name suffix on the title line
-is preserved. **Manual incidents are skipped**: the "incident post" is the human's
-own message (`incident_post_id == mattermost_post_id`), which the bot must not
-rewrite. Only the bot-authored alert-originated message carries the editable title.
+Recolors every attachment box to `INCIDENT_DONE_COLOR` and swaps the status label
+`**Новый инцидент**` → `**Закрытый инцидент**` in whichever box carries it (the
+detail box) via `update_post`. Searching by content rather than a fixed index keeps
+it working across the box layout, including the no-forwarded-attachment case. The
+Jira link on the status line and the rest of the box are preserved. **Manual
+incidents are skipped**: the "incident post" is the human's own message
+(`incident_post_id == mattermost_post_id`), which the bot must not rewrite. Only the
+bot-authored alert-originated message carries the editable status label.
 Best-effort — a failed edit never breaks finalize.
 
 ## confirm_incident / _publish_incident_message_if_needed
@@ -107,14 +109,21 @@ alert thread. If the Jira issue is not ready it is saved `pending_confirmation`
 (`PENDING_JIRA`) and completed by the pending-work loop. Already-confirmed posts
 short-circuit (`ALREADY_CONFIRMED`).
 
-`_publish_incident_message_if_needed` renders incident details (title — the header
-is the status circle plus the alert name, `##### 🔴 <название>` via
-`extract_alert_title`, so the incident is identifiable at a glance; the close swap
-that flips it to 🟢 is in `_mark_incident_post_completed` above — plus Jira/alert
-links, confirmer `@mention`, time) in a **gray attachment block**
-(`INCIDENT_OPEN_COLOR`) placed *above* the forwarded alert attachment(s); the post
-`message` is empty. It is guarded by `incident_post_id` so it publishes once. After
-publishing, when `DUTY_HELP_ENABLED`, it posts the incident-thread cheat-sheet.
+`_publish_incident_message_if_needed` renders the incident post as **three stacked
+attachment boxes**, all `INCIDENT_OPEN_COLOR` (red → green on close):
+
+1. **Title box** — just the alert name as a heading, `##### <название>` via
+   `format_incident_title` / `extract_alert_title`, so the incident is identifiable
+   at a glance.
+2. **Detail box** (`format_incident_message`) — the first line is the status label
+   carrying the Jira link, `**Новый инцидент** — [KEY](url)`, which the close swap in
+   `_mark_incident_post_completed` above flips to `**Закрытый инцидент**`; then bullets
+   for the source-alert link, the author `@mention`, and the alert time. When the alert
+   has no forwarded attachment block, its full body is embedded here so it isn't lost.
+3. **Forwarded alert box(es)** — a copy of the original alert's attachments.
+
+The post `message` is empty. It is guarded by `incident_post_id` so it publishes once.
+After publishing, when `DUTY_HELP_ENABLED`, it posts the incident-thread cheat-sheet.
 
 The target channel is `_incident_channel_for(ticket)`: normally the real incident
 channel, but a ticket whose alert originated in the (read-only) test alert channel

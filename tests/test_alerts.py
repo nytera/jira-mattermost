@@ -601,8 +601,9 @@ async def test_replies_in_alert_thread_on_status_change(service):
         if created["channel_id"] == "incidents-channel" and created["root_id"] is None
     ]
     assert len(incident_posts) == 1
-    info_text = incident_posts[0]["props"]["attachments"][0]["text"]
-    assert "Подтвердил: @validator" in info_text
+    # Detail box (index 1) carries the author line; the title box (0) is the name.
+    info_text = incident_posts[0]["props"]["attachments"][1]["text"]
+    assert "Автор: @validator" in info_text
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,7 @@ from mm_jira_bot.formatting import (
     format_alert_duty_help,
     format_incident_duty_help,
     format_incident_message,
+    format_incident_title,
 )
 from mm_jira_bot.retry import ApiError
 
@@ -89,21 +90,23 @@ async def test_confirmed_incident_embeds_grafana_attachment(service):
     assert len(incident_posts) == 1
     incident_post = incident_posts[0]
     post_attachments = incident_post["props"]["attachments"]
-    # Red info block first, then the forwarded alert attachment(s) (a copy).
-    info_block = post_attachments[0]
+    # Three boxes: title, detail, then the forwarded alert attachment(s) (a copy).
+    title_block = post_attachments[0]
+    info_block = post_attachments[1]
+    assert title_block["color"] == "#EF4444"
     assert info_block["color"] == "#EF4444"
-    assert post_attachments[1:] == attachments
-    assert post_attachments[1] is not attachments[0]
+    assert post_attachments[2:] == attachments
+    assert post_attachments[2] is not attachments[0]
+    # Top box is just the alert name as a heading.
+    assert title_block["text"] == "##### Деньги | Минус-слова vs Общее | выше на 70% [Crit]"
     info_text = info_block["text"]
-    # The alert name is carried on the title line so the incident is
-    # identifiable at a glance.
-    assert info_text.startswith("##### 🔴 Деньги | Минус-слова vs Общее | выше на 70% [Crit]")
-    assert "Задача Jira: [OPS-1]" in info_text
+    # Detail box: status line carries the Jira link, no separate "Задача Jira".
+    assert info_text.startswith("**Новый инцидент** — [OPS-1]")
+    assert "Задача Jira" not in info_text
     assert "Исходный алерт" in info_text
-    # The full alert text is in the forwarded block, not duplicated as a body
-    # block below the title line.
-    body_after_title = info_text.split("\n", 1)[1]
-    assert "Деньги | Минус-слова vs Общее" not in body_after_title
+    # The full alert text is in the forwarded block, not duplicated in the
+    # detail box (the alert name lives only in the title box).
+    assert "Деньги | Минус-слова vs Общее" not in info_text
     assert incident_post["message"] == ""
 
 
@@ -364,19 +367,25 @@ def test_builds_incident_channel_message(service):
     ticket.jira_issue_key = "OPS-1"
     ticket.jira_issue_url = "https://jira.example.com/browse/OPS-1"
 
+    # Top box: just the alert name as a heading.
+    assert format_incident_title(ticket) == "##### CPU usage is above 95%"
+
     message = format_incident_message(
         ticket,
-        confirmed_by="@validator",
-        confirmed_at=datetime(2026, 5, 29, 22, 30, tzinfo=UTC),
+        author="@validator",
+        alert_at=datetime(2026, 5, 29, 22, 30, tzinfo=UTC),
     )
 
-    # The alert name is pinned to the title line so the incident is
-    # identifiable at a glance.
-    assert message.splitlines()[0] == "##### 🔴 CPU usage is above 95%"
+    # Detail box: status line carries the Jira link (no separate "Задача Jira"
+    # bullet), followed by source/author/alert-time bullets.
+    assert (
+        message.splitlines()[0]
+        == "**Новый инцидент** — [OPS-1](https://jira.example.com/browse/OPS-1)"
+    )
+    assert "Задача Jira" not in message
     assert "Исходный алерт" in message
-    assert "OPS-1" in message
-    assert "@validator" in message
-    assert "Время подтверждения: 30.05.2026 01:30" in message
+    assert "Автор: @validator" in message
+    assert "Время алерта: 30.05.2026 01:30" in message
 
 
 @pytest.mark.asyncio
@@ -500,10 +509,14 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
     assert ticket.incident_post_id is not None
     incident_post_id = ticket.incident_post_id
 
-    def info_text():
-        return service.mattermost.posts[incident_post_id].props["attachments"][0]["text"]
+    def attachments():
+        return service.mattermost.posts[incident_post_id].props["attachments"]
 
-    assert "##### 🔴 CPU usage is above 95%" in info_text()
+    # Status label lives in the detail box (index 1); title box (0) is the name.
+    def info_text():
+        return attachments()[1]["text"]
+
+    assert "**Новый инцидент**" in info_text()
 
     await service.handle_reaction(
         ReactionEvent(
@@ -514,8 +527,10 @@ async def test_completing_alert_incident_updates_title_to_done(settings):
         )
     )
 
-    assert "##### 🟢 CPU usage is above 95%" in info_text()
-    assert "##### 🔴" not in info_text()
+    assert "**Закрытый инцидент**" in info_text()
+    assert "**Новый инцидент**" not in info_text()
+    # Every box flips to the done color, including the title box.
+    assert all(a["color"] == "#22C55E" for a in attachments())
 
 
 # --- Duty cheat-sheet -------------------------------------------------------
